@@ -71,7 +71,7 @@ The prototype milestone is complete. Next is porting the language front end and 
 - the stackful mesh exists only where `build.rs` sets `cfg(stackful)` (not wasm, not ESP-IDF); gate stackful code and test modules on that cfg.
 - wasm tests: `cargo test -p shards-core --test prototype --test metadata --target wasm32-wasip1 --no-run` and `cargo test -p shards-lang --test lang --target wasm32-wasip1 --no-run`, then run each emitted test `.wasm` with `node scripts/run-wasi.mjs <path>`. Install the target with `rustup target add wasm32-wasip1` if needed. Benchmark examples are native-only; do not use `--all-targets` for wasm.
 
-The toolchain is pinned in `rust-toolchain.toml`. CI runs fmt, clippy and tests on Linux and macOS, clippy for the `rustls-ring` build, and the stackless suite on wasm (Node WASI). A separate workflow links the ESP32 firmware for three chips when the core, frontend or example change; it needs no local run, but when `shards-core` or `shards-lang` gain or change a dependency, refresh `examples/esp32/Cargo.lock` (`cargo update -w` in `examples/esp32`), since the firmware builds with `--locked`.
+The toolchain is pinned in `rust-toolchain.toml`. CI runs fmt, clippy and tests on Linux and macOS, clippy for the `rustls-ring` build, and the stackless suite on wasm (Node WASI). A separate workflow links the ESP32 firmware for three chips and boots each in Espressif's QEMU (`scripts/esp32-qemu.sh`) when the core, frontend or example change; it needs no local run, but when `shards-core` or `shards-lang` gain or change a dependency, refresh `examples/esp32/Cargo.lock` (`cargo update -w` in `examples/esp32`), since the firmware builds with `--locked`.
 
 
 ## Git

@@ -70,6 +70,21 @@ The CI artifacts contain an ELF, the lockfile and SDK configuration. Flash the
 ELF with `espflash`, which supplies the bootloader and partition table; it is
 not a raw flash image. Confirm the success message on the serial console.
 
+Without a board, run the firmware in Espressif's QEMU fork (upstream QEMU lacks
+the ESP machines). Put `espflash` and the `qemu-system-xtensa` (ESP32, ESP32-S3)
+or `qemu-system-riscv32` (ESP32-C3) binary from a
+[QEMU release](https://github.com/espressif/qemu/releases) on `PATH`; the Linux
+builds need the SDL2, slirp, pixman, libgcrypt and GLib shared libraries. Then,
+from the example directory:
+
+```sh
+../../scripts/esp32-qemu.sh esp32s3 target/xtensa-esp32s3-espidf/release/shards-esp32
+```
+
+The script merges bootloader, partition table and app into a flash image, boots
+it, prints the serial log and fails unless the success line appears before a
+crash or the timeout (60 s by default; a third argument changes it).
+
 The example reserves 64 KiB for the ESP-IDF main task stack because parsing
 and composing still use the native stack. This is a starting budget for the
 small script, not evidence that the desktop nesting limit fits on a device.
@@ -84,10 +99,14 @@ disabled through both dependency paths; parameter contracts are retained.
 chips on pull requests and pushes to `main` that touch the core, the frontend,
 the example or the root manifest, and on manual dispatch. Each matrix job uploads
 its ELF and the SDK configuration of that build; the ESP32-C3 job also lints the
-example with clippy. A successful build checks compilation
-and linking, not execution, flashing or peripheral behavior. Physical-board
-execution is a separate manual check; no hardware result is claimed here.
-The existing native and WASI jobs continue to test runtime semantics.
+example with clippy. Each job then boots its firmware in Espressif's QEMU
+(pinned release, checksum-verified) with `scripts/esp32-qemu.sh` and requires
+the success line, so ESP-IDF startup, the main-task stack budget and the
+smoke script's run are checked on all three chips. Emulation does not cover
+real timing, flashing, radio or peripheral behavior, and QEMU does not
+enforce every hardware limit; physical-board execution is still a separate
+manual check, and no hardware result is claimed here. The native and WASI
+jobs continue to test runtime semantics in depth.
 
 The build layout follows the official
 [ESP-IDF Rust template](https://github.com/esp-rs/esp-idf-template/tree/master/cargo)

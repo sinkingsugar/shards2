@@ -106,6 +106,14 @@ impl Args {
     self.index(name)
   }
 
+  /// The declaration of a parameter (`None` for an undescribed shard).
+  pub fn decl(&self, name: &str) -> Option<&'static ParamDecl> {
+    match &self.inner {
+      Inner::Decoded { decls, .. } => decls.iter().find(|d| d.name == name),
+      Inner::Positional(_) => None,
+    }
+  }
+
   pub fn literal(&self, name: &str) -> Option<&Var> {
     match self.get(name)? {
       ParamValue::Value(v) => Some(v),
@@ -208,6 +216,14 @@ impl Args {
       ParamValue::Cases(cases) => Some(cases),
       _ => None,
     }
+  }
+}
+
+/// The accepted types of a declaration, for diagnostics.
+pub(crate) fn expected_refs(decl: &ParamDecl) -> Vec<TypeRef> {
+  match decl.ty {
+    Some(ty) => vec![TypeRef::of(ty())],
+    None => decl.types.iter().copied().map(TypeRef::named).collect(),
   }
 }
 
@@ -364,8 +380,7 @@ pub fn decode(desc: &ShardDesc, args: &[Arg]) -> Result<Args> {
     }
     if let ParamValue::Value(v) = &arg.value {
       let ty = v.type_of();
-      if !decl.types.is_empty() && !decl.types.iter().any(|t| t.matches(ty)) {
-        let expected: Vec<&str> = decl.types.iter().map(|t| t.name()).collect();
+      if !decl.accepts(ty) {
         return fail(
           construct_error(
             desc,
@@ -374,14 +389,11 @@ pub fn decode(desc: &ShardDesc, args: &[Arg]) -> Result<Args> {
               "{}: {} must be {}, got {ty}",
               desc.name,
               decl.name,
-              expected.join(" or ")
+              decl.expected()
             ),
           )
           .param(decl.name, Some(index))
-          .types(
-            Some(TypeRef::of(ty)),
-            decl.types.iter().copied().map(TypeRef::named).collect(),
-          ),
+          .types(Some(TypeRef::of(ty)), expected_refs(decl)),
         );
       }
     }

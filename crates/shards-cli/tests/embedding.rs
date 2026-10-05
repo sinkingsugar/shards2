@@ -10,7 +10,6 @@ use shards_core::describe::{
   DefaultValue, Forms, InputDesc, OutputDesc, ParamDecl, Params, Requirement, ShardDesc, Targets,
   TypeName,
 };
-use shards_core::diagnostic::{Diagnostic, Phase};
 use shards_core::instance::{InstanceCtx, LeafCtx};
 use shards_core::shards::Operand;
 use shards_core::shards::async_shard::{AsyncShard, async_type};
@@ -28,6 +27,7 @@ static READING_PARAMS: &[ParamDecl] = &[
     forms: Forms::LITERAL.or(Forms::VARIABLE),
     types: &[TypeName::Int],
     requirement: Requirement::Default(DefaultValue::Int(0)),
+    ty: None,
   },
   ParamDecl {
     name: "Unit",
@@ -35,6 +35,7 @@ static READING_PARAMS: &[ParamDecl] = &[
     forms: Forms::LITERAL.or(Forms::VARIABLE),
     types: &[TypeName::String],
     requirement: Requirement::Optional,
+    ty: None,
   },
 ];
 
@@ -68,19 +69,9 @@ impl LeafShard for Reading {
     ctx: &mut ComposeCtx<'_, B>,
   ) -> Result<Composed<ReadingCompiled>> {
     // Compose reads only its arguments and declared context: never the host.
-    let (sensor, ty) = Operand::compose_arg(args, "Sensor", READING_DESC.name, ctx)?;
-    if ty != Type::int() {
-      return Err(Error::Diagnostic(Box::new(
-        Diagnostic::new(
-          Phase::Compose,
-          "compose-error",
-          "wrong-variable-type",
-          format!("Sensor must be an Int, got {ty}"),
-        )
-        .shard(READING_DESC.name)
-        .param("Sensor", Some(0)),
-      )));
-    }
+    // The declared types (Int) are checked by core, for a literal (by the
+    // decoder) and for a variable (by compose_arg).
+    let (sensor, _) = Operand::compose_arg(args, "Sensor", READING_DESC.name, ctx)?;
     // An optional parameter: None when the script did not give it.
     let unit =
       Operand::compose_optional_arg(args, "Unit", READING_DESC.name, ctx)?.map(|(op, _)| op);
@@ -145,18 +136,8 @@ impl AsyncShard for Scan {
   type Op = IoTask;
   const DESC: ShardDesc = SCAN_DESC;
 
-  fn compose<B: Backend>(_: &Args, ctx: &mut ComposeCtx<'_, B>) -> Result<Composed<()>> {
-    if ctx.input() != Type::int() {
-      return Err(Error::Diagnostic(Box::new(
-        Diagnostic::new(
-          Phase::Compose,
-          "input-type-mismatch",
-          "input-type-mismatch",
-          format!("Host.Scan needs an Int input, got {}", ctx.input()),
-        )
-        .shard(SCAN_DESC.name),
-      )));
-    }
+  fn compose<B: Backend>(_: &Args, _: &mut ComposeCtx<'_, B>) -> Result<Composed<()>> {
+    // The declared input (Int) is enforced by compose before this runs.
     Ok(Composed {
       compiled: (),
       output: Type::int(),
@@ -235,4 +216,61 @@ fn a_host_checks_and_runs_a_script_with_its_own_shards() {
     (d.code, d.line, d.did_you_mean.clone()),
     ("unknown-key", Some(2), vec!["value".to_string()])
   );
+
+  // Declared input types are enforced for host shards too: Host.Scan does
+  // not check its input itself.
+  let report = shards_lang::check::<shards_core::Mesh>(
+    Source::new("host.shs", "\"x\" | Host.Scan"),
+    &catalog(),
+    &HashMap::new(),
+  );
+  let d = &report.diagnostics[0];
+  assert_eq!(
+    (d.code, d.shard.as_deref()),
+    ("input-type-mismatch", Some("Host.Scan"))
+  );
+  assert!(
+    d.message.contains("Host.Scan needs Int input, got String"),
+    "{}",
+    d.message
+  );
+
+  // A variable of the wrong type for a declared parameter is reported by
+  // core, located at the shard.
+  let report = shards_lang::check::<shards_core::Mesh>(
+    Source::new("host.shs", "\"two\" = s\nHost.Reading(Sensor: s)"),
+    &catalog(),
+    &HashMap::new(),
+  );
+  let d = &report.diagnostics[0];
+  assert_eq!(
+    (d.code, d.param.as_deref(), d.line),
+    ("wrong-variable-type", Some("Sensor"), Some(2))
+  );
+  assert!(
+    d.message.contains("Sensor must be Int, but s is String"),
+    "{}",
+    d.message
+  );
+
+  // The optional parameter: absent (the default unit), and given as a
+  // variable.
+  for (src, unit) in [
+    ("Host.Reading(Sensor: 2) = r\nr.unit", "C"),
+    (
+      "\"F\" = u\nHost.Reading(Sensor: 2 Unit: u) = r\nr.unit",
+      "F",
+    ),
+  ] {
+    let program = Program::load(Source::new("host.shs", src), &catalog(), &HashMap::new())
+      .unwrap_or_else(|(_, d)| panic!("{d:?}"));
+    let report = program
+      .run::<shards_core::Mesh>()
+      .unwrap_or_else(|d| panic!("{d:?}"));
+    assert!(
+      matches!(&report.outcomes[0].1, Some(Outcome::Completed(Var::String(u))) if &**u == unit),
+      "{src}: {:?}",
+      report.outcomes
+    );
+  }
 }

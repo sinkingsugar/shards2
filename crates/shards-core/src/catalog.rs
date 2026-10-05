@@ -182,6 +182,10 @@ fn describe_json(s: &ShardType) -> String {
           if p.requirement == Requirement::Variadic {
             fields.push("\"variadic\":true".to_string());
           }
+          // The full type, when declared beyond the type list.
+          if let Some(ty) = p.ty {
+            fields.push(format!("\"type\":{}", json_str(&ty().to_string())));
+          }
           if let Requirement::Default(default) = p.requirement {
             fields.push(format!("\"default\":{}", default_json(default)));
           }

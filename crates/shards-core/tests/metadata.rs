@@ -667,6 +667,7 @@ fn defaults_follow_the_declared_contract() {
     forms: Forms::LITERAL,
     types: &[TypeName::Int],
     requirement: Requirement::Default(DefaultValue::Str("bad")),
+    ty: None,
   }];
   assert_eq!(check_params(INVALID), Err(0));
   let desc = shards_core::ShardDesc {
@@ -684,6 +685,7 @@ fn defaults_follow_the_declared_contract() {
     forms: Forms::VARIABLE,
     types: &[],
     requirement: Requirement::Default(DefaultValue::Int(1)),
+    ty: None,
   }];
   assert_eq!(check_params(NOT_LITERAL), Err(0));
   static DUPLICATE: &[ParamDecl] = &[
@@ -693,6 +695,7 @@ fn defaults_follow_the_declared_contract() {
       forms: Forms::LITERAL,
       types: &[],
       requirement: Requirement::Required,
+      ty: None,
     },
     ParamDecl {
       name: "A",
@@ -700,6 +703,7 @@ fn defaults_follow_the_declared_contract() {
       forms: Forms::LITERAL,
       types: &[],
       requirement: Requirement::Required,
+      ty: None,
     },
   ];
   assert_eq!(check_params(DUPLICATE), Err(1));
@@ -818,6 +822,7 @@ fn table_seq_and_vector_parameters_decode_by_acceptance() {
       forms: Forms::LITERAL,
       types: &[TypeName::Table],
       requirement: Requirement::Optional,
+      ty: None,
     },
     ParamDecl {
       name: "Items",
@@ -825,6 +830,7 @@ fn table_seq_and_vector_parameters_decode_by_acceptance() {
       forms: Forms::LITERAL,
       types: &[TypeName::Seq],
       requirement: Requirement::Optional,
+      ty: None,
     },
     ParamDecl {
       name: "At",
@@ -832,6 +838,7 @@ fn table_seq_and_vector_parameters_decode_by_acceptance() {
       forms: Forms::LITERAL,
       types: &[TypeName::Float2, TypeName::Float4],
       requirement: Requirement::Optional,
+      ty: None,
     },
   ];
   let desc = ShardDesc {
@@ -934,6 +941,7 @@ fn variadic_parameters_take_the_remaining_positional_arguments() {
       forms: Forms::LITERAL,
       types: &[],
       requirement: Requirement::Variadic,
+      ty: None,
     },
     ParamDecl {
       name: "B",
@@ -941,7 +949,84 @@ fn variadic_parameters_take_the_remaining_positional_arguments() {
       forms: Forms::LITERAL,
       types: &[],
       requirement: Requirement::Optional,
+      ty: None,
     },
   ];
   assert_eq!(check_params(NOT_LAST), Err(0));
+}
+
+/// A parameter can declare a full type (`[Int]`, a table with keys): the
+/// decoder checks literals against it and the catalog documents it.
+#[test]
+fn full_parameter_types_check_literals_and_are_documented() {
+  use shards_core::describe::{Forms, ParamDecl, Requirement, ShardDesc};
+  use shards_core::{Catalog, ShardType, Type};
+  static PARAMS: &[ParamDecl] = &[
+    ParamDecl::new(
+      "Offsets",
+      "",
+      Forms::LITERAL.or(Forms::VARIABLE),
+      &[TypeName::Seq],
+      Requirement::Optional,
+    )
+    .typed(|| Type::seq(Type::int())),
+    ParamDecl::new(
+      "Ref",
+      "",
+      Forms::LITERAL,
+      &[TypeName::Table],
+      Requirement::Optional,
+    )
+    .typed(|| Type::fixed_table([("addr", Type::int()), ("guid", Type::seq(Type::int()))])),
+  ];
+  static TYPED: ShardType = ShardType::new(ShardDesc {
+    params: Params::Declared(PARAMS),
+    ..ShardDesc::undocumented("Typed", 1)
+  });
+  let ints = Var::Seq(std::sync::Arc::new(vec![Var::Int(1), Var::Int(2)]));
+  assert!(
+    decode(
+      &TYPED.desc,
+      &[Arg::named("Offsets", ParamValue::Value(ints))]
+    )
+    .is_ok()
+  );
+
+  let strings = Var::Seq(std::sync::Arc::new(vec![Var::string("a")]));
+  let err = decode(
+    &TYPED.desc,
+    &[Arg::named("Offsets", ParamValue::Value(strings))],
+  )
+  .err()
+  .unwrap();
+  let d = err.diagnostic().unwrap();
+  assert_eq!(d.code, "wrong-argument-type");
+  assert!(
+    d.message.contains("Offsets must be [Int], got [String]"),
+    "{}",
+    d.message
+  );
+  assert_eq!(d.expected[0].name, "[Int]");
+
+  let record = Var::table([
+    ("addr", Var::Int(1)),
+    ("guid", Var::Seq(std::sync::Arc::new(vec![Var::Int(2)]))),
+  ]);
+  assert!(decode(&TYPED.desc, &[Arg::named("Ref", ParamValue::Value(record))]).is_ok());
+  let missing = Var::table([("addr", Var::Int(1))]);
+  assert!(
+    decode(
+      &TYPED.desc,
+      &[Arg::named("Ref", ParamValue::Value(missing))]
+    )
+    .is_err()
+  );
+
+  let catalog = Catalog::new(&[&[&TYPED]]).unwrap();
+  let json = catalog.describe_json("Typed").unwrap();
+  assert!(json.contains("\"type\":\"[Int]\""), "{json}");
+  assert!(
+    json.contains("\"type\":\"{addr: Int guid: [Int]}\""),
+    "{json}"
+  );
 }

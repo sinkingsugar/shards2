@@ -53,64 +53,120 @@ pub const fn leaf_type<L: LeafShard>() -> ShardType {
     .with_stackless::<Leaf<L>>()
 }
 
+/// A leaf or async shard's compose output with the type compose declared
+/// for it, so produced values can be checked against it
+/// ([`check_output`]).
+pub struct Checked<C> {
+  pub(crate) inner: C,
+  pub(crate) output: Type,
+}
+
+/// Whether produced values are checked against their compose output type:
+/// always in debug builds, in release with the `output-checks` feature.
+pub(crate) const OUTPUT_CHECKS: bool = cfg!(any(debug_assertions, feature = "output-checks"));
+
+/// Fails when a shard produced a value its own compose output type does not
+/// admit (a bug in the shard: it drifted from its declared type). Checked on
+/// the value, without interning its type.
+pub(crate) fn check_output(name: &str, output: Type, value: &Var) -> Result<()> {
+  if !OUTPUT_CHECKS || output.admits(value) {
+    return Ok(());
+  }
+  let mut text = value.to_string();
+  if text.len() > 120 {
+    let cut = (0..=120)
+      .rev()
+      .find(|i| text.is_char_boundary(*i))
+      .unwrap_or(0);
+    text.truncate(cut);
+    text.push_str("...");
+  }
+  Err(Error::Activation(format!(
+    "{name} produced {text}, which its declared output type {output} does not admit (a bug in the shard)"
+  )))
+}
+
+pub(crate) fn checked<C>(composed: Composed<C>) -> Composed<Checked<C>> {
+  Composed {
+    output: composed.output,
+    compiled: Checked {
+      inner: composed.compiled,
+      output: composed.output,
+    },
+  }
+}
+
 impl<L: LeafShard> Shard for Leaf<L> {
-  type Compiled = L::Compiled;
+  type Compiled = Checked<L::Compiled>;
   type State = L::State;
   const NAME: &'static str = L::DESC.name;
   const VERSION: u32 = L::DESC.version;
 
-  fn compose(args: &Args, ctx: &mut ComposeCtx<'_, Stackful>) -> Result<Composed<L::Compiled>> {
-    L::compose(args, ctx)
+  fn compose(
+    args: &Args,
+    ctx: &mut ComposeCtx<'_, Stackful>,
+  ) -> Result<Composed<Checked<L::Compiled>>> {
+    L::compose(args, ctx).map(checked)
   }
 
-  fn instantiate(c: &L::Compiled, ctx: &mut InstanceCtx) -> Result<L::State> {
-    L::instantiate(c, ctx)
+  fn instantiate(c: &Checked<L::Compiled>, ctx: &mut InstanceCtx) -> Result<L::State> {
+    L::instantiate(&c.inner, ctx)
   }
 
   fn activate(
-    c: &L::Compiled,
+    c: &Checked<L::Compiled>,
     s: &mut L::State,
     ctx: &mut crate::runtime::ActivationCtx<'_>,
     input: &Var,
   ) -> Result<Flow> {
-    L::activate(c, s, ctx, input)
+    let flow = L::activate(&c.inner, s, ctx, input)?;
+    if let Flow::Next(v) = &flow {
+      check_output(L::DESC.name, c.output, v)?;
+    }
+    Ok(flow)
   }
 
-  fn cleanup(c: &L::Compiled, s: &mut L::State, ctx: &mut CleanupCtx) {
-    L::cleanup(c, s, ctx)
+  fn cleanup(c: &Checked<L::Compiled>, s: &mut L::State, ctx: &mut CleanupCtx) {
+    L::cleanup(&c.inner, s, ctx)
   }
 }
 
 impl<L: LeafShard> stackless::Shard for Leaf<L> {
-  type Compiled = L::Compiled;
+  type Compiled = Checked<L::Compiled>;
   type State = L::State;
   const NAME: &'static str = L::DESC.name;
   const VERSION: u32 = L::DESC.version;
 
-  fn compose(args: &Args, ctx: &mut ComposeCtx<'_, Stackless>) -> Result<Composed<L::Compiled>> {
-    L::compose(args, ctx)
+  fn compose(
+    args: &Args,
+    ctx: &mut ComposeCtx<'_, Stackless>,
+  ) -> Result<Composed<Checked<L::Compiled>>> {
+    L::compose(args, ctx).map(checked)
   }
 
-  fn instantiate(c: &L::Compiled, ctx: &mut InstanceCtx) -> Result<L::State> {
-    L::instantiate(c, ctx)
+  fn instantiate(c: &Checked<L::Compiled>, ctx: &mut InstanceCtx) -> Result<L::State> {
+    L::instantiate(&c.inner, ctx)
   }
 
   fn activate(
-    c: &L::Compiled,
+    c: &Checked<L::Compiled>,
     s: &mut L::State,
     ctx: &mut stackless::ActivationCtx<'_>,
     input: &Var,
   ) -> Result<Step> {
-    Ok(match L::activate(c, s, ctx, input)? {
-      Flow::Next(v) => Step::Next(v),
+    Ok(match L::activate(&c.inner, s, ctx, input)? {
+      Flow::Next(v) => {
+        check_output(L::DESC.name, c.output, &v)?;
+        Step::Next(v)
+      }
       Flow::Stop => Step::Stop,
       Flow::Restart => Step::Restart,
       Flow::Return(v) => Step::Return(v),
     })
   }
 
-  fn cleanup(c: &L::Compiled, s: &mut L::State, ctx: &mut CleanupCtx) {
-    L::cleanup(c, s, ctx)
+  fn cleanup(c: &Checked<L::Compiled>, s: &mut L::State, ctx: &mut CleanupCtx) {
+    L::cleanup(&c.inner, s, ctx)
   }
 }
 

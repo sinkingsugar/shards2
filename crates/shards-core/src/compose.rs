@@ -320,6 +320,7 @@ impl<B: Backend> ComposeCtx<'_, B> {
       // Decode against the shard's declared parameters (the same
       // declarations its documentation is generated from), then compose.
       let composed = decode(&def.ty.desc, &def.args).and_then(|args| {
+        check_input(def.ty, self.input)?;
         B::compose_shard(def.ty, &args, self).map_err(|err| {
           // An error from a nested flow or wire: name the parameter
           // holding it.
@@ -409,6 +410,41 @@ impl<B: Backend> ComposeCtx<'_, B> {
     self.deps.extend(wire.deps.iter().cloned());
     Ok(wire)
   }
+}
+
+/// Enforces a shard's declared input types (`InputDesc::Types`) before its
+/// compose runs, so no shard repeats the check. `Any` and `Ignored` inputs
+/// are left to the shard.
+fn check_input(ty: &ShardType, input: Type) -> Result<()> {
+  let crate::describe::InputDesc::Types(types) = ty.desc.input else {
+    return Ok(());
+  };
+  if types.iter().any(|t| t.matches(input)) {
+    return Ok(());
+  }
+  // "Int, Float or Float3".
+  let names: Vec<&str> = types.iter().map(|t| t.name()).collect();
+  let expected = match names.split_last() {
+    Some((last, rest)) if !rest.is_empty() => format!("{} or {last}", rest.join(", ")),
+    _ => names.join(""),
+  };
+  Err(crate::Error::Diagnostic(Box::new(
+    crate::diagnostic::Diagnostic::new(
+      crate::diagnostic::Phase::Compose,
+      "input-type-mismatch",
+      "input-type-mismatch",
+      format!("{} needs {expected} input, got {input}", ty.name()),
+    )
+    .shard(ty.name())
+    .types(
+      Some(crate::diagnostic::TypeRef::of(input)),
+      types
+        .iter()
+        .copied()
+        .map(crate::diagnostic::TypeRef::named)
+        .collect(),
+    ),
+  )))
 }
 
 /// Adds where the input came from to a mismatch on the failing shard's own

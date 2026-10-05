@@ -501,3 +501,42 @@ both native backends, WASI execution, docs-off tests, release nesting limits,
 TLS and WASI clippy. Release core tests with output checks, all seven inline
 Miri tests, and benchmark validator tests passed. Independent verification of
 this new finding remains a separate step.
+
+
+## Compose-time scratch release selection
+
+The next optimization moves the cleanup decision out of execution. An
+exhaustive compose pass selects release/non-release Const/Get/Set/Inc opcodes,
+tracking whether owned scratch may exist. Segment entry and generic/constructor
+boundaries assume owned input; Take/Push/generic vector arithmetic may introduce
+scratch again. After release, subsequent reanchoring opcodes perform no cleanup
+check. Instruction/node correspondence stays one-to-one. The previous lifetime
+fix remains in force; `clear_scratch` is removed.
+
+The complete 25-workload, four-width, nine-sample suite passed again on the
+working tree based on `4cbfb0e`. [Raw results and source hashes](../bench/vm-execution/results/2026-10-05-compose-cleanup/).
+Selected width-256 medians, ns:
+
+| Workload | 1.x | 2.0 stackful | 2.0 stackless | Stackless / 1.x |
+|---|---:|---:|---:|---:|
+| const-int | 128.5 | 188.3 | 185.5 | 1.44× |
+| get-int | 130.5 | 261.4 | 259.3 | 1.99× |
+| add-int | 300.6 | 229.2 | 225.0 | 0.75× |
+| add-float | 378.5 | 372.2 | 372.2 | 0.98× |
+| add-float4 | 375.0 | 391.7 | 385.6 | 1.03× |
+
+21/25 stackless cases meet ≤2× in this run; threshold-adjacent cases should not
+be treated as robust categorical wins given unlocked CPU frequency. Const(Int)
+and Get(Int) previously measured 195.5 and 265.4 ns; they now measure 185.5 and
+259.3 ns. The decision moved to compose, but the remaining dispatch/addressing
+costs prevent universal parity. [Inspection of the actual release assembly](vm-assembly-comparison.md)
+shows those costs and preserves raw disassembly, binary hashes and commands.
+
+The full local check set passed, including WASI and release output checks.
+After a final equivalent edit making the ownership-opcode match exhaustive,
+workspace clippy, core unit/shared tests and all eight inline Miri tests passed
+again. A new allocation-identity test covers a generic boundary introducing an
+owner after the previous segment had cleared scratch; the shared constructor
+regression now also enters its constructor after a non-owning segment. All
+lifetime and snapshot regressions remain passing. No scheduler/HTTP rerun is
+claimed for this change.

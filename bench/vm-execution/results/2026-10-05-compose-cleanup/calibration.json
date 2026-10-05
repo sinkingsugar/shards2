@@ -1,0 +1,3002 @@
+[
+  {
+    "case": "make-seq",
+    "width": 8,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.000341899,
+      0.000356912
+    ]
+  },
+  {
+    "case": "make-seq",
+    "width": 8,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.002152144,
+      0.0021479760000000002
+    ]
+  },
+  {
+    "case": "make-seq",
+    "width": 8,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.0021974720000000002,
+      0.0021932940000000006
+    ]
+  },
+  {
+    "case": "get-string",
+    "width": 64,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.000524852,
+      0.000473837
+    ]
+  },
+  {
+    "case": "get-string",
+    "width": 64,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.000866362,
+      0.000864417
+    ]
+  },
+  {
+    "case": "get-string",
+    "width": 64,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.0008937719999999999,
+      0.0008934570000000001
+    ]
+  },
+  {
+    "case": "push-shared-seq",
+    "width": 8,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.00168904,
+      0.00166316
+    ]
+  },
+  {
+    "case": "push-shared-seq",
+    "width": 8,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.001834905,
+      0.0018424570000000003
+    ]
+  },
+  {
+    "case": "push-shared-seq",
+    "width": 8,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.001875179,
+      0.0018326150000000001
+    ]
+  },
+  {
+    "case": "assign-seq",
+    "width": 64,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.0491042,
+      0.0474553
+    ]
+  },
+  {
+    "case": "assign-seq",
+    "width": 64,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.005355223,
+      0.005348653
+    ]
+  },
+  {
+    "case": "assign-seq",
+    "width": 64,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.005398307,
+      0.0053992649999999994
+    ]
+  },
+  {
+    "case": "const-table",
+    "width": 0,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.00088113,
+      0.000923233
+    ]
+  },
+  {
+    "case": "const-table",
+    "width": 0,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.00024795,
+      0.000247701
+    ]
+  },
+  {
+    "case": "const-table",
+    "width": 0,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.00027705300000000003,
+      0.000279056
+    ]
+  },
+  {
+    "case": "take-table",
+    "width": 64,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.00195511,
+      0.00195051
+    ]
+  },
+  {
+    "case": "take-table",
+    "width": 64,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.008804237999999999,
+      0.008727683000000002
+    ]
+  },
+  {
+    "case": "take-table",
+    "width": 64,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.008404717,
+      0.008423138000000002
+    ]
+  },
+  {
+    "case": "get-table",
+    "width": 256,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.00206825,
+      0.00211542
+    ]
+  },
+  {
+    "case": "get-table",
+    "width": 256,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.002578585,
+      0.0026015120000000003
+    ]
+  },
+  {
+    "case": "get-table",
+    "width": 256,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.002582847,
+      0.002626484
+    ]
+  },
+  {
+    "case": "add-float",
+    "width": 64,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.000752358,
+      0.000750421
+    ]
+  },
+  {
+    "case": "add-float",
+    "width": 64,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.000945441,
+      0.0009445289999999999
+    ]
+  },
+  {
+    "case": "add-float",
+    "width": 64,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.000956138,
+      0.0009558780000000001
+    ]
+  },
+  {
+    "case": "add-float4",
+    "width": 8,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.000188916,
+      0.000164634
+    ]
+  },
+  {
+    "case": "add-float4",
+    "width": 8,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.00028301799999999995,
+      0.00028007499999999996
+    ]
+  },
+  {
+    "case": "add-float4",
+    "width": 8,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.000312022,
+      0.00031068
+    ]
+  },
+  {
+    "case": "const-table",
+    "width": 64,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.00130554,
+      0.00124927
+    ]
+  },
+  {
+    "case": "const-table",
+    "width": 64,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.000643222,
+      0.000655595
+    ]
+  },
+  {
+    "case": "const-table",
+    "width": 64,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.000674731,
+      0.0006790079999999999
+    ]
+  },
+  {
+    "case": "take-table",
+    "width": 0,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      6.8313e-05,
+      6.7748e-05
+    ]
+  },
+  {
+    "case": "take-table",
+    "width": 0,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.00018148399999999999,
+      0.000186659
+    ]
+  },
+  {
+    "case": "take-table",
+    "width": 0,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.00021110600000000002,
+      0.00021585499999999999
+    ]
+  },
+  {
+    "case": "const-seq",
+    "width": 8,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.000887097,
+      0.000850357
+    ]
+  },
+  {
+    "case": "const-seq",
+    "width": 8,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.000288085,
+      0.000280886
+    ]
+  },
+  {
+    "case": "const-seq",
+    "width": 8,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.000311807,
+      0.00030967399999999996
+    ]
+  },
+  {
+    "case": "make-table",
+    "width": 256,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.0154612,
+      0.0153442
+    ]
+  },
+  {
+    "case": "make-table",
+    "width": 256,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.04776679,
+      0.047640144
+    ]
+  },
+  {
+    "case": "make-table",
+    "width": 256,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.047645907,
+      0.047754699
+    ]
+  },
+  {
+    "case": "update-string",
+    "width": 256,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.00475411,
+      0.00480968
+    ]
+  },
+  {
+    "case": "update-string",
+    "width": 256,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.002859337,
+      0.002863522
+    ]
+  },
+  {
+    "case": "update-string",
+    "width": 256,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.002899344,
+      0.002928065
+    ]
+  },
+  {
+    "case": "get-int",
+    "width": 64,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.000472476,
+      0.00045998
+    ]
+  },
+  {
+    "case": "get-int",
+    "width": 64,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.00080906,
+      0.000810023
+    ]
+  },
+  {
+    "case": "get-int",
+    "width": 64,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.0008382779999999999,
+      0.0008413769999999999
+    ]
+  },
+  {
+    "case": "do-int",
+    "width": 256,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.0486075,
+      0.0485587
+    ]
+  },
+  {
+    "case": "do-int",
+    "width": 256,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.06945188199999999,
+      0.06951932799999999
+    ]
+  },
+  {
+    "case": "do-int",
+    "width": 256,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.07424468999999999,
+      0.074488115
+    ]
+  },
+  {
+    "case": "assign-string",
+    "width": 8,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.000663063,
+      0.000618538
+    ]
+  },
+  {
+    "case": "assign-string",
+    "width": 8,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.0010758019999999998,
+      0.00108394
+    ]
+  },
+  {
+    "case": "assign-string",
+    "width": 8,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.001109078,
+      0.001104688
+    ]
+  },
+  {
+    "case": "update-seq",
+    "width": 256,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.00579076,
+      0.00580484
+    ]
+  },
+  {
+    "case": "update-seq",
+    "width": 256,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.0028281770000000003,
+      0.0028682269999999997
+    ]
+  },
+  {
+    "case": "update-seq",
+    "width": 256,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.002857105,
+      0.00286429
+    ]
+  },
+  {
+    "case": "get-int",
+    "width": 0,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      6.493e-05,
+      6.1775e-05
+    ]
+  },
+  {
+    "case": "get-int",
+    "width": 0,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.00018433000000000002,
+      0.00018639699999999998
+    ]
+  },
+  {
+    "case": "get-int",
+    "width": 0,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.00021664799999999998,
+      0.00021675299999999998
+    ]
+  },
+  {
+    "case": "get-seq",
+    "width": 64,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.0011902,
+      0.00120285
+    ]
+  },
+  {
+    "case": "get-seq",
+    "width": 64,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.000843022,
+      0.0008602079999999999
+    ]
+  },
+  {
+    "case": "get-seq",
+    "width": 64,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.000875073,
+      0.0008754219999999999
+    ]
+  },
+  {
+    "case": "update-string",
+    "width": 64,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.00156313,
+      0.00135828
+    ]
+  },
+  {
+    "case": "update-string",
+    "width": 64,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.001008671,
+      0.000995229
+    ]
+  },
+  {
+    "case": "update-string",
+    "width": 64,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.001041711,
+      0.001030395
+    ]
+  },
+  {
+    "case": "const-table",
+    "width": 8,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.00104165,
+      0.00105624
+    ]
+  },
+  {
+    "case": "const-table",
+    "width": 8,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.000283744,
+      0.000279682
+    ]
+  },
+  {
+    "case": "const-table",
+    "width": 8,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.000314081,
+      0.00030962100000000005
+    ]
+  },
+  {
+    "case": "add-float4",
+    "width": 64,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.000813488,
+      0.000755477
+    ]
+  },
+  {
+    "case": "add-float4",
+    "width": 64,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.001076819,
+      0.001052752
+    ]
+  },
+  {
+    "case": "add-float4",
+    "width": 64,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.001079799,
+      0.0010757230000000002
+    ]
+  },
+  {
+    "case": "assign-string",
+    "width": 256,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.0132513,
+      0.0127474
+    ]
+  },
+  {
+    "case": "assign-string",
+    "width": 256,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.026294981999999998,
+      0.026262628000000003
+    ]
+  },
+  {
+    "case": "assign-string",
+    "width": 256,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.026281576,
+      0.026172285
+    ]
+  },
+  {
+    "case": "push-shared-seq",
+    "width": 64,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.0025783,
+      0.00261482
+    ]
+  },
+  {
+    "case": "push-shared-seq",
+    "width": 64,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.007379788,
+      0.007364278
+    ]
+  },
+  {
+    "case": "push-shared-seq",
+    "width": 64,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.007436496,
+      0.007926652
+    ]
+  },
+  {
+    "case": "assign-int",
+    "width": 64,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.00109259,
+      0.00108035
+    ]
+  },
+  {
+    "case": "assign-int",
+    "width": 64,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.0018562469999999999,
+      0.0018763419999999998
+    ]
+  },
+  {
+    "case": "assign-int",
+    "width": 64,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.0019216489999999999,
+      0.0018909279999999996
+    ]
+  },
+  {
+    "case": "get-string",
+    "width": 256,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.00142588,
+      0.0013728
+    ]
+  },
+  {
+    "case": "get-string",
+    "width": 256,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.0025930550000000004,
+      0.002668659
+    ]
+  },
+  {
+    "case": "get-string",
+    "width": 256,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.002666168,
+      0.0026924559999999998
+    ]
+  },
+  {
+    "case": "update-int",
+    "width": 0,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      8.0312e-05,
+      7.993e-05
+    ]
+  },
+  {
+    "case": "update-int",
+    "width": 0,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.000193174,
+      0.000193151
+    ]
+  },
+  {
+    "case": "update-int",
+    "width": 0,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.00021147600000000002,
+      0.000216046
+    ]
+  },
+  {
+    "case": "get-seq",
+    "width": 256,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.00222504,
+      0.00209609
+    ]
+  },
+  {
+    "case": "get-seq",
+    "width": 256,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.002607323,
+      0.002587282
+    ]
+  },
+  {
+    "case": "get-seq",
+    "width": 256,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.002701388,
+      0.0026860449999999998
+    ]
+  },
+  {
+    "case": "update-string",
+    "width": 8,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.000295514,
+      0.0003229
+    ]
+  },
+  {
+    "case": "update-string",
+    "width": 8,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.000437263,
+      0.000414513
+    ]
+  },
+  {
+    "case": "update-string",
+    "width": 8,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.000446417,
+      0.00043901400000000005
+    ]
+  },
+  {
+    "case": "assign-int",
+    "width": 0,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      7.865e-05,
+      8.0252e-05
+    ]
+  },
+  {
+    "case": "assign-int",
+    "width": 0,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.000181399,
+      0.000185738
+    ]
+  },
+  {
+    "case": "assign-int",
+    "width": 0,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.000218581,
+      0.000216164
+    ]
+  },
+  {
+    "case": "get-string",
+    "width": 0,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.00012842,
+      0.000109396
+    ]
+  },
+  {
+    "case": "get-string",
+    "width": 0,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.00026753,
+      0.00027094399999999996
+    ]
+  },
+  {
+    "case": "get-string",
+    "width": 0,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.0002946,
+      0.00030161799999999997
+    ]
+  },
+  {
+    "case": "add-float",
+    "width": 256,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.00372644,
+      0.00375752
+    ]
+  },
+  {
+    "case": "add-float",
+    "width": 256,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.003769555,
+      0.003911806
+    ]
+  },
+  {
+    "case": "add-float",
+    "width": 256,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.00383541,
+      0.003759565
+    ]
+  },
+  {
+    "case": "const-string",
+    "width": 64,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.000574617,
+      0.000524598
+    ]
+  },
+  {
+    "case": "const-string",
+    "width": 64,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.000670351,
+      0.000676667
+    ]
+  },
+  {
+    "case": "const-string",
+    "width": 64,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.00069239,
+      0.0006916760000000001
+    ]
+  },
+  {
+    "case": "const-seq",
+    "width": 0,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.000803329,
+      0.000768605
+    ]
+  },
+  {
+    "case": "const-seq",
+    "width": 0,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.000244015,
+      0.000252095
+    ]
+  },
+  {
+    "case": "const-seq",
+    "width": 0,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.00028523000000000003,
+      0.000289723
+    ]
+  },
+  {
+    "case": "take-seq",
+    "width": 64,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.00388562,
+      0.00367817
+    ]
+  },
+  {
+    "case": "take-seq",
+    "width": 64,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.0020488119999999997,
+      0.002116921
+    ]
+  },
+  {
+    "case": "take-seq",
+    "width": 64,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.0021235159999999998,
+      0.002107839
+    ]
+  },
+  {
+    "case": "update-table",
+    "width": 8,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.00206668,
+      0.00200748
+    ]
+  },
+  {
+    "case": "update-table",
+    "width": 8,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.000369547,
+      0.000367862
+    ]
+  },
+  {
+    "case": "update-table",
+    "width": 8,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.000403348,
+      0.00039599700000000004
+    ]
+  },
+  {
+    "case": "update-int",
+    "width": 256,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.00324808,
+      0.00334634
+    ]
+  },
+  {
+    "case": "update-int",
+    "width": 256,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.0028030010000000003,
+      0.002795956
+    ]
+  },
+  {
+    "case": "update-int",
+    "width": 256,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.002794246,
+      0.0028602199999999997
+    ]
+  },
+  {
+    "case": "update-seq",
+    "width": 64,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.00266767,
+      0.00263275
+    ]
+  },
+  {
+    "case": "update-seq",
+    "width": 64,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.000959841,
+      0.0009535629999999999
+    ]
+  },
+  {
+    "case": "update-seq",
+    "width": 64,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.000987504,
+      0.0009791320000000002
+    ]
+  },
+  {
+    "case": "assign-table",
+    "width": 8,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.00736978,
+      0.00762289
+    ]
+  },
+  {
+    "case": "assign-table",
+    "width": 8,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.000902279,
+      0.00089348
+    ]
+  },
+  {
+    "case": "assign-table",
+    "width": 8,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.0009295359999999999,
+      0.000925415
+    ]
+  },
+  {
+    "case": "make-seq",
+    "width": 64,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.00343451,
+      0.00334648
+    ]
+  },
+  {
+    "case": "make-seq",
+    "width": 64,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.012013403,
+      0.012024358
+    ]
+  },
+  {
+    "case": "make-seq",
+    "width": 64,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.012040451,
+      0.011980755999999999
+    ]
+  },
+  {
+    "case": "add-float",
+    "width": 0,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      6.418e-05,
+      6.789e-05
+    ]
+  },
+  {
+    "case": "add-float",
+    "width": 0,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.000184497,
+      0.00019002599999999999
+    ]
+  },
+  {
+    "case": "add-float",
+    "width": 0,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.000214945,
+      0.00022019599999999998
+    ]
+  },
+  {
+    "case": "assign-string",
+    "width": 0,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.000126442,
+      0.000101232
+    ]
+  },
+  {
+    "case": "assign-string",
+    "width": 0,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.000264811,
+      0.000269432
+    ]
+  },
+  {
+    "case": "assign-string",
+    "width": 0,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.000295075,
+      0.00029762500000000004
+    ]
+  },
+  {
+    "case": "push-shared-seq",
+    "width": 256,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.00751604,
+      0.0073529
+    ]
+  },
+  {
+    "case": "push-shared-seq",
+    "width": 256,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.026334758,
+      0.026396779
+    ]
+  },
+  {
+    "case": "push-shared-seq",
+    "width": 256,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.025937102,
+      0.025767308000000003
+    ]
+  },
+  {
+    "case": "update-table",
+    "width": 256,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.0068499,
+      0.00691698
+    ]
+  },
+  {
+    "case": "update-table",
+    "width": 256,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.002856361,
+      0.0029873889999999996
+    ]
+  },
+  {
+    "case": "update-table",
+    "width": 256,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.002939129,
+      0.0028778299999999996
+    ]
+  },
+  {
+    "case": "const-string",
+    "width": 8,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.000228807,
+      0.000192181
+    ]
+  },
+  {
+    "case": "const-string",
+    "width": 8,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.000306291,
+      0.000306102
+    ]
+  },
+  {
+    "case": "const-string",
+    "width": 8,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.000338815,
+      0.000335863
+    ]
+  },
+  {
+    "case": "add-float",
+    "width": 8,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.000180726,
+      0.000143438
+    ]
+  },
+  {
+    "case": "add-float",
+    "width": 8,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.000231358,
+      0.000235694
+    ]
+  },
+  {
+    "case": "add-float",
+    "width": 8,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.000261634,
+      0.000272206
+    ]
+  },
+  {
+    "case": "add-int",
+    "width": 256,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.0029899,
+      0.00307624
+    ]
+  },
+  {
+    "case": "add-int",
+    "width": 256,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.002333576,
+      0.002232116
+    ]
+  },
+  {
+    "case": "add-int",
+    "width": 256,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.002257522,
+      0.002354043
+    ]
+  },
+  {
+    "case": "do-int",
+    "width": 64,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.012082,
+      0.0120824
+    ]
+  },
+  {
+    "case": "do-int",
+    "width": 64,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.017794398000000003,
+      0.017822615
+    ]
+  },
+  {
+    "case": "do-int",
+    "width": 64,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.01873265,
+      0.018734268999999998
+    ]
+  },
+  {
+    "case": "take-seq",
+    "width": 0,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      8.8101e-05,
+      8.7829e-05
+    ]
+  },
+  {
+    "case": "take-seq",
+    "width": 0,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.000191754,
+      0.00021202000000000002
+    ]
+  },
+  {
+    "case": "take-seq",
+    "width": 0,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.000214692,
+      0.000224685
+    ]
+  },
+  {
+    "case": "get-table",
+    "width": 64,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.0011626,
+      0.00116796
+    ]
+  },
+  {
+    "case": "get-table",
+    "width": 64,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.000861346,
+      0.0008492950000000001
+    ]
+  },
+  {
+    "case": "get-table",
+    "width": 64,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.0009078350000000001,
+      0.000887874
+    ]
+  },
+  {
+    "case": "const-string",
+    "width": 0,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.00012875,
+      0.000110147
+    ]
+  },
+  {
+    "case": "const-string",
+    "width": 0,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.000299696,
+      0.00027602899999999996
+    ]
+  },
+  {
+    "case": "const-string",
+    "width": 0,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.00031161700000000004,
+      0.000303719
+    ]
+  },
+  {
+    "case": "take-seq",
+    "width": 256,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.0160045,
+      0.0160681
+    ]
+  },
+  {
+    "case": "take-seq",
+    "width": 256,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.007650925,
+      0.007653292999999999
+    ]
+  },
+  {
+    "case": "take-seq",
+    "width": 256,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.007632030000000001,
+      0.007767488999999999
+    ]
+  },
+  {
+    "case": "update-seq",
+    "width": 0,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.000763273,
+      0.000781961
+    ]
+  },
+  {
+    "case": "update-seq",
+    "width": 0,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.000255252,
+      0.00026088200000000004
+    ]
+  },
+  {
+    "case": "update-seq",
+    "width": 0,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.000277739,
+      0.00028718400000000006
+    ]
+  },
+  {
+    "case": "const-int",
+    "width": 64,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.000459949,
+      0.000456139
+    ]
+  },
+  {
+    "case": "const-int",
+    "width": 64,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.000614955,
+      0.0006091149999999999
+    ]
+  },
+  {
+    "case": "const-int",
+    "width": 64,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.000641355,
+      0.000650934
+    ]
+  },
+  {
+    "case": "update-int",
+    "width": 8,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.000229423,
+      0.000210107
+    ]
+  },
+  {
+    "case": "update-int",
+    "width": 8,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.00024539099999999997,
+      0.000249039
+    ]
+  },
+  {
+    "case": "update-int",
+    "width": 8,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.000283912,
+      0.0002975140000000001
+    ]
+  },
+  {
+    "case": "get-table",
+    "width": 8,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.000768049,
+      0.000799595
+    ]
+  },
+  {
+    "case": "get-table",
+    "width": 8,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.000302856,
+      0.000304126
+    ]
+  },
+  {
+    "case": "get-table",
+    "width": 8,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.000331315,
+      0.00033115099999999996
+    ]
+  },
+  {
+    "case": "const-seq",
+    "width": 256,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.0019929,
+      0.0019349
+    ]
+  },
+  {
+    "case": "const-seq",
+    "width": 256,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.001854781,
+      0.0020246860000000004
+    ]
+  },
+  {
+    "case": "const-seq",
+    "width": 256,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.001911711,
+      0.0018841659999999998
+    ]
+  },
+  {
+    "case": "get-seq",
+    "width": 0,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.000794566,
+      0.000772634
+    ]
+  },
+  {
+    "case": "get-seq",
+    "width": 0,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.000256169,
+      0.00024886200000000003
+    ]
+  },
+  {
+    "case": "get-seq",
+    "width": 0,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.000278739,
+      0.00027904000000000004
+    ]
+  },
+  {
+    "case": "const-seq",
+    "width": 64,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.00125679,
+      0.00125959
+    ]
+  },
+  {
+    "case": "const-seq",
+    "width": 64,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.000641751,
+      0.000650707
+    ]
+  },
+  {
+    "case": "const-seq",
+    "width": 64,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.000676751,
+      0.000671193
+    ]
+  },
+  {
+    "case": "assign-int",
+    "width": 256,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.00447537,
+      0.00454067
+    ]
+  },
+  {
+    "case": "assign-int",
+    "width": 256,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.006898146000000001,
+      0.006979347999999999
+    ]
+  },
+  {
+    "case": "assign-int",
+    "width": 256,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.006661775,
+      0.006713616
+    ]
+  },
+  {
+    "case": "get-int",
+    "width": 8,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.000156505,
+      0.000129231
+    ]
+  },
+  {
+    "case": "get-int",
+    "width": 8,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.000239819,
+      0.00023975199999999998
+    ]
+  },
+  {
+    "case": "get-int",
+    "width": 8,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.00026957999999999995,
+      0.00026967200000000004
+    ]
+  },
+  {
+    "case": "make-seq",
+    "width": 0,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.000153398,
+      0.00014691
+    ]
+  },
+  {
+    "case": "make-seq",
+    "width": 0,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.000249991,
+      0.000247932
+    ]
+  },
+  {
+    "case": "make-seq",
+    "width": 0,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.000276334,
+      0.00028167800000000005
+    ]
+  },
+  {
+    "case": "add-int",
+    "width": 8,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.0001836,
+      0.000154372
+    ]
+  },
+  {
+    "case": "add-int",
+    "width": 8,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.00023656,
+      0.00023259299999999996
+    ]
+  },
+  {
+    "case": "add-int",
+    "width": 8,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.000257509,
+      0.00026113699999999994
+    ]
+  },
+  {
+    "case": "get-table",
+    "width": 0,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.000919032,
+      0.000875298
+    ]
+  },
+  {
+    "case": "get-table",
+    "width": 0,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.000243583,
+      0.000247735
+    ]
+  },
+  {
+    "case": "get-table",
+    "width": 0,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.000278392,
+      0.000285495
+    ]
+  },
+  {
+    "case": "update-table",
+    "width": 64,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.00294567,
+      0.00300973
+    ]
+  },
+  {
+    "case": "update-table",
+    "width": 64,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.0009420250000000001,
+      0.0009604129999999999
+    ]
+  },
+  {
+    "case": "update-table",
+    "width": 64,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.00102677,
+      0.0009836019999999999
+    ]
+  },
+  {
+    "case": "do-int",
+    "width": 8,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.00166056,
+      0.00158539
+    ]
+  },
+  {
+    "case": "do-int",
+    "width": 8,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.002435751,
+      0.002434346
+    ]
+  },
+  {
+    "case": "do-int",
+    "width": 8,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.0026753600000000003,
+      0.0026679689999999996
+    ]
+  },
+  {
+    "case": "assign-table",
+    "width": 0,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.000840294,
+      0.000849114
+    ]
+  },
+  {
+    "case": "assign-table",
+    "width": 0,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.000247961,
+      0.00026312899999999997
+    ]
+  },
+  {
+    "case": "assign-table",
+    "width": 0,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.000276109,
+      0.000278278
+    ]
+  },
+  {
+    "case": "update-string",
+    "width": 0,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.000119144,
+      0.000101269
+    ]
+  },
+  {
+    "case": "update-string",
+    "width": 0,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.000269458,
+      0.00027323000000000007
+    ]
+  },
+  {
+    "case": "update-string",
+    "width": 0,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.00029875999999999997,
+      0.00030285200000000005
+    ]
+  },
+  {
+    "case": "make-table",
+    "width": 0,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.000293104,
+      0.000318058
+    ]
+  },
+  {
+    "case": "make-table",
+    "width": 0,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.000256792,
+      0.000261981
+    ]
+  },
+  {
+    "case": "make-table",
+    "width": 0,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.000278102,
+      0.000279013
+    ]
+  },
+  {
+    "case": "const-int",
+    "width": 8,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.000194721,
+      0.000158615
+    ]
+  },
+  {
+    "case": "const-int",
+    "width": 8,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.00022929,
+      0.00023315399999999996
+    ]
+  },
+  {
+    "case": "const-int",
+    "width": 8,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.000250774,
+      0.00026089700000000006
+    ]
+  },
+  {
+    "case": "do-int",
+    "width": 0,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      8.5649e-05,
+      8.3359e-05
+    ]
+  },
+  {
+    "case": "do-int",
+    "width": 0,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.000184712,
+      0.000189769
+    ]
+  },
+  {
+    "case": "do-int",
+    "width": 0,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.000212304,
+      0.00022117100000000001
+    ]
+  },
+  {
+    "case": "const-string",
+    "width": 256,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.00133197,
+      0.00131716
+    ]
+  },
+  {
+    "case": "const-string",
+    "width": 256,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.001856592,
+      0.001849282
+    ]
+  },
+  {
+    "case": "const-string",
+    "width": 256,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.001914978,
+      0.0018791309999999998
+    ]
+  },
+  {
+    "case": "make-seq",
+    "width": 256,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.0153676,
+      0.0153111
+    ]
+  },
+  {
+    "case": "make-seq",
+    "width": 256,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.045889272,
+      0.045932708
+    ]
+  },
+  {
+    "case": "make-seq",
+    "width": 256,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.045609368000000004,
+      0.045735713000000004
+    ]
+  },
+  {
+    "case": "add-float4",
+    "width": 256,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.00375289,
+      0.00381444
+    ]
+  },
+  {
+    "case": "add-float4",
+    "width": 256,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.003823597,
+      0.003832283
+    ]
+  },
+  {
+    "case": "add-float4",
+    "width": 256,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.003847898,
+      0.003908474
+    ]
+  },
+  {
+    "case": "add-int",
+    "width": 0,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      8.0408e-05,
+      8.4073e-05
+    ]
+  },
+  {
+    "case": "add-int",
+    "width": 0,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.000187666,
+      0.00018779200000000002
+    ]
+  },
+  {
+    "case": "add-int",
+    "width": 0,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.000212074,
+      0.000219588
+    ]
+  },
+  {
+    "case": "assign-seq",
+    "width": 0,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.000793161,
+      0.000780338
+    ]
+  },
+  {
+    "case": "assign-seq",
+    "width": 0,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.000250506,
+      0.000252254
+    ]
+  },
+  {
+    "case": "assign-seq",
+    "width": 0,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.000273534,
+      0.000278496
+    ]
+  },
+  {
+    "case": "take-seq",
+    "width": 8,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.000557819,
+      0.000498073
+    ]
+  },
+  {
+    "case": "take-seq",
+    "width": 8,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.000451047,
+      0.0004722400000000001
+    ]
+  },
+  {
+    "case": "take-seq",
+    "width": 8,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.000484095,
+      0.000471072
+    ]
+  },
+  {
+    "case": "take-table",
+    "width": 8,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.000312061,
+      0.00032048
+    ]
+  },
+  {
+    "case": "take-table",
+    "width": 8,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.001090692,
+      0.001086051
+    ]
+  },
+  {
+    "case": "take-table",
+    "width": 8,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.001106922,
+      0.0011472810000000002
+    ]
+  },
+  {
+    "case": "const-table",
+    "width": 256,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.00226808,
+      0.00222261
+    ]
+  },
+  {
+    "case": "const-table",
+    "width": 256,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.0018666730000000001,
+      0.0018507710000000002
+    ]
+  },
+  {
+    "case": "const-table",
+    "width": 256,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.001861356,
+      0.0019027859999999998
+    ]
+  },
+  {
+    "case": "assign-table",
+    "width": 64,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.0457482,
+      0.0452865
+    ]
+  },
+  {
+    "case": "assign-table",
+    "width": 64,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.00538969,
+      0.005367382
+    ]
+  },
+  {
+    "case": "assign-table",
+    "width": 64,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.0054138300000000006,
+      0.00546867
+    ]
+  },
+  {
+    "case": "add-float4",
+    "width": 0,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      8.4624e-05,
+      8.4172e-05
+    ]
+  },
+  {
+    "case": "add-float4",
+    "width": 0,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.000186384,
+      0.00019256
+    ]
+  },
+  {
+    "case": "add-float4",
+    "width": 0,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.000220776,
+      0.000222325
+    ]
+  },
+  {
+    "case": "assign-int",
+    "width": 8,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.000388569,
+      0.000323818
+    ]
+  },
+  {
+    "case": "assign-int",
+    "width": 8,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.000412244,
+      0.000431416
+    ]
+  },
+  {
+    "case": "assign-int",
+    "width": 8,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.00040793700000000003,
+      0.00041224599999999996
+    ]
+  },
+  {
+    "case": "get-seq",
+    "width": 8,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.000972768,
+      0.000886583
+    ]
+  },
+  {
+    "case": "get-seq",
+    "width": 8,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.000296649,
+      0.000296943
+    ]
+  },
+  {
+    "case": "get-seq",
+    "width": 8,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.000330782,
+      0.000330339
+    ]
+  },
+  {
+    "case": "update-int",
+    "width": 64,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.000877576,
+      0.000849835
+    ]
+  },
+  {
+    "case": "update-int",
+    "width": 64,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.000875302,
+      0.000860668
+    ]
+  },
+  {
+    "case": "update-int",
+    "width": 64,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.000894331,
+      0.00091011
+    ]
+  },
+  {
+    "case": "get-int",
+    "width": 256,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.00133173,
+      0.00129849
+    ]
+  },
+  {
+    "case": "get-int",
+    "width": 256,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.002551676,
+      0.0026165489999999997
+    ]
+  },
+  {
+    "case": "get-int",
+    "width": 256,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.00257532,
+      0.0026155919999999995
+    ]
+  },
+  {
+    "case": "assign-seq",
+    "width": 8,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.00656424,
+      0.00658745
+    ]
+  },
+  {
+    "case": "assign-seq",
+    "width": 8,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.000885698,
+      0.0008841570000000001
+    ]
+  },
+  {
+    "case": "assign-seq",
+    "width": 8,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.0009529359999999999,
+      0.0009314100000000001
+    ]
+  },
+  {
+    "case": "take-table",
+    "width": 256,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.00938341,
+      0.00901286
+    ]
+  },
+  {
+    "case": "take-table",
+    "width": 256,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.035182367,
+      0.035012248
+    ]
+  },
+  {
+    "case": "take-table",
+    "width": 256,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.036499008,
+      0.036427937
+    ]
+  },
+  {
+    "case": "assign-string",
+    "width": 64,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.00316431,
+      0.00320542
+    ]
+  },
+  {
+    "case": "assign-string",
+    "width": 64,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.006746335,
+      0.006959846
+    ]
+  },
+  {
+    "case": "assign-string",
+    "width": 64,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.006771874,
+      0.006895013
+    ]
+  },
+  {
+    "case": "const-int",
+    "width": 256,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.00124486,
+      0.00128749
+    ]
+  },
+  {
+    "case": "const-int",
+    "width": 256,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.001806052,
+      0.0018387640000000001
+    ]
+  },
+  {
+    "case": "const-int",
+    "width": 256,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.00189574,
+      0.0018921939999999998
+    ]
+  },
+  {
+    "case": "update-seq",
+    "width": 8,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.00174066,
+      0.00172934
+    ]
+  },
+  {
+    "case": "update-seq",
+    "width": 8,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.000374474,
+      0.0003948
+    ]
+  },
+  {
+    "case": "update-seq",
+    "width": 8,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.00039949399999999997,
+      0.00039531500000000003
+    ]
+  },
+  {
+    "case": "make-table",
+    "width": 8,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.000590487,
+      0.000575719
+    ]
+  },
+  {
+    "case": "make-table",
+    "width": 8,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.003075004,
+      0.003063695
+    ]
+  },
+  {
+    "case": "make-table",
+    "width": 8,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.003126532,
+      0.0032287889999999997
+    ]
+  },
+  {
+    "case": "add-int",
+    "width": 64,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.000725071,
+      0.000650302
+    ]
+  },
+  {
+    "case": "add-int",
+    "width": 64,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.000701626,
+      0.0006983709999999999
+    ]
+  },
+  {
+    "case": "add-int",
+    "width": 64,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.0007631749999999999,
+      0.00074034
+    ]
+  },
+  {
+    "case": "assign-table",
+    "width": 256,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.224615,
+      0.224771
+    ]
+  },
+  {
+    "case": "assign-table",
+    "width": 256,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.020882847,
+      0.020800954999999996
+    ]
+  },
+  {
+    "case": "assign-table",
+    "width": 256,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.020969652,
+      0.020957935
+    ]
+  },
+  {
+    "case": "update-table",
+    "width": 0,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.000876537,
+      0.000836266
+    ]
+  },
+  {
+    "case": "update-table",
+    "width": 0,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.000252433,
+      0.00025202
+    ]
+  },
+  {
+    "case": "update-table",
+    "width": 0,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.000284722,
+      0.000307498
+    ]
+  },
+  {
+    "case": "const-int",
+    "width": 0,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      8.4253e-05,
+      8.278e-05
+    ]
+  },
+  {
+    "case": "const-int",
+    "width": 0,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.000182057,
+      0.000186367
+    ]
+  },
+  {
+    "case": "const-int",
+    "width": 0,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.000212444,
+      0.00021748
+    ]
+  },
+  {
+    "case": "make-table",
+    "width": 64,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.00361673,
+      0.00368368
+    ]
+  },
+  {
+    "case": "make-table",
+    "width": 64,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.013225259,
+      0.013206239
+    ]
+  },
+  {
+    "case": "make-table",
+    "width": 64,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.013347443,
+      0.013266292999999998
+    ]
+  },
+  {
+    "case": "push-shared-seq",
+    "width": 0,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.00150018,
+      0.00150871
+    ]
+  },
+  {
+    "case": "push-shared-seq",
+    "width": 0,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.000332415,
+      0.000330481
+    ]
+  },
+  {
+    "case": "push-shared-seq",
+    "width": 0,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.000371484,
+      0.00036760899999999997
+    ]
+  },
+  {
+    "case": "get-string",
+    "width": 8,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.000199147,
+      0.000163109
+    ]
+  },
+  {
+    "case": "get-string",
+    "width": 8,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.000324706,
+      0.00033001799999999996
+    ]
+  },
+  {
+    "case": "get-string",
+    "width": 8,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.0003505,
+      0.000352155
+    ]
+  },
+  {
+    "case": "assign-seq",
+    "width": 256,
+    "engine": "1x",
+    "iterations": 10000,
+    "seconds": [
+      0.17369,
+      0.175832
+    ]
+  },
+  {
+    "case": "assign-seq",
+    "width": 256,
+    "engine": "2-stackless",
+    "iterations": 10000,
+    "seconds": [
+      0.021028111,
+      0.020981584
+    ]
+  },
+  {
+    "case": "assign-seq",
+    "width": 256,
+    "engine": "2-stackful",
+    "iterations": 10000,
+    "seconds": [
+      0.020909684999999997,
+      0.021138881
+    ]
+  }
+]

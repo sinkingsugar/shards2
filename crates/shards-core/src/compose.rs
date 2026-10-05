@@ -417,6 +417,7 @@ impl<B: Backend> ComposeCtx<'_, B> {
     }
     self.input = saved;
     let output = if diverged { Type::never() } else { ty };
+    crate::inline::lower_scratch_releases(&mut code);
     Ok(CompiledFlow {
       nodes,
       code,

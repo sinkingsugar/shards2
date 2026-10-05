@@ -1,0 +1,96 @@
+; dispatch
+
+../shards/build/Release/shards:     file format elf64-x86-64
+
+
+Disassembly of section .text:
+
+0000000001b6aae8 <_ZN6shards14activateShardsEPP5ShardP9SHContextRK5SHVarRS5_+0x78>:
+ 1b6aae8:	mov    ecx,DWORD PTR [rbx]
+ 1b6aaea:	cmp    ecx,0x2b
+ 1b6aaed:	ja     1b6b654 <_ZN6shards14activateShardsEPP5ShardP9SHContextRK5SHVarRS5_+0xbe4>
+ 1b6aaf3:	mov    esi,ecx
+ 1b6aaf5:	movsxd rdi,DWORD PTR [r14+rsi*4]
+ 1b6aaf9:	add    rdi,r14
+ 1b6aafc:	jmp    rdi
+
+; get-and-loop-tail
+
+../shards/build/Release/shards:     file format elf64-x86-64
+
+
+Disassembly of section .text:
+
+0000000001b6ab3e <_ZN6shards14activateShardsEPP5ShardP9SHContextRK5SHVarRS5_+0xce>:
+ 1b6ab3e:	mov    r12,QWORD PTR [rbx+0xd8]
+ 1b6ab45:	nop    DWORD PTR [rax]
+ 1b6ab48:	movzx  r10d,BYTE PTR [r15+0xb0]
+ 1b6ab50:	mov    r9,r12
+ 1b6ab53:	test   r10b,r10b
+ 1b6ab56:	jne    1b6abe8 <_ZN6shards14activateShardsEPP5ShardP9SHContextRK5SHVarRS5_+0x178>
+ 1b6ab5c:	mov    rbx,QWORD PTR [r13+0x8]
+ 1b6ab60:	add    r13,0x8
+ 1b6ab64:	test   rbx,rbx
+ 1b6ab67:	jne    1b6aae8 <_ZN6shards14activateShardsEPP5ShardP9SHContextRK5SHVarRS5_+0x78>
+
+; const-and-flow-check
+
+../shards/build/Release/shards:     file format elf64-x86-64
+
+
+Disassembly of section .text:
+
+0000000001b6abc9 <_ZN6shards14activateShardsEPP5ShardP9SHContextRK5SHVarRS5_+0x159>:
+ 1b6abc9:	movzx  r10d,BYTE PTR [r15+0xb0]
+ 1b6abd1:	lea    r12,[rbx+0xd0]
+ 1b6abd8:	mov    r9,r12
+ 1b6abdb:	test   r10b,r10b
+ 1b6abde:	je     1b6ab5c <_ZN6shards14activateShardsEPP5ShardP9SHContextRK5SHVarRS5_+0xec>
+
+; float4-add
+
+../shards/build/Release/shards:     file format elf64-x86-64
+
+
+Disassembly of section .text:
+
+0000000001b6b100 <_ZN6shards14activateShardsEPP5ShardP9SHContextRK5SHVarRS5_+0x690>:
+ 1b6b100:	mov    rax,QWORD PTR [rbx+0x110]
+ 1b6b107:	movzx  r10d,BYTE PTR [r15+0xb0]
+ 1b6b10f:	vmovaps xmm1,XMMWORD PTR [rax]
+ 1b6b113:	vaddps xmm0,xmm1,XMMWORD PTR [r12]
+ 1b6b119:	lea    r12,[rbx+0xd0]
+ 1b6b120:	vmovaps XMMWORD PTR [rbx+0xd0],xmm0
+ 1b6b128:	jmp    1b6ab50 <_ZN6shards14activateShardsEPP5ShardP9SHContextRK5SHVarRS5_+0xe0>
+
+; float-add
+
+../shards/build/Release/shards:     file format elf64-x86-64
+
+
+Disassembly of section .text:
+
+0000000001b6b130 <_ZN6shards14activateShardsEPP5ShardP9SHContextRK5SHVarRS5_+0x6c0>:
+ 1b6b130:	mov    rdx,QWORD PTR [rbx+0x110]
+ 1b6b137:	movzx  r10d,BYTE PTR [r15+0xb0]
+ 1b6b13f:	vmovapd xmm2,XMMWORD PTR [rdx]
+ 1b6b143:	vaddpd xmm5,xmm2,XMMWORD PTR [r12]
+ 1b6b149:	lea    r12,[rbx+0xd0]
+ 1b6b150:	vmovapd XMMWORD PTR [rbx+0xd0],xmm5
+ 1b6b158:	jmp    1b6ab50 <_ZN6shards14activateShardsEPP5ShardP9SHContextRK5SHVarRS5_+0xe0>
+
+; int-add
+
+../shards/build/Release/shards:     file format elf64-x86-64
+
+
+Disassembly of section .text:
+
+0000000001b6b190 <_ZN6shards14activateShardsEPP5ShardP9SHContextRK5SHVarRS5_+0x720>:
+ 1b6b190:	mov    rsi,QWORD PTR [rbx+0x110]
+ 1b6b197:	movzx  r10d,BYTE PTR [r15+0xb0]
+ 1b6b19f:	vmovdqa xmm8,XMMWORD PTR [rsi]
+ 1b6b1a3:	vpaddq xmm9,xmm8,XMMWORD PTR [r12]
+ 1b6b1a9:	lea    r12,[rbx+0xd0]
+ 1b6b1b0:	vmovdqa XMMWORD PTR [rbx+0xd0],xmm9
+ 1b6b1b8:	jmp    1b6ab50 <_ZN6shards14activateShardsEPP5ShardP9SHContextRK5SHVarRS5_+0xe0>

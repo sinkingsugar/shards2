@@ -111,7 +111,7 @@ macro_rules! acceptance_tests {
           ShardDef::new(&data::SEQ_MAKE, vec![var("acc")])
         };
         mesh.add_wire(wire("main", false, vec![
-          constructor, konst(Var::Int(1)),
+          konst(Var::None), constructor, konst(Var::Int(1)),
           ShardDef::new(&data::PUSH, vec![var("acc"), val(Var::Bool(false))]),
           pause(),
         ]));

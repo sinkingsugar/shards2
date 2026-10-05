@@ -11,6 +11,12 @@ Arithmetic remains near parity; 19/25 long-chain cases meet ≤2× (Get(Int) now
 2.05×). The tables below describe the explicitly identified earlier snapshot;
 the scheduler/HTTP refresh has not been repeated for the later fix.
 
+**Compose specialization and assembly:** the [later compose-time cleanup pass](vm-execution-benchmarks.md#compose-time-scratch-release-selection)
+removes redundant scratch checks. Its full VM rerun and the
+[release assembly comparison](vm-assembly-comparison.md) identify remaining
+opcode decoding and frame binding costs. The historical tables below retain
+their original snapshot.
+
 ## Results
 
 The [complete VM suite](vm-execution-benchmarks.md#constructor-retention-review-follow-up)

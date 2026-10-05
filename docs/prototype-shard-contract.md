@@ -136,7 +136,13 @@ The builtin executor consumes its incoming value into owned scratch and
 borrows its accumulator from constants, frame slots or call-local storage.
 Obsolete reference-counted scratch is released when the accumulator moves
 elsewhere; it must not keep captured collections shared through a later frame
-mutation. Numeric scratch needs no resource cleanup. Its raw pointers cannot escape the
+mutation. Numeric scratch needs no resource cleanup. A compose-time pass
+tracks whether scratch may own a value and selects release/non-release variants
+of Const/Get/Set/Inc. Generic/constructor boundaries reset this analysis;
+Take/Push and generic vector arithmetic can introduce owned scratch again.
+Once released, later reanchoring instructions have no scratch-cleanup check
+until another operation may create an owner. The pass preserves node indices
+for lifecycle and diagnostics; both schedulers enter only at segment boundaries. Its raw pointers cannot escape the
 call: frames are exclusively borrowed, cannot resize, and no callbacks or
 suspension occur inside a segment. Every write consumes its input before
 replacement and reanchors the accumulator. Segment exit produces an owned

@@ -1,0 +1,165 @@
+{
+  "note": "Actual release binaries used by compose-cleanup full suite. 2.0 source fingerprint in runtime-source.sha256. 1.x handlers mapped using generated InlineShard enum and relative jump table at 0x936da8c in activateShards. Static disassembly, not hardware-counter attribution.",
+  "binaries_sha256": {
+    "../shards/build/Release/shards": "da6c08e9c4b457565d0ff56ddf782baa723f8a5b20f265b6bb9d035ed07b5bca",
+    "target/release/shards2": "36f5019c8ad5d5b0be21f0cb6897da26c4b655a6cddfe766c6c1e9ec28c53910"
+  },
+  "commands": [
+    {
+      "engine": "1x",
+      "case": "dispatch",
+      "command": [
+        "objdump",
+        "-d",
+        "-Mintel",
+        "--no-show-raw-insn",
+        "--start-address=0x1b6aae8",
+        "--stop-address=0x1b6aafe",
+        "../shards/build/Release/shards"
+      ]
+    },
+    {
+      "engine": "1x",
+      "case": "get-and-loop-tail",
+      "command": [
+        "objdump",
+        "-d",
+        "-Mintel",
+        "--no-show-raw-insn",
+        "--start-address=0x1b6ab3e",
+        "--stop-address=0x1b6ab6d",
+        "../shards/build/Release/shards"
+      ]
+    },
+    {
+      "engine": "1x",
+      "case": "const-and-flow-check",
+      "command": [
+        "objdump",
+        "-d",
+        "-Mintel",
+        "--no-show-raw-insn",
+        "--start-address=0x1b6abc9",
+        "--stop-address=0x1b6abe4",
+        "../shards/build/Release/shards"
+      ]
+    },
+    {
+      "engine": "1x",
+      "case": "float4-add",
+      "command": [
+        "objdump",
+        "-d",
+        "-Mintel",
+        "--no-show-raw-insn",
+        "--start-address=0x1b6b100",
+        "--stop-address=0x1b6b12d",
+        "../shards/build/Release/shards"
+      ]
+    },
+    {
+      "engine": "1x",
+      "case": "float-add",
+      "command": [
+        "objdump",
+        "-d",
+        "-Mintel",
+        "--no-show-raw-insn",
+        "--start-address=0x1b6b130",
+        "--stop-address=0x1b6b15d",
+        "../shards/build/Release/shards"
+      ]
+    },
+    {
+      "engine": "1x",
+      "case": "int-add",
+      "command": [
+        "objdump",
+        "-d",
+        "-Mintel",
+        "--no-show-raw-insn",
+        "--start-address=0x1b6b190",
+        "--stop-address=0x1b6b1bd",
+        "../shards/build/Release/shards"
+      ]
+    },
+    {
+      "engine": "2",
+      "case": "dispatch-and-loop-tail",
+      "command": [
+        "objdump",
+        "-d",
+        "-Mintel",
+        "--no-show-raw-insn",
+        "--start-address=0x24a2d3",
+        "--stop-address=0x24a327",
+        "target/release/shards2"
+      ]
+    },
+    {
+      "engine": "2",
+      "case": "const-entry",
+      "command": [
+        "objdump",
+        "-d",
+        "-Mintel",
+        "--no-show-raw-insn",
+        "--start-address=0x24a327",
+        "--stop-address=0x24a330",
+        "target/release/shards2"
+      ]
+    },
+    {
+      "engine": "2",
+      "case": "const-common-tail",
+      "command": [
+        "objdump",
+        "-d",
+        "-Mintel",
+        "--no-show-raw-insn",
+        "--start-address=0x24a68e",
+        "--stop-address=0x24a696",
+        "target/release/shards2"
+      ]
+    },
+    {
+      "engine": "2",
+      "case": "get",
+      "command": [
+        "objdump",
+        "-d",
+        "-Mintel",
+        "--no-show-raw-insn",
+        "--start-address=0x24a4ad",
+        "--stop-address=0x24a4f1",
+        "target/release/shards2"
+      ]
+    },
+    {
+      "engine": "2",
+      "case": "int-add",
+      "command": [
+        "objdump",
+        "-d",
+        "-Mintel",
+        "--no-show-raw-insn",
+        "--start-address=0x24a477",
+        "--stop-address=0x24a4ad",
+        "target/release/shards2"
+      ]
+    },
+    {
+      "engine": "2",
+      "case": "float4-add",
+      "command": [
+        "objdump",
+        "-d",
+        "-Mintel",
+        "--no-show-raw-insn",
+        "--start-address=0x24a330",
+        "--stop-address=0x24a368",
+        "target/release/shards2"
+      ]
+    }
+  ]
+}

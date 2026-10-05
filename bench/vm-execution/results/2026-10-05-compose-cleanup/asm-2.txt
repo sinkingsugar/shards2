@@ -1,0 +1,107 @@
+; dispatch-and-loop-tail
+
+target/release/shards2:     file format elf64-x86-64
+
+
+Disassembly of section .text:
+
+000000000024a2d3 <_RNvNtCs1KbQ4uBxSVG_11shards_core6inline3run+0x83>:
+  24a2d3:	inc    rbp
+  24a2d6:	cmp    rbp,QWORD PTR [rsp+0x118]
+  24a2de:	je     24b851 <_RNvNtCs1KbQ4uBxSVG_11shards_core6inline3run+0x1601>
+  24a2e4:	mov    rax,rbp
+  24a2e7:	shl    rax,0x5
+  24a2eb:	mov    rcx,QWORD PTR [rsp+0x170]
+  24a2f3:	lea    r12,[rcx+rax*1]
+  24a2f7:	mov    rax,QWORD PTR [rcx+rax*1]
+  24a2fb:	mov    rcx,rax
+  24a2fe:	movabs rdx,0x8000000000000000
+  24a308:	xor    rcx,rdx
+  24a30b:	test   rax,rax
+  24a30e:	mov    eax,0xc
+  24a313:	cmovns rcx,rax
+  24a317:	lea    rdx,[rip+0xffffffffffe3ab16]        # 84e34 <anon.9d8f8f41a210695809c5344449bd49cb.214.llvm.3700951727717039824+0x1fe>
+  24a31e:	movsxd rax,DWORD PTR [rdx+rcx*4]
+  24a322:	add    rax,rdx
+  24a325:	jmp    rax
+
+; const-entry
+
+target/release/shards2:     file format elf64-x86-64
+
+
+Disassembly of section .text:
+
+000000000024a327 <_RNvNtCs1KbQ4uBxSVG_11shards_core6inline3run+0xd7>:
+  24a327:	add    r12,0x8
+  24a32b:	jmp    24a68e <_RNvNtCs1KbQ4uBxSVG_11shards_core6inline3run+0x43e>
+
+; const-common-tail
+
+target/release/shards2:     file format elf64-x86-64
+
+
+Disassembly of section .text:
+
+000000000024a68e <_RNvNtCs1KbQ4uBxSVG_11shards_core6inline3run+0x43e>:
+  24a68e:	mov    r14,r12
+  24a691:	jmp    24a2d3 <_RNvNtCs1KbQ4uBxSVG_11shards_core6inline3run+0x83>
+
+; get
+
+target/release/shards2:     file format elf64-x86-64
+
+
+Disassembly of section .text:
+
+000000000024a4ad <_RNvNtCs1KbQ4uBxSVG_11shards_core6inline3run+0x25d>:
+  24a4ad:	movzx  ecx,BYTE PTR [r12+0x8]
+  24a4b3:	mov    rax,QWORD PTR [r12+0x10]
+  24a4b8:	test   cl,cl
+  24a4ba:	mov    rdx,QWORD PTR [rsp+0x1b0]
+  24a4c2:	cmovne rdx,QWORD PTR [rsp+0x1c0]
+  24a4cb:	cmp    rax,rdx
+  24a4ce:	jae    24bcba <_RNvNtCs1KbQ4uBxSVG_11shards_core6inline3run+0x1a6a>
+  24a4d4:	test   cl,cl
+  24a4d6:	mov    rcx,QWORD PTR [rsp+0x58]
+  24a4db:	cmovne rcx,QWORD PTR [rsp+0x1b8]
+  24a4e4:	lea    rax,[rax+rax*2]
+  24a4e8:	lea    r14,[rcx+rax*8]
+  24a4ec:	jmp    24a2ce <_RNvNtCs1KbQ4uBxSVG_11shards_core6inline3run+0x7e>
+
+; int-add
+
+target/release/shards2:     file format elf64-x86-64
+
+
+Disassembly of section .text:
+
+000000000024a477 <_RNvNtCs1KbQ4uBxSVG_11shards_core6inline3run+0x227>:
+  24a477:	cmp    BYTE PTR [r14],0x2
+  24a47b:	jne    24bce4 <_RNvNtCs1KbQ4uBxSVG_11shards_core6inline3run+0x1a94>
+  24a481:	mov    rax,QWORD PTR [r14+0x8]
+  24a485:	add    rax,QWORD PTR [r12+0x8]
+  24a48a:	jo     24bcf0 <_RNvNtCs1KbQ4uBxSVG_11shards_core6inline3run+0x1aa0>
+  24a490:	mov    BYTE PTR [rsp+0xb0],0x2
+  24a498:	mov    QWORD PTR [rsp+0xb8],rax
+  24a4a0:	lea    r14,[rsp+0xb0]
+  24a4a8:	jmp    24a2d3 <_RNvNtCs1KbQ4uBxSVG_11shards_core6inline3run+0x83>
+
+; float4-add
+
+target/release/shards2:     file format elf64-x86-64
+
+
+Disassembly of section .text:
+
+000000000024a330 <_RNvNtCs1KbQ4uBxSVG_11shards_core6inline3run+0xe0>:
+  24a330:	add    r12,0x8
+  24a334:	cmp    BYTE PTR [r14],0x6
+  24a338:	jne    24b7b2 <_RNvNtCs1KbQ4uBxSVG_11shards_core6inline3run+0x1562>
+  24a33e:	mov    BYTE PTR [rsp+0xb0],0x6
+  24a346:	movups xmm0,XMMWORD PTR [r14+0x4]
+  24a34b:	movups xmm1,XMMWORD PTR [r12]
+  24a350:	addps  xmm1,xmm0
+  24a353:	movups XMMWORD PTR [rsp+0xb4],xmm1
+  24a35b:	lea    r14,[rsp+0xb0]
+  24a363:	jmp    24a2d3 <_RNvNtCs1KbQ4uBxSVG_11shards_core6inline3run+0x83>

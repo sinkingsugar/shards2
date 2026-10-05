@@ -27,6 +27,10 @@ pub(crate) enum Op {
   Get(Binding),
   Set(Binding),
   Inc(Binding),
+  ConstDrop(Var),
+  GetDrop(Binding),
+  SetDrop(Binding),
+  IncDrop(Binding),
   Take(Operand),
   Push(Binding),
   SeqMake(Vec<Operand>),
@@ -55,6 +59,44 @@ impl Instruction {
       op: op.map_or(Op::Fallback, |v| v.0),
       #[cfg(any(debug_assertions, feature = "output-checks"))]
       check: (_name, _output),
+    }
+  }
+}
+
+/// Specialize cleanup at compose time. A segment enters with owned input;
+/// Take/Push/generic vector arithmetic may introduce owned scratch again.
+/// Once released, subsequent reanchoring instructions need no cleanup branch.
+/// Keep the one-instruction-per-node mapping for lifecycle and diagnostics.
+pub(crate) fn lower_scratch_releases(code: &mut [Instruction]) {
+  let mut may_own = true;
+  for instruction in code {
+    match &mut instruction.op {
+      Op::Const(_) | Op::Get(_) | Op::Set(_) | Op::Inc(_) if may_own => {
+        instruction.op = match std::mem::replace(&mut instruction.op, Op::Fallback) {
+          Op::Const(v) => Op::ConstDrop(v),
+          Op::Get(b) => Op::GetDrop(b),
+          Op::Set(b) => Op::SetDrop(b),
+          Op::Inc(b) => Op::IncDrop(b),
+          _ => unreachable!(),
+        };
+        may_own = false;
+      }
+      Op::ConstDrop(_) | Op::GetDrop(_) | Op::SetDrop(_) | Op::IncDrop(_) => may_own = false,
+      Op::Fallback
+      | Op::SeqMake(_)
+      | Op::TableMake(..)
+      | Op::Take(_)
+      | Op::Push(_)
+      | Op::AddFloat4Const(_)
+      | Op::AddFloat4Bound(_) => may_own = true,
+      Op::Const(_)
+      | Op::Get(_)
+      | Op::Set(_)
+      | Op::Inc(_)
+      | Op::AddIntConst(_)
+      | Op::AddIntBound(_)
+      | Op::AddFloatConst(_)
+      | Op::AddFloatBound(_) => {}
     }
   }
 }
@@ -144,6 +186,8 @@ impl Frames {
 
 /// Runs until a fallback node or the end, returning an owned snapshot. There
 /// are no callbacks, suspension points, frame resizes or escaping references.
+/// Code must be lowered and entry must be at a segment boundary (flow start or
+/// immediately after a fallback/constructor), as enforced by both flow loops.
 pub(crate) fn run(
   code: &[Instruction],
   mut index: usize,
@@ -158,8 +202,8 @@ pub(crate) fn run(
     mesh_len: mesh.len(),
   };
   // Own the incoming output so replacing it releases captured values before
-  // later frame mutations. Const/Get/Set/Inc release it when reanchoring to
-  // external storage; Take/Push/generic arithmetic replace it with their output.
+  // later frame mutations. Compose-selected Drop variants release it when
+  // reanchoring to external storage; Take/Push/generic arithmetic replace it with their output.
   // Typed numeric arithmetic can leave only a resource-free numeric value in
   // scratch: its input must be numeric, and no obsolete owning value survives
   // the other reanchoring operations. This avoids a cleanup branch per Add.
@@ -180,11 +224,9 @@ pub(crate) fn run(
         Op::Fallback | Op::SeqMake(_) | Op::TableMake(..) => break,
         Op::Const(v) => {
           value = v;
-          clear_scratch(&mut scratch);
         }
         Op::Get(b) => {
           value = frames.slot(*b);
-          clear_scratch(&mut scratch);
         }
         Op::Set(b) => {
           let target = frames.slot(*b);
@@ -193,7 +235,6 @@ pub(crate) fn run(
             *target = copy;
           }
           value = target;
-          clear_scratch(&mut scratch);
         }
         Op::Inc(b) => {
           let target = frames.slot(*b);
@@ -204,7 +245,34 @@ pub(crate) fn run(
             .checked_add(1)
             .ok_or_else(|| Error::Activation("Inc: integer overflow".into()))?;
           value = target;
-          clear_scratch(&mut scratch);
+        }
+        Op::ConstDrop(v) => {
+          value = v;
+          scratch = Var::None;
+        }
+        Op::GetDrop(b) => {
+          value = frames.slot(*b);
+          scratch = Var::None;
+        }
+        Op::SetDrop(b) => {
+          let target = frames.slot(*b);
+          if !std::ptr::eq(value, target) {
+            let copy = (*value).clone();
+            *target = copy;
+          }
+          value = target;
+          scratch = Var::None;
+        }
+        Op::IncDrop(b) => {
+          let target = frames.slot(*b);
+          let Var::Int(n) = &mut *target else {
+            return Err(Error::Activation("Inc: variable is not an Int".into()));
+          };
+          *n = n
+            .checked_add(1)
+            .ok_or_else(|| Error::Activation("Inc: integer overflow".into()))?;
+          value = target;
+          scratch = Var::None;
         }
         Op::Take(key) => {
           let key = match key {
@@ -299,15 +367,6 @@ pub(crate) fn run(
     unsafe { (*value).clone() }
   };
   Ok((index, output))
-}
-
-// Most Const/Get chains have no owned scratch after their first operation.
-// Avoid repeatedly writing the empty tag in those hot chains.
-#[inline(always)]
-fn clear_scratch(scratch: &mut Var) {
-  if !matches!(scratch, Var::None) {
-    *scratch = Var::None;
-  }
 }
 
 #[cold]
@@ -406,10 +465,12 @@ mod tests {
   use super::*;
 
   fn instructions(ops: impl IntoIterator<Item = Op>) -> Vec<Instruction> {
-    ops
+    let mut code: Vec<_> = ops
       .into_iter()
       .map(|op| Instruction::new(Some(InlineOp(op)), "test", Type::any()))
-      .collect()
+      .collect();
+    lower_scratch_releases(&mut code);
+    code
   }
 
   #[test]
@@ -468,6 +529,34 @@ mod tests {
         assert_eq!(&**items, &[Var::Int(7), Var::Int(1)]);
       }
     }
+  }
+
+  #[test]
+  fn owned_input_is_released_after_a_generic_boundary() {
+    use std::sync::Arc;
+    let mut locals = vec![Var::Seq(Arc::new(vec![Var::Int(7)]))];
+    let Var::Seq(items) = &locals[0] else {
+      unreachable!()
+    };
+    let allocation = Arc::as_ptr(items);
+    let code = instructions([
+      Op::Const(Var::None),
+      Op::Fallback,
+      Op::Const(Var::Int(1)),
+      Op::Push(Binding::Local(0)),
+    ]);
+    let (next, _) = run(&code, 0, Var::None, &mut locals, &mut []).unwrap();
+    assert_eq!(next, 1);
+    // The fallback can return a fresh owner even though the preceding segment
+    // had already cleared scratch. Its successor must release that new owner.
+    let input = Var::Seq(Arc::new(vec![locals[0].clone()]));
+    let (_, output) = run(&code, next + 1, input, &mut locals, &mut []).unwrap();
+    assert_eq!(output, Var::Int(1));
+    let Var::Seq(items) = &locals[0] else {
+      unreachable!()
+    };
+    assert_eq!(Arc::as_ptr(items), allocation);
+    assert_eq!(&**items, &[Var::Int(7), Var::Int(1)]);
   }
 
   #[test]

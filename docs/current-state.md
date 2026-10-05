@@ -30,6 +30,10 @@ Sources: [shard contract](prototype-shard-contract.md), [core design](shards-2-c
   A subsequent review found segment inputs could also retain captured values
   across later writes. Builtin segments now consume their input and release
   obsolete owned scratch as soon as the accumulator moves elsewhere.
+  Cleanup selection now happens at compose: separate release/non-release
+  opcodes remove redundant checks from Const/Get/Set/Inc chains. Ownership
+  analysis resets at generic/constructor boundaries and conservatively tracks
+  operations that can recreate owned scratch.
   Constructors now consume uniquely owned input buffers and reuse them only
   across consecutive constructor instructions, without retaining outputs in
   shard state. Generic host
@@ -145,6 +149,7 @@ Table storage and runtime sets were discussed; they are open decisions in [value
 Deliberate differences a ported script can hit:
 - **Syntax:** `;` comments and `null` are rejected. `And`/`Or` are rejected, with the `All`/`Any` rewrite given. `Sub` is `Math.Subtract`; the run-a-flow shard is `SubFlow` (1.x `_SubFlow`).
 - **Numbers:** Int and Float mix in arithmetic and comparisons. Int division truncates. Printed floats keep every digit (`6416.2715`); 1.x rounded to six significant digits (`6416.27`), so logs differ when diffed.
+- **Integer Add overflow:** 2.0 raises an activation error; the inspected 1.x release inline Int Add uses packed wrapping addition. This semantic difference is retained in the [assembly comparison](vm-assembly-comparison.md).
 - **Tables:** keys are strings, and iteration is in sorted key order.
 - **`Push` with `Clear`** starts the sequence over on the declaring `Push`'s first run in each loop iteration, so later pushes in the same iteration grow it. In 1.x the declaring `Push` clears on each of its runs, so when it is inside a loop body only the pushes after its last run remain; other `Push`es to the same variable append in both.
 - **`Match`** with no matching case passes the input through; 1.x raises an error.

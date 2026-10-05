@@ -18,8 +18,20 @@ fn main() {
   assert_eq!(report.outcomes[0].1, Some(Outcome::Completed(Var::Int(42))));
   assert!(report.spawned_failures.is_empty());
   assert!(report.ticks >= 2, "Pause must suspend and resume");
+  // Low-water marks since boot: parse, compose and run all happened above.
+  // Stack depth follows the code path, so emulator runs measure it too.
+  // SAFETY: plain FreeRTOS/ESP-IDF queries; a null handle is this task.
+  let (stack_free, heap_free) = unsafe {
+    (
+      esp_idf_sys::uxTaskGetStackHighWaterMark(std::ptr::null_mut()),
+      esp_idf_sys::esp_get_minimum_free_heap_size(),
+    )
+  };
   println!(
-    "Shards ESP32 smoke test passed: 42 ({} ticks)",
-    report.ticks
+    "Shards ESP32 smoke test passed: 42 ({} ticks); main stack min free {} of {} B, heap min free {} B",
+    report.ticks,
+    stack_free,
+    esp_idf_sys::CONFIG_ESP_MAIN_TASK_STACK_SIZE,
+    heap_free
   );
 }

@@ -18,13 +18,13 @@ pub use crate::instance::{
   CleanupCtx, Frames, InstanceCtx, InstanceId, InstanceMemory, LeafCtx, Outcome, WakeMode,
 };
 
-#[cfg(not(any(target_family = "wasm", target_os = "espidf")))]
+#[cfg(stackful)]
 mod mesh;
-#[cfg(not(any(target_family = "wasm", target_os = "espidf")))]
+#[cfg(stackful)]
 pub use mesh::{DEFAULT_STACK_SIZE, Mesh};
 
 // Only the stackful mesh, which wasm and ESP-IDF builds lack, reads every field.
-#[cfg_attr(any(target_family = "wasm", target_os = "espidf"), allow(dead_code))]
+#[cfg_attr(not(stackful), allow(dead_code))]
 pub(crate) struct MeshShared {
   pub(crate) inline_calls: crate::reload::InlineRegistry<Stackful>,
   pub(crate) layout: FrameLayout,

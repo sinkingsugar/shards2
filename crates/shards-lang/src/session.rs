@@ -23,7 +23,7 @@ impl SessionHost for shards_core::Mesh {
   }
 }
 
-#[cfg(not(any(target_family = "wasm", target_os = "espidf")))]
+#[cfg(stackful)]
 impl SessionHost for shards_core::StackfulMesh {
   fn cancel_all(&mut self) {
     self.cancel_all();
@@ -246,7 +246,7 @@ macro_rules! reload_host {
   };
 }
 reload_host!(shards_core::Mesh);
-#[cfg(not(any(target_family = "wasm", target_os = "espidf")))]
+#[cfg(stackful)]
 reload_host!(shards_core::StackfulMesh);
 
 impl<H: ReloadHost> Session<H> {

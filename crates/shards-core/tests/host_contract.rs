@@ -197,7 +197,7 @@ macro_rules! host_contract_tests {
   };
 }
 
-#[cfg(not(target_family = "wasm"))]
+#[cfg(stackful)]
 mod stackful {
   host_contract_tests!(shards_core::StackfulMesh);
 }

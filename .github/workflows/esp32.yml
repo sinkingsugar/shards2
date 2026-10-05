@@ -1,9 +1,19 @@
 name: ESP32
 
+# The firmware builds only the core and frontend crates (and reads the root
+# manifest for workspace package fields).
 on:
   push:
     branches: [main]
+    paths: &firmware-paths
+      - Cargo.toml
+      - crates/shards-core/**
+      - crates/shards-lang/**
+      - examples/esp32/**
+      - .github/workflows/esp32.yml
+      - scripts/esp32-qemu.sh
   pull_request:
+    paths: *firmware-paths
   workflow_dispatch:
 
 permissions:
@@ -24,12 +34,15 @@ jobs:
           - chip: esp32
             target: xtensa-esp32-espidf
             toolchain: esp
+            qemu: xtensa
           - chip: esp32s3
             target: xtensa-esp32s3-espidf
             toolchain: esp
+            qemu: xtensa
           - chip: esp32c3
             target: riscv32imc-esp-espidf
             toolchain: nightly-2026-10-03
+            qemu: riscv32
     defaults:
       run:
         working-directory: examples/esp32
@@ -51,19 +64,29 @@ jobs:
       - name: Install RISC-V Rust
         if: matrix.chip == 'esp32c3'
         run: |
-          rustup toolchain install nightly-2026-10-03 --profile minimal --component rust-src
+          rustup toolchain install nightly-2026-10-03 --profile minimal --component rust-src,clippy
           cargo +nightly-2026-10-03 install ldproxy --version 0.3.4 --locked
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: examples/esp32 -> target
           key: esp32-${{ matrix.chip }}-${{ matrix.toolchain }}-idf5.5.5
       - name: Link release firmware
-        run: cargo +${{ matrix.toolchain }} build --locked --release --target ${{ matrix.target }}
+        run: >
+          cargo +${{ matrix.toolchain }} build --locked --release --target ${{ matrix.target }}
+          --message-format=json-render-diagnostics > "$RUNNER_TEMP/build.json"
+      # The example's code is chip-independent; lint it once.
+      - name: Lint firmware
+        if: matrix.chip == 'esp32c3'
+        run: cargo +${{ matrix.toolchain }} clippy --locked --release --target ${{ matrix.target }} -- -D warnings
       - name: Collect generated SDK configuration
         run: |
           mkdir -p artifact
           cp target/${{ matrix.target }}/release/shards-esp32 artifact/
-          find target/${{ matrix.target }}/release/build -path '*/out/sdkconfig' -exec cp {} artifact/sdkconfig \;
+          # Take the configuration from this build's esp-idf-sys output
+          # directory: the restored cache can hold stale ones.
+          out_dir=$(jq -r 'select(.reason == "build-script-executed" and (.package_id | test("esp-idf-sys[@#]"))) | .out_dir' "$RUNNER_TEMP/build.json")
+          test "$(printf '%s\n' "$out_dir" | wc -l)" = 1
+          cp "$out_dir/sdkconfig" artifact/sdkconfig
           test -s artifact/sdkconfig
           cp sdkconfig.defaults Cargo.lock artifact/
       - name: Upload firmware ELF and build configuration
@@ -72,3 +95,28 @@ jobs:
           name: shards-${{ matrix.chip }}
           if-no-files-found: error
           path: examples/esp32/artifact/
+      # Espressif's QEMU fork emulates the three chips; upstream QEMU does not.
+      # Pinned releases, checked against their published archives.
+      - name: Install Espressif QEMU and espflash
+        working-directory: ${{ runner.temp }}
+        env:
+          QEMU_TAG: esp-develop-9.2.2-20260417
+          QEMU_XTENSA_SHA256: 0eecb2a34a5586c0e59110f77b9343b7b336e82fdb0e1a30e1dc1bab8a547e35
+          QEMU_RISCV32_SHA256: 547f03e04701a92cbb699f7f7d015adc1f5b5ef93cbb94c0dd9b7107e2d84e77
+          ESPFLASH_TAG: v4.6.0
+          ESPFLASH_SHA256: d515ee13ae44ba913c31a2ca58dc5fd72d3362994ee1d7487a16b289dfbb6e4a
+        run: |
+          sudo apt-get install -y libsdl2-2.0-0 libslirp0 libpixman-1-0 libgcrypt20 libglib2.0-0t64
+          arch=${{ matrix.qemu }}
+          qemu=qemu-$arch-softmmu-${QEMU_TAG//-/_}-x86_64-linux-gnu.tar.xz
+          curl -fsSLO "https://github.com/espressif/qemu/releases/download/$QEMU_TAG/$qemu"
+          sha=QEMU_${arch^^}_SHA256
+          echo "${!sha}  $qemu" | sha256sum -c
+          tar xf "$qemu"
+          curl -fsSLO "https://github.com/esp-rs/espflash/releases/download/$ESPFLASH_TAG/espflash-x86_64-unknown-linux-musl.zip"
+          echo "$ESPFLASH_SHA256  espflash-x86_64-unknown-linux-musl.zip" | sha256sum -c
+          unzip -q espflash-x86_64-unknown-linux-musl.zip -d espflash
+          echo "$RUNNER_TEMP/qemu/bin" >> "$GITHUB_PATH"
+          echo "$RUNNER_TEMP/espflash" >> "$GITHUB_PATH"
+      - name: Run firmware in QEMU
+        run: ../../scripts/esp32-qemu.sh ${{ matrix.chip }} target/${{ matrix.target }}/release/shards-esp32

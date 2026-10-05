@@ -3,7 +3,8 @@
 The [firmware example](../examples/esp32/) embeds `shards-core` and
 `shards-lang` in an ESP-IDF application. It parses an included script, runs it
 on the stackless scheduler, checks its result and suspension, and prints
-`Shards ESP32 smoke test passed: 42` with the tick count to the serial console.
+`Shards ESP32 smoke test passed: 42` with the tick count and its stack and heap
+low-water marks to the serial console.
 
 | Chip | Rust target | Toolchain |
 |---|---|---|
@@ -12,7 +13,8 @@ on the stackless scheduler, checks its result and suspension, and prints
 | ESP32-C3 | `riscv32imc-esp-espidf` | `nightly-2026-10-03` |
 
 This uses Rust `std` on ESP-IDF, not bare-metal `no_std`. The coroutine mesh
-and its `corosensei` dependency are excluded on ESP-IDF, as on WASI. The
+and its `corosensei` dependency are excluded on ESP-IDF, as on WASI: the
+crates' `build.rs` sets `cfg(stackful)` only where it exists. The
 desktop backends remain unchanged. `shards-io`, the desktop CLI, networking,
 GPIO and other peripheral shards are outside this initial build target.
 
@@ -45,6 +47,10 @@ cd examples/esp32
 MCU=esp32c3 cargo +nightly-2026-10-03 build --locked --release --target riscv32imc-esp-espidf
 ```
 
+When `shards-core` or `shards-lang` gain or change a dependency, refresh the
+example's lockfile with `cargo update -w` in `examples/esp32`: the firmware
+builds with `--locked`, and root workspace builds do not touch that lockfile.
+
 Run Cargo **from `examples/esp32`** so it reads the local `.cargo/config.toml`.
 The example is a separate workspace with a committed lockfile; desktop
 commands at the repository root do not build or install ESP-IDF. Explicit
@@ -65,10 +71,37 @@ The CI artifacts contain an ELF, the lockfile and SDK configuration. Flash the
 ELF with `espflash`, which supplies the bootloader and partition table; it is
 not a raw flash image. Confirm the success message on the serial console.
 
+Without a board, run the firmware in Espressif's QEMU fork (upstream QEMU lacks
+the ESP machines). Put `espflash` and the `qemu-system-xtensa` (ESP32, ESP32-S3)
+or `qemu-system-riscv32` (ESP32-C3) binary from a
+[QEMU release](https://github.com/espressif/qemu/releases) on `PATH`; the Linux
+builds need the SDL2, slirp, pixman, libgcrypt and GLib shared libraries. Then,
+from the example directory:
+
+```sh
+../../scripts/esp32-qemu.sh esp32s3 target/xtensa-esp32s3-espidf/release/shards-esp32
+```
+
+The script merges bootloader, partition table and app into a flash image, boots
+it, prints the serial log and fails unless the success line appears before a
+crash or the timeout (60 s by default; a third argument changes it).
+
 The example reserves 64 KiB for the ESP-IDF main task stack because parsing
-and composing still use the native stack. This is a starting budget for the
-small script, not evidence that the desktop nesting limit fits on a device.
-Heap capacity and stack usage need measurement for each real workload.
+and composing still use the native stack. The success line reports the main
+task's stack and heap low-water marks. Stack depth follows the code path, so
+the emulator measures it as a board would; heap figures depend on the chip's
+RAM layout and enabled components. Measured in QEMU on 2026-10-05 (commit
+`5bdb7e2`, release build):
+
+| Chip | Main stack used | Heap min free |
+|---|---|---|
+| ESP32 | 5,552 of 65,536 B | 228,032 B |
+| ESP32-S3 | 5,768 of 65,536 B | 320,248 B |
+| ESP32-C3 | 5,140 of 65,536 B | 259,692 B |
+
+The smoke script is shallow, so 64 KiB is generous for it. It is not evidence
+that the desktop nesting limit fits on a device: deeper scripts use more stack
+while parsing and composing, and real workloads need their own measurement.
 Firmware uses `panic = "abort"`: panics terminate the application and do not
 provide desktop per-instance panic isolation. Shard documentation prose is
 disabled through both dependency paths; parameter contracts are retained.
@@ -76,11 +109,17 @@ disabled through both dependency paths; parameter contracts are retained.
 ## CI and validation limits
 
 [ESP32 CI](../.github/workflows/esp32.yml) links release firmware for all three
-chips on pull requests, pushes to `main`, and manual dispatch. Each matrix
-job uploads its ELF and configuration. A successful build checks compilation
-and linking, not execution, flashing or peripheral behavior. Physical-board
-execution is a separate manual check; no hardware result is claimed here.
-The existing native and WASI jobs continue to test runtime semantics.
+chips on pull requests and pushes to `main` that touch the core, the frontend,
+the example or the root manifest, and on manual dispatch. Each matrix job uploads
+its ELF and the SDK configuration of that build; the ESP32-C3 job also lints the
+example with clippy. Each job then boots its firmware in Espressif's QEMU
+(pinned release, checksum-verified) with `scripts/esp32-qemu.sh` and requires
+the success line, so ESP-IDF startup, the main-task stack budget and the
+smoke script's run are checked on all three chips. Emulation does not cover
+real timing, flashing, radio or peripheral behavior, and QEMU does not
+enforce every hardware limit; physical-board execution is still a separate
+manual check, and no hardware result is claimed here. The native and WASI
+jobs continue to test runtime semantics in depth.
 
 The build layout follows the official
 [ESP-IDF Rust template](https://github.com/esp-rs/esp-idf-template/tree/master/cargo)

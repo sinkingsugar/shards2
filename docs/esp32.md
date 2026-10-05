@@ -86,9 +86,21 @@ it, prints the serial log and fails unless the success line appears before a
 crash or the timeout (60 s by default; a third argument changes it).
 
 The example reserves 64 KiB for the ESP-IDF main task stack because parsing
-and composing still use the native stack. This is a starting budget for the
-small script, not evidence that the desktop nesting limit fits on a device.
-Heap capacity and stack usage need measurement for each real workload.
+and composing still use the native stack. The success line reports the main
+task's stack and heap low-water marks. Stack depth follows the code path, so
+the emulator measures it as a board would; heap figures depend on the chip's
+RAM layout and enabled components. Measured in QEMU on 2026-10-05 (commit
+`5bdb7e2`, release build):
+
+| Chip | Main stack used | Heap min free |
+|---|---|---|
+| ESP32 | 5,552 of 65,536 B | 228,032 B |
+| ESP32-S3 | 5,768 of 65,536 B | 320,248 B |
+| ESP32-C3 | 5,140 of 65,536 B | 259,692 B |
+
+The smoke script is shallow, so 64 KiB is generous for it. It is not evidence
+that the desktop nesting limit fits on a device: deeper scripts use more stack
+while parsing and composing, and real workloads need their own measurement.
 Firmware uses `panic = "abort"`: panics terminate the application and do not
 provide desktop per-instance panic isolation. Shard documentation prose is
 disabled through both dependency paths; parameter contracts are retained.

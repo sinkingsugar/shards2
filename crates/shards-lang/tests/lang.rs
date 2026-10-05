@@ -55,6 +55,115 @@ macro_rules! lang_tests {
       }
     }
 
+    fn reload(session: &mut shards_lang::Session<Mesh>, text: &str) -> Vec<shards_lang::Finished> {
+      session.reload(Source::new("reload.shs", text), &catalog(), &no_defines())
+        .unwrap_or_else(|(_, d)| panic!("reload failed: {d:?}"))
+    }
+
+    #[test]
+    fn reload_rejects_bad_edits_without_resetting_the_running_program() {
+      let mut session = shards_lang::Session::<Mesh>::new();
+      reload(&mut session, r#"@wire(tick { Once({0 >= n}) Inc(n) Log } Looped: true)
+@mesh(m) @schedule(m tick) @run(m FPS: 30)"#);
+      let (_, lines) = shards_core::log::capture(|| {
+        session.tick();
+        for bad in ["When({", "No.SuchShard", "1 | Take(0)",
+          "@wire(unused { missing }) 42"] {
+          let (_, d) = session.reload(Source::new("bad.shs", bad), &catalog(), &no_defines()).unwrap_err();
+          assert!(!d.is_empty());
+          assert_eq!(d[0].file.as_deref(), Some("bad.shs"));
+          assert!(d[0].line.is_some());
+          session.tick();
+        }
+      });
+      assert_eq!(lines, ["1", "2", "3", "4", "5"]);
+      assert_eq!(session.ticks(), 5);
+      assert_eq!(session.frame_interval(), Some(std::time::Duration::from_secs_f64(1.0 / 30.0)));
+      assert_eq!(reload(&mut session, "42").len(), 1);
+      assert_eq!(session.ticks(), 0);
+      let finished = session.tick();
+      assert!(matches!(finished[0].outcome, Outcome::Completed(Var::Int(42))));
+      assert!(session.tick().is_empty());
+      assert_eq!(session.ticks(), 1);
+    }
+
+    #[test]
+    fn reload_cancels_nested_flows_and_spawned_children_before_new_activation() {
+      use shards_core::shards::{take_probe_events, ProbeEventKind};
+      take_probe_events();
+      let mut session = shards_lang::Session::<Mesh>::new();
+      reload(&mut session, r#"@wire(child { Probe("child") Pause(1000.0) })
+@wire(inner { Probe("inner") Pause(1000.0) })
+@wire(main { Spawn(child) Do(inner) })
+@mesh(m) @schedule(m main) @run(m)"#);
+      session.tick();
+      session.tick();
+      take_probe_events();
+      let stopped = reload(&mut session, r#"Probe("new") 42"#);
+      assert_eq!(stopped.len(), 2);
+      assert!(stopped.iter().all(|f| matches!(f.outcome, Outcome::Cancelled)));
+      let events = take_probe_events();
+      assert_eq!(events.len(), 2);
+      assert!(events.iter().all(|e| e.kind == ProbeEventKind::Cleanup));
+      assert!(events.iter().any(|e| e.tag == "child"));
+      assert!(events.iter().any(|e| e.tag == "inner"));
+      session.tick();
+      let events = take_probe_events();
+      assert!(events.iter().all(|e| e.tag == "new"));
+      assert_eq!(events.iter().filter(|e| e.kind == ProbeEventKind::Cleanup).count(), 1);
+      assert!(session.stop().is_empty());
+      assert!(session.stop().is_empty());
+    }
+
+    #[test]
+    fn reload_recompiles_changed_callees_and_resets_once_and_locals() {
+      let mut session = shards_lang::Session::<Mesh>::new();
+      for value in [10, 20, 30] {
+        reload(&mut session, &format!(r#"@wire(value {{ {value} }})
+@wire(main {{ Once({{Do(value) >= n}}) Inc(n) Log }} Looped: true)
+@mesh(m) @schedule(m main) @run(m Iterations: 2)"#));
+        let (finished, lines) = shards_core::log::capture(|| {
+          assert!(session.tick().is_empty());
+          session.tick()
+        });
+        assert_eq!(lines, [(value + 1).to_string(), (value + 2).to_string()]);
+        assert!(matches!(finished[0].outcome, Outcome::Cancelled));
+        assert_eq!(session.running(), 0);
+        assert!(session.tick().is_empty());
+      }
+    }
+
+    #[test]
+    fn session_reports_spawned_failures_once() {
+      let mut session = shards_lang::Session::<Mesh>::new();
+      reload(&mut session, r#"@wire(child { 1 | Div(0) }) Spawn(child)"#);
+      let entries = session.tick();
+      assert_eq!(entries.len(), 1);
+      let children = session.tick();
+      assert_eq!(children.len(), 1);
+      assert_eq!(children[0].wire, "child");
+      assert!(matches!(children[0].outcome, Outcome::Failed(_)));
+      assert!(session.tick().is_empty());
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn reload_reports_cleanup_failure_and_still_cleans_other_instances() {
+      use shards_core::shards::{take_probe_events, ProbeEventKind};
+      take_probe_events();
+      let mut session = shards_lang::Session::<Mesh>::new();
+      reload(&mut session, r#"@wire(a { Probe("a" "panic-cleanup") Pause(1000.0) })
+@wire(b { Probe("b") Pause(1000.0) })
+@mesh(m) @schedule(m a) @schedule(m b) @run(m)"#);
+      session.tick();
+      take_probe_events();
+      let finished = reload(&mut session, "42");
+      assert!(matches!(finished[0].outcome, Outcome::Failed(_)));
+      assert!(matches!(finished[1].outcome, Outcome::Cancelled));
+      assert_eq!(take_probe_events().iter().filter(|e| e.kind == ProbeEventKind::Cleanup).count(), 2);
+      assert!(matches!(session.tick()[0].outcome, Outcome::Completed(Var::Int(42))));
+    }
+
     #[test]
     fn esp32_firmware_script_completes_after_suspending() {
       let report = run(

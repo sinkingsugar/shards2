@@ -73,3 +73,96 @@ The language is the 1.x syntax with the changes in [surface-syntax-review.md](su
 ## 4. Testing a host
 
 Test host shards through scripts, on both schedulers, as `embedding.rs` does: `Program::load`, then `run::<Mesh>()` and `run::<StackfulMesh>()`, with `log::capture` for output. Use `check` for the compose errors your shards report. Run blocking shards against fakes of the host where possible; keep live runs for what only the real host can show.
+
+## 5. Warm sessions and hot reload
+
+Use `shards_lang::Session` when the host already owns its event loop and
+long-lived services. Keep connections and other expensive session resources
+in the host, and have shards look them up during activation. Replacing a
+script then reuses those services; setup inside a script's `Once` runs again.
+
+```rust
+use std::collections::HashMap;
+use shards_core::{Catalog, Mesh};
+use shards_lang::{Session, Source};
+
+let catalog = Catalog::new(&[shards_core::shards::CATALOG]).unwrap();
+let defines = HashMap::new();
+let mut session = Session::<Mesh>::new();
+match session.reload(Source::new("live.shs", "40 | Add(2)"), &catalog, &defines) {
+  Ok(finished) => { /* consume old instances' cancellation/cleanup outcomes */ }
+  Err((source, diagnostics)) => { /* render diagnostics against rejected source */ }
+}
+// In the host loop, call once per frame; this does not sleep.
+for finished in session.tick() {
+  println!("{}: {:?}", finished.wire, finished.outcome);
+}
+// Submit new source through reload between ticks. On shutdown:
+let finished = session.stop();
+```
+
+`Session::<StackfulMesh>` has the same API on native platforms. `SessionHost`
+extends the frontend's `Host` trait with cancellation of all instances;
+custom implementations must obey its deferred-activation and cleanup contract.
+
+The replacement boundary is the **whole program**:
+
+- Parse, lower and compose all wires, including unreachable ones as `check`
+  does, on a candidate mesh. Rejected edits return located diagnostics and
+  leave the current execution and its tick count untouched.
+- Schedule the candidate entries without instantiating or activating shards.
+  After successful preparation, cancel every old entry and spawned child,
+  attempt every cleanup, release the old mesh, then install the candidate.
+  The new revision starts only on the next host tick.
+- Locals, mesh variables, `Once`, and coroutine continuations restart. There
+  is no implicit state migration. Changing a called wire recompiles its
+  callers; removed definitions cannot linger in the replacement mesh.
+- Reload returns the old instances' outcomes, including cleanup failures.
+  A cleanup failure does not roll back the replacement. Instantiation and
+  activation failures in the new revision are reported by `tick`, without
+  restoring an already-cancelled revision.
+- `tick` returns all newly finished entry and child outcomes exactly once.
+  It drains records each tick and retains no outcome history. At `Iterations`,
+  it cancels remaining work and returns those outcomes in the same call.
+  The host owns pacing; `frame_interval()` exposes `FPS` as a suggested delay.
+- `stop` cancels and releases the revision; dropping the session also cancels
+  work but cannot return cleanup errors. A fresh compose cache per revision
+  bounds cache retention across edits. The process-wide type registry still
+  interns types for the process lifetime.
+
+Reload is synchronous: compilation pauses ticking on that host thread. It
+is not a zero-latency or hard real-time operation. Cancellation drops pending
+futures before replacement activation, but it does not wait for detached
+workers to exit or undo external effects. Host operations must cooperate
+with cancellation; a host requiring strict worker quiescence must enforce
+that in its service before allowing a new operation.
+
+The offline test `reload_keeps_host_service_warm_and_cancels_pending_operations`
+in `crates/shards-cli/tests/embedding.rs` exercises a fake host service on both
+schedulers: rejected edits preserve the pending operation; accepted edits
+cancel it and reuse the same service; dropping the session releases pending
+work. Hosts can use the same pattern with recorded inputs to test scripts
+without live I/O.
+
+### Watching a file
+
+```sh
+cargo run -p shards-cli -- watch live.shs
+cargo run -p shards-cli -- watch --stackful live.shs key:value
+```
+
+The CLI polls contents every 100 ms and requires two identical samples before
+trying a revision, so atomic saves and same-size edits work. Invalid source
+or a read error leaves the previous execution running and is reported once
+until the observed contents/error change. A watcher stays alive after a
+program finishes, reaches `Iterations`, or fails, ready for the next edit.
+`FPS` controls ticking; without it the watcher uses a 16 ms frame interval.
+It checks for edits even when the script requests a very low frame rate.
+Ctrl-C, `q` followed by Enter, or stdin EOF cancels the current execution and
+exits. Watch mode reports runtime failures as they occur; its successful
+shutdown exit code is not a claim that every revision succeeded.
+
+This command watches one source file. Dependency watching, asynchronous
+compilation, cross-revision compose reuse, explicit state migration and a
+network serving protocol are deferred. A host can trigger `Session::reload`
+from its own watcher or command channel without using the CLI.

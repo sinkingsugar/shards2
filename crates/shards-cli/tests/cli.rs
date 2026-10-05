@@ -89,3 +89,75 @@ fn catalog_commands() {
   assert_eq!(code, 2);
   assert!(err.contains("usage:"));
 }
+
+#[test]
+fn watch_reloads_atomic_saves_and_keeps_running_after_rejected_edits() {
+  use std::io::{BufRead, Write};
+  use std::process::{Child, Stdio};
+  use std::sync::mpsc;
+  use std::time::Duration;
+
+  struct KillOnDrop(Child);
+  impl Drop for KillOnDrop {
+    fn drop(&mut self) {
+      let _ = self.0.kill();
+      let _ = self.0.wait();
+    }
+  }
+
+  for backend in [&[][..], &["--stackful"][..]] {
+    let file = script("watch.shs", "41");
+    let mut child = KillOnDrop(
+      Command::new(env!("CARGO_BIN_EXE_shards2"))
+        .arg("watch")
+        .args(backend)
+        .arg(&file)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap(),
+    );
+    let (send, lines) = mpsc::channel();
+    let stdout = child.0.stdout.take().unwrap();
+    let stderr = child.0.stderr.take().unwrap();
+    let errors = send.clone();
+    std::thread::spawn(move || {
+      for line in std::io::BufReader::new(stdout).lines() {
+        if send.send(line.unwrap()).is_err() {
+          break;
+        }
+      }
+    });
+    std::thread::spawn(move || {
+      for line in std::io::BufReader::new(stderr).lines() {
+        if errors.send(line.unwrap()).is_err() {
+          break;
+        }
+      }
+    });
+    let wait_for = |expected: &str| {
+      let deadline = std::time::Instant::now() + Duration::from_secs(10);
+      loop {
+        let line = lines
+          .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+          .unwrap_or_else(|e| panic!("waiting for {expected}: {e}"));
+        if line.contains(expected) {
+          break;
+        }
+      }
+    };
+    wait_for("root: 41");
+    std::fs::write(&file, "unknown").unwrap();
+    wait_for("edit rejected; previous execution retained");
+    let replacement = format!("{file}.new");
+    std::fs::write(&replacement, "42").unwrap();
+    std::fs::rename(&replacement, &file).unwrap();
+    wait_for("root: 42");
+    std::fs::write(&file, r#""pending" Log Pause(1000.0)"#).unwrap();
+    wait_for("pending");
+    child.0.stdin.as_mut().unwrap().write_all(b"q\n").unwrap();
+    wait_for("root: cancelled");
+    assert!(child.0.wait().unwrap().success());
+  }
+}

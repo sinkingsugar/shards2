@@ -19,6 +19,20 @@ Sources: [shard contract](prototype-shard-contract.md), [core design](shards-2-c
 
 ## Implemented
 
+- **Hot reload:** `shards_lang::Session` provides host-driven ticking and
+  whole-program replacement on both schedulers. Candidate scripts pass full
+  compose before old entries and spawned children are cancelled; rejected
+  edits preserve execution. Host-owned services survive while script locals
+  and continuations restart. `shards2 watch` polls and debounces file contents,
+  handles invalid edits, and supports graceful shutdown. The contract and
+  offline host example are in [embedding.md](embedding.md#5-warm-sessions-and-hot-reload).
+  Each revision owns its compose cache; state migration and asynchronous
+  compilation remain deferred. Local checks passed on 2026-10-05: workspace
+  check/test/clippy, formatting (including ESP32), docs-off tests, release
+  nesting tests, TLS clippy, and WASI lint/acceptance/metadata/frontend tests.
+  Host-service reuse and pending-operation cancellation are verified with a
+  fake service on both native schedulers; no live-host integration is claimed.
+
 - **ESP32 build integration:** a separate ESP-IDF firmware example embeds the
   core and frontend using the stackless mesh, with CI release-link jobs for
   ESP32, ESP32-S3 and ESP32-C3. The coroutine mesh is excluded on ESP-IDF;

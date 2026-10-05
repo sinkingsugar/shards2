@@ -239,6 +239,14 @@ impl Mesh {
     }
   }
 
+  /// Cancels all running instances, including spawned children, in one pass.
+  /// Outcomes (including cleanup failures) remain available to `take_finished`.
+  pub fn cancel_all(&mut self) {
+    for instance in &mut self.instances {
+      cancel(instance);
+    }
+  }
+
   /// Returns the outcome of a finished instance and retires its record. A
   /// long-running mesh should take outcomes it no longer needs, so records
   /// of finished instances do not accumulate. Returns `None` for an unknown
@@ -317,9 +325,7 @@ impl Drop for Mesh {
   fn drop(&mut self) {
     // Cancel what is still running, so every instance is cleaned up exactly
     // once even when the mesh goes away first.
-    for instance in &mut self.instances {
-      cancel(instance);
-    }
+    self.cancel_all();
   }
 }
 

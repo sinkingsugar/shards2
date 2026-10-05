@@ -17,3 +17,4 @@ path = "src/main.rs"
 shards-core = { path = "../shards-core" }
 shards-io = { path = "../shards-io" }
 shards-lang = { path = "../shards-lang" }
+tokio = { version = "1", features = ["signal"] }

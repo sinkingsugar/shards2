@@ -236,3 +236,117 @@ fn a_host_checks_and_runs_a_script_with_its_own_shards() {
     ("unknown-key", Some(2), vec!["value".to_string()])
   );
 }
+
+// A service owned by the host, with a recorded/fake operation. This models
+// keeping an attached resource warm across revisions without live I/O.
+#[derive(Default)]
+struct WarmService {
+  starts: std::cell::Cell<i64>,
+  dropped: std::cell::Cell<i64>,
+}
+
+thread_local! {
+  static WARM_SERVICE: std::cell::RefCell<Option<std::rc::Rc<WarmService>>> = const { std::cell::RefCell::new(None) };
+}
+
+struct WarmOperation {
+  service: std::rc::Rc<WarmService>,
+  pending: bool,
+}
+
+impl std::future::Future for WarmOperation {
+  type Output = Result<Var>;
+
+  fn poll(
+    self: std::pin::Pin<&mut Self>,
+    _: &mut std::task::Context<'_>,
+  ) -> std::task::Poll<Self::Output> {
+    if self.pending {
+      std::task::Poll::Pending
+    } else {
+      std::task::Poll::Ready(Ok(Var::Int(self.service.starts.get())))
+    }
+  }
+}
+
+impl Drop for WarmOperation {
+  fn drop(&mut self) {
+    self.service.dropped.set(self.service.dropped.get() + 1);
+  }
+}
+
+struct Warm;
+
+impl AsyncShard for Warm {
+  type Compiled = ();
+  type Op = WarmOperation;
+  const DESC: ShardDesc = ShardDesc {
+    name: "Host.Warm",
+    summary: shards_core::shard_doc!("Uses a service already owned by the host."),
+    help: shards_core::shard_doc!(
+      "Zero input waits; other inputs return the service's operation count."
+    ),
+    ..SCAN_DESC
+  };
+
+  fn compose<B: Backend>(args: &Args, ctx: &mut ComposeCtx<'_, B>) -> Result<Composed<()>> {
+    Scan::compose(args, ctx)
+  }
+
+  fn start(_: &(), _: &mut impl LeafCtx, input: &Var) -> Result<WarmOperation> {
+    let service = WARM_SERVICE.with(|s| s.borrow().as_ref().unwrap().clone());
+    // Before each new revision starts, the old operation has been dropped.
+    assert_eq!(service.starts.get(), service.dropped.get());
+    service.starts.set(service.starts.get() + 1);
+    Ok(WarmOperation {
+      service,
+      pending: matches!(input, Var::Int(0)),
+    })
+  }
+}
+
+#[test]
+fn reload_keeps_host_service_warm_and_cancels_pending_operations() {
+  fn exercise<H: shards_lang::SessionHost>() {
+    static WARM: ShardType = async_type::<Warm>();
+    let catalog = Catalog::new(&[shards_core::shards::CATALOG, &[&WARM]]).unwrap();
+    let service = std::rc::Rc::new(WarmService::default());
+    WARM_SERVICE.with(|s| *s.borrow_mut() = Some(service.clone()));
+    let mut session = shards_lang::Session::<H>::new();
+    let defines = HashMap::new();
+    let load = |session: &mut shards_lang::Session<H>, text| {
+      session
+        .reload(Source::new("warm.shs", text), &catalog, &defines)
+        .unwrap_or_else(|(_, d)| panic!("{d:?}"))
+    };
+    load(&mut session, "0 | Host.Warm");
+    assert_eq!(service.starts.get(), 0); // Preparation is effect-free.
+    assert!(session.tick().is_empty());
+    assert_eq!(service.starts.get(), 1);
+    assert_eq!(service.dropped.get(), 0);
+    assert!(
+      session
+        .reload(Source::new("bad.shs", "unknown"), &catalog, &defines)
+        .is_err()
+    );
+    assert_eq!(service.dropped.get(), 0);
+    assert!(session.tick().is_empty());
+    let cancelled = load(&mut session, "1 | Host.Warm");
+    assert!(matches!(cancelled[0].outcome, Outcome::Cancelled));
+    assert_eq!(service.dropped.get(), 1);
+    assert_eq!(service.starts.get(), 1); // New revision has not started.
+    assert!(matches!(
+      session.tick()[0].outcome,
+      Outcome::Completed(Var::Int(2))
+    ));
+    assert_eq!(service.dropped.get(), 2);
+    load(&mut session, "0 | Host.Warm");
+    session.tick();
+    drop(session); // Drop also cancels pending work.
+    assert_eq!(service.dropped.get(), 3);
+    assert_eq!(std::rc::Rc::strong_count(&service), 2); // Host + service registry only.
+    WARM_SERVICE.with(|s| *s.borrow_mut() = None);
+  }
+  exercise::<shards_core::Mesh>();
+  exercise::<shards_core::StackfulMesh>();
+}

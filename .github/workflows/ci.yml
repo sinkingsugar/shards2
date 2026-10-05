@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      # rustup reads rust-toolchain.toml and installs the pinned toolchain
+      - run: rustup show
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+      # Small builds: shard documentation prose compiled out, contract kept.
+      - run: cargo test -p shards-core -p shards-io --no-default-features --test metadata --test catalog
+      # Release coroutine stacks (128 KB, as 1.x) must hold flows nested to the compose limit.
+      - run: cargo test --release -p shards-lang --test lang nesting_up_to_the_limit
+      # As in 1.x, TLS is an explicit feature; make sure the rustls-ring build works.
+      - run: cargo clippy -p shards-io --all-targets --features rustls-ring -- -D warnings
+
+  wasm:
+    # The stackless scheduler runs on wasm without Asyncify; this runs its
+    # acceptance tests as a wasm32-wasip1 binary under Node's WASI.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show && rustup target add wasm32-wasip1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy -p shards-core -p shards-lang --target wasm32-wasip1 --lib --tests -- -D warnings
+      - name: Run acceptance, metadata and frontend tests on wasm
+        run: |
+          cargo test -p shards-core --test prototype --test metadata --target wasm32-wasip1 --no-run
+          cargo test -p shards-lang --test lang --target wasm32-wasip1 --no-run
+          node scripts/run-wasi.mjs "$(ls -t target/wasm32-wasip1/debug/deps/prototype-*.wasm | head -1)"
+          node scripts/run-wasi.mjs "$(ls -t target/wasm32-wasip1/debug/deps/metadata-*.wasm | head -1)"
+          node scripts/run-wasi.mjs "$(ls -t target/wasm32-wasip1/debug/deps/lang-*.wasm | head -1)"

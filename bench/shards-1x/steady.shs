@@ -1,0 +1,49 @@
+// Steady-state benchmark for Shards 1.x, matched with shards2's
+// `bench_instances` entity (crates/shards-core/src/bench.rs): the same shard
+// sequence, one Pause per iteration (two ticks per iteration).
+// Spawns `instances` entities, waits until all ran once, warms up 10 ticks,
+// then times `ticks` ticks as a batch and counts completed iterations
+// (expected: instances * ticks / 2).
+//   shards steady.shs instances:1000 ticks:1000
+
+@define(instances "1000" IgnoreRedefined: true)
+@define(ticks "1000" IgnoreRedefined: true)
+
+@mesh(root)
+
+@wire(entity-think {
+  Get(energy) | Add(0.5) | Update(energy)
+  Pause(0.0)
+  When({IsMoreEqual(100.0)} {0.0 | Update(energy)})
+})
+
+@wire(entity {
+  Once({
+    0.0 | Set(energy)
+    @f3(0 0 0) | Set(pos)
+    Inc(ready-count)
+  })
+  Get(pos) | Add(@f3(0.1 0 0)) | Update(pos)
+  Do(entity-think)
+  Inc(iterations)
+} Looped: true)
+
+@wire(spawner {
+  @instances | ParseInt | Set(n)
+  @ticks | ParseInt | Set(k)
+  0 | Set(ready-count Global: true)
+  0 | Set(iterations Global: true)
+  Repeat({Spawn(entity Joint: true)} Times: n)
+  Repeat({Pause(0.0)} Until: {ready-count | IsMoreEqual(n)})
+  Repeat({Pause(0.0)} Times: 10)
+
+  iterations | Set(it0)
+  Time.NowMs | Set(t0)
+  Repeat({Pause(0.0)} Times: k)
+  Time.NowMs | Sub(t0) | Set(total-ms)
+  iterations | Sub(it0) | Set(done)
+  ["BENCH instances=" n " ticks=" k " total_ms=" total-ms " iterations=" done] | String.Format | Log
+})
+
+@schedule(root spawner)
+@run(root) | Assert.Is(true)

@@ -1,0 +1,87 @@
+# AGENTS.md
+
+Shared working instructions for coding agents in this repository.
+
+## What this is
+
+Shards 2.0: a new Rust implementation of the Shards runtime. The 1.x implementation (C++ core with Rust modules) lives at `fragcolor-xyz/shards`, usually checked out at `../shards`. Use it as reference for semantics, tests and reusable Rust code, but do not copy its runtime architecture.
+
+Status: the core prototype is done and validates the design. Two schedulers (stackful and stackless) pass the same acceptance suite; **stackless is the default, and both are maintained**, one backend per mesh.
+
+## Start a session here
+
+1. Read [README.md](README.md) and [docs/current-state.md](docs/current-state.md).
+2. Inspect `git status --short` and `git log -5 --oneline`. Preserve existing work; the status document is a dated checkpoint, not a substitute for inspecting the checkout.
+3. Read the design documents relevant to the task below. Current decisions take precedence over historical proposals and benchmark plans.
+4. Check [.agent-handoffs/](.agent-handoffs/README.md) for reviews and responses relevant to the task. Use the [review-handoff skill](skills/review-handoff/SKILL.md) to publish findings, address reviews or verify fixes. Discovery alone does not authorize unrelated fixes; implementation claims remain unverified until a verification record supplies evidence.
+
+This repository should be usable without previous chat history or private agent memory. Keep durable decisions and unfinished work in the repository.
+
+## Read first
+
+- `docs/shards-2-compose-split.md`: the design and the source of truth for the core model. Read it before changing core code.
+- `docs/prototype-shard-contract.md`: the shard contract (the decisions that replace 1.x's `shards.h`).
+- `docs/stackless-experiment.md`: the two schedulers, their trade-offs, the shared shard APIs, and the matched benchmarks against 1.x.
+- `docs/shard-metadata-and-compose.md`: metadata, argument decoding, structured diagnostics, and the completed catalog work.
+- `docs/values-and-types.md`: tables, float vectors, type sets and the acceptance rule.
+- `docs/embedding.md`: how a host crate adds its own shards and runs scripts (the guide for downstream projects).
+- `docs/ai-first-roadmap.md`: a reference copy of the strategy. The canonical version is in the 1.x repo.
+
+## Layout
+
+- `crates/shards-core`: compose (generic over a scheduler `Backend`), the stackful scheduler (`runtime/`), the stackless scheduler (`stackless/`), shared lifecycle helpers (`lifecycle.rs`), and the prototype shards (`shards/`).
+- `crates/shards-io`: I/O shards (`Http.Get`) on a shared Tokio runtime, following 1.x's HTTP module. Native only.
+- `crates/shards-lang`: the language frontend: hand-written lexer and parser with spans, lowering to `WireDef`/`ShardDef` with a source map, and `check`/`run` on either scheduler (`docs/surface-syntax-review.md`).
+- `crates/shards-cli`: the `shards2` command (`check [--json]`, `run`, `describe`, `search`, `catalog`; `--stackful` selects the other scheduler).
+- `bench/`: benchmarks matched with 1.x (`shards-1x/`, `http-concurrency/`).
+
+## Core rules
+
+- **Compose once, instantiate many.** Shard compose output (`Compiled`) is shared and immutable. Per-instance runtime state (`State`) is separate and small. Never put compose output in per-instance state, and never mutate shared compiled data to change one instance's behavior.
+- **Compose is deterministic.** It depends only on inputs declared through `ComposeCtx`. No hidden reads of the filesystem, clock or host state.
+- **Device- and connection-bound resources** (GPU objects, sockets, DB connections) are not stored in `Compiled`. They are resolved through services scoped to their owning context.
+- **Rust hosts, C++ is consumed.** C/C++ libraries go behind binding crates. Unsafe code needs a documented lifetime contract.
+
+## Writing shards
+
+Both schedulers must keep working, so choose the shard API by what the shard does:
+
+- **Cannot suspend** (most shards): implement `LeafShard` (`shards/leaf.rs`) once; it runs on both schedulers. "Leaf" means it never suspends, not that it does little work.
+- **Waits on async I/O**: implement `AsyncShard` (`shards/async_shard.rs`) once. `start` returns one future per operation, from owned inputs. Spawn I/O through `shards-io`'s shared runtime (`shards_io::runtime::spawn`); never put a runtime or reactor inside a shard, and never block. Race every await of in-flight work against the cancellation token: dropping a Tokio `JoinHandle` alone only detaches the task.
+- **Suspends or runs nested flows** (control flow like `When`, `Do`, `Repeat`): needs **two implementations**, stackful (`shards/stackful.rs`) and stackless (`stackless/shards.rs`), sharing their compose logic (`shards/mod.rs`), landing on both backends in the same commit. The stackless one keeps its resume point in `State` and resets it on every exit other than `Suspend`, including errors. Add parity tests to the shared suite. Keep this set small and explicit.
+- **Lifecycle**: use `lifecycle.rs` (`cleanup_each`, `instantiate_all`) for anything that instantiates or cleans up child flows, so every cleanup is attempted even when one panics.
+- **Describing a shard** (`docs/shard-metadata-and-compose.md`): give it a `ShardDesc` with its parameter declarations as a `static`, and read arguments in compose through the decoded `Args` accessors, not by position. Write all prose (summary, help, parameter help) through `shard_doc!`, so the `docs` feature can compile it out for small builds. Never duplicate a name, version or parameter list: attach implementations to the one description (`ShardType::new(desc).with_stackful::<S>().with_stackless::<T>()`), and add the shard to its crate's `CATALOG` list. Report compose errors as structured `Error::Diagnostic`s.
+- **Tests**: acceptance tests are generated for both schedulers (`tests/prototype.rs`, `shards-io/tests/http.rs`, `shards-lang/tests/lang.rs`). New behavior gets a test in the shared suite, not in one backend only.
+
+## Scope
+
+The prototype milestone is complete. Next is porting the language front end and the first real modules. Port incrementally, keep both schedulers passing, and propose larger scope increases (graphics, physics, browser wasm) to the user instead of starting them. The gfx/physics 1.x baseline (design doc §5) comes before graphics porting.
+
+## Commands
+
+- `cargo check --workspace`
+- `cargo test --workspace`
+- `cargo fmt --all` before committing (2-space indent, see `rustfmt.toml`)
+- `cargo clippy --workspace --all-targets -- -D warnings`
+- docs off: `cargo test -p shards-core -p shards-io --no-default-features --test metadata --test catalog`
+- release stacks: `cargo test --release -p shards-lang --test lang nesting_up_to_the_limit`
+- TLS: `cargo clippy -p shards-io --all-targets --features rustls-ring -- -D warnings`
+- wasm lint: `cargo clippy -p shards-core -p shards-lang --target wasm32-wasip1 --lib --tests -- -D warnings`
+- wasm tests: `cargo test -p shards-core --test prototype --test metadata --target wasm32-wasip1 --no-run` and `cargo test -p shards-lang --test lang --target wasm32-wasip1 --no-run`, then run each emitted test `.wasm` with `node scripts/run-wasi.mjs <path>`. Install the target with `rustup target add wasm32-wasip1` if needed. Benchmark examples are native-only; do not use `--all-targets` for wasm.
+
+The toolchain is pinned in `rust-toolchain.toml`. CI runs fmt, clippy and tests on Linux and macOS, clippy for the `rustls-ring` build, and the stackless suite on wasm (Node WASI).
+
+
+## Git
+
+Work on `main`; there are no feature branches so far. Commit after the full check set above passes locally, push, and watch the CI run (`gh run watch`); CI runs on pushes to `main` and on pull requests. Review findings from Astra are addressed in follow-up commits with regression tests.
+
+## Private projects
+
+Do not name or describe private downstream projects anywhere in this repository: docs, code, tests, records or commit messages. Refer to them generically ("an external host"). This repository is meant to be public.
+
+## Keep the handoff current
+
+When a milestone or decision changes, update `docs/current-state.md` and the relevant design document. Keep this file for stable working rules, and the README for orientation. Record what is implemented, what remains, and what was actually verified; distinguish reported CI results from local checks. Avoid copying test counts or benchmark tables into multiple handoff files. `.github/workflows/ci.yml` is the executable reference for CI commands.
+
+A new session should not need temporary files from a previous review. Regression tests belong in the repository; `/tmp` reproductions are supplementary evidence only. Keep `CLAUDE.md` as an entry point to these shared instructions rather than a second copy.

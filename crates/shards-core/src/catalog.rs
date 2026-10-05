@@ -1,0 +1,206 @@
+//! The shard catalog (docs/shard-metadata-and-compose.md §3, §6): the
+//! shards linked into a runtime, assembled from explicit per-crate lists,
+//! with a compact index, full descriptions and search, as JSON.
+//!
+//! Reading the catalog only reads static descriptions: it never composes,
+//! instantiates, starts a reactor or does I/O. Backend availability is
+//! derived from the implementations attached to each `ShardType`.
+
+use crate::describe::{DefaultValue, InputDesc, OutputDesc, Params, Requirement, TypeName};
+use crate::diagnostic::json_str;
+use crate::shard::ShardType;
+
+/// The JSON schema identifier of catalog documents.
+pub const SCHEMA: &str = "shards2-catalog/1";
+
+pub struct Catalog {
+  shards: Vec<&'static ShardType>,
+}
+
+impl Catalog {
+  /// Builds a catalog from per-crate lists of shard types, e.g.
+  /// `Catalog::new(&[shards_core::shards::CATALOG, shards_io::CATALOG])`.
+  /// Fails on a duplicate shard name.
+  pub fn new(lists: &[&[&'static ShardType]]) -> Result<Catalog, String> {
+    let mut shards: Vec<&'static ShardType> = Vec::new();
+    let names = |s: &ShardType| {
+      std::iter::once(s.name())
+        .chain(s.desc.aliases.iter().copied())
+        .collect::<Vec<_>>()
+    };
+    for ty in lists.iter().flat_map(|list| list.iter()) {
+      for name in names(ty) {
+        if shards.iter().any(|s| names(s).contains(&name)) {
+          return Err(format!("duplicate shard name in catalog: {name}"));
+        }
+      }
+      shards.push(ty);
+    }
+    shards.sort_by_key(|s| s.name());
+    Ok(Catalog { shards })
+  }
+
+  /// The shard with this name or alias.
+  pub fn get(&self, name: &str) -> Option<&'static ShardType> {
+    self
+      .shards
+      .iter()
+      .copied()
+      .find(|s| s.name() == name || s.desc.aliases.contains(&name))
+  }
+
+  /// Every name the catalog resolves: canonical names and aliases.
+  pub fn names(&self) -> Vec<&'static str> {
+    self
+      .shards
+      .iter()
+      .flat_map(|s| std::iter::once(s.name()).chain(s.desc.aliases.iter().copied()))
+      .collect()
+  }
+
+  pub fn shards(&self) -> &[&'static ShardType] {
+    &self.shards
+  }
+
+  /// Shards whose name or summary contains `query` (case-insensitive).
+  pub fn search(&self, query: &str) -> Vec<&'static ShardType> {
+    let query = query.to_lowercase();
+    self
+      .shards
+      .iter()
+      .copied()
+      .filter(|s| {
+        s.name().to_lowercase().contains(&query)
+          || s
+            .desc
+            .aliases
+            .iter()
+            .any(|a| a.to_lowercase().contains(&query))
+          || s.desc.summary.to_lowercase().contains(&query)
+      })
+      .collect()
+  }
+
+  /// The compact index: name, summary, backends and targets of every shard.
+  pub fn index_json(&self) -> String {
+    let entries: Vec<String> = self.shards.iter().map(|s| summary_json(s)).collect();
+    format!(
+      "{{\"schema\":{},\"shards\":[{}]}}",
+      json_str(SCHEMA),
+      entries.join(",")
+    )
+  }
+
+  /// The full description of one shard, or `None` if it is not in the catalog.
+  pub fn describe_json(&self, name: &str) -> Option<String> {
+    self.get(name).map(describe_json)
+  }
+}
+
+fn strings_json(items: &[&str]) -> String {
+  let items: Vec<String> = items.iter().map(|s| json_str(s)).collect();
+  format!("[{}]", items.join(","))
+}
+
+fn type_json(t: TypeName) -> String {
+  format!(
+    "{{\"name\":{},\"basic_type\":{}}}",
+    json_str(t.name()),
+    t.basic_type()
+  )
+}
+
+fn types_json(types: &[TypeName]) -> String {
+  let items: Vec<String> = types.iter().copied().map(type_json).collect();
+  format!("[{}]", items.join(","))
+}
+
+/// `,"aliases":[...]` when the shard has aliases, else nothing.
+fn aliases_json(s: &ShardType) -> String {
+  if s.desc.aliases.is_empty() {
+    String::new()
+  } else {
+    format!(",\"aliases\":{}", strings_json(s.desc.aliases))
+  }
+}
+
+fn summary_json(s: &ShardType) -> String {
+  format!(
+    "{{\"name\":{}{},\"summary\":{},\"documented\":{},\"backends\":{},\"targets\":{}}}",
+    json_str(s.name()),
+    aliases_json(s),
+    json_str(s.desc.summary),
+    s.desc.is_documented(),
+    strings_json(&s.backends()),
+    json_str(s.desc.targets.name()),
+  )
+}
+
+fn default_json(d: DefaultValue) -> String {
+  match d {
+    DefaultValue::None => "null".into(),
+    DefaultValue::Bool(b) => b.to_string(),
+    DefaultValue::Int(i) => i.to_string(),
+    DefaultValue::Float(f) => f.to_string(),
+    DefaultValue::Str(s) => json_str(s),
+  }
+}
+
+fn describe_json(s: &ShardType) -> String {
+  let d = &s.desc;
+  let input = match d.input {
+    InputDesc::Any => "{\"kind\":\"any\"}".to_string(),
+    InputDesc::Ignored => "{\"kind\":\"ignored\"}".to_string(),
+    InputDesc::Types(types) => format!("{{\"kind\":\"types\",\"types\":{}}}", types_json(types)),
+  };
+  let output = match d.output {
+    OutputDesc::Fixed(t) => format!("{{\"kind\":\"fixed\",\"type\":{}}}", type_json(t)),
+    OutputDesc::Passthrough => "{\"kind\":\"passthrough\"}".to_string(),
+    OutputDesc::SameAsInput => "{\"kind\":\"same-as-input\"}".to_string(),
+    OutputDesc::Dynamic(text) => format!(
+      "{{\"kind\":\"dynamic\",\"description\":{}}}",
+      json_str(text)
+    ),
+  };
+  // The parameter list is rendered from the same declarations the argument
+  // decoder enforces.
+  let params = match d.params {
+    Params::Undeclared => "null".to_string(),
+    Params::Declared(decls) => {
+      let items: Vec<String> = decls
+        .iter()
+        .enumerate()
+        .map(|(index, p)| {
+          let mut fields = vec![
+            format!("\"name\":{}", json_str(p.name)),
+            format!("\"index\":{index}"),
+            format!("\"help\":{}", json_str(p.help)),
+            format!("\"forms\":{}", strings_json(&p.forms.names())),
+            format!("\"types\":{}", types_json(p.types)),
+            format!("\"required\":{}", p.requirement == Requirement::Required),
+          ];
+          if p.requirement == Requirement::Variadic {
+            fields.push("\"variadic\":true".to_string());
+          }
+          if let Requirement::Default(default) = p.requirement {
+            fields.push(format!("\"default\":{}", default_json(default)));
+          }
+          format!("{{{}}}", fields.join(","))
+        })
+        .collect();
+      format!("[{}]", items.join(","))
+    }
+  };
+  format!(
+    "{{\"schema\":{},\"name\":{}{},\"version\":{},\"summary\":{},\"help\":{},\"documented\":{},\"backends\":{},\"targets\":{},\"input\":{input},\"output\":{output},\"params\":{params}}}",
+    json_str(SCHEMA),
+    json_str(d.name),
+    aliases_json(s),
+    d.version,
+    json_str(d.summary),
+    json_str(d.help),
+    d.is_documented(),
+    strings_json(&s.backends()),
+    json_str(d.targets.name()),
+  )
+}

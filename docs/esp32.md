@@ -3,7 +3,8 @@
 The [firmware example](../examples/esp32/) embeds `shards-core` and
 `shards-lang` in an ESP-IDF application. It parses an included script, runs it
 on the stackless scheduler, checks its result and suspension, and prints
-`Shards ESP32 smoke test passed: 42` with the tick count to the serial console.
+`Shards ESP32 smoke test passed: 42` with the tick count and its stack and heap
+low-water marks to the serial console.
 
 | Chip | Rust target | Toolchain |
 |---|---|---|

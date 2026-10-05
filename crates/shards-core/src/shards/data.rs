@@ -390,7 +390,7 @@ pub struct SeqMake;
 
 impl LeafShard for SeqMake {
   type Compiled = Vec<Operand>;
-  type State = Arc<Vec<Var>>;
+  type State = ();
   const DESC: ShardDesc = SEQ_MAKE_DESC;
 
   fn compose<B: Backend>(
@@ -409,25 +409,14 @@ impl LeafShard for SeqMake {
     })
   }
 
-  fn instantiate(items: &Vec<Operand>, _: &mut InstanceCtx) -> Result<Self::State> {
-    Ok(Arc::new(Vec::with_capacity(items.len())))
+  fn instantiate(_: &Vec<Operand>, _: &mut InstanceCtx) -> Result<()> {
+    Ok(())
   }
 
-  fn activate(
-    items: &Vec<Operand>,
-    state: &mut Self::State,
-    ctx: &mut impl LeafCtx,
-    _: &Var,
-  ) -> Result<Flow> {
-    // Reuse storage only when no previous output still observes it. If a
-    // caller kept a snapshot, build fresh rather than copying obsolete items.
-    if let Some(output) = Arc::get_mut(state) {
-      output.clear();
-      output.extend(items.iter().map(|o| o.get(ctx)));
-    } else {
-      *state = Arc::new(items.iter().map(|o| o.get(ctx)).collect());
-    }
-    Ok(Flow::Next(Var::Seq(state.clone())))
+  fn activate(items: &Vec<Operand>, _: &mut (), ctx: &mut impl LeafCtx, _: &Var) -> Result<Flow> {
+    Ok(Flow::Next(Var::Seq(Arc::new(
+      items.iter().map(|o| o.get(ctx)).collect(),
+    ))))
   }
 }
 
@@ -468,7 +457,7 @@ pub struct TableMake;
 
 impl LeafShard for TableMake {
   type Compiled = Vec<(Arc<str>, Operand)>;
-  type State = Arc<std::collections::BTreeMap<Arc<str>, Var>>;
+  type State = ();
   const DESC: ShardDesc = TABLE_MAKE_DESC;
 
   fn compose<B: Backend>(
@@ -519,34 +508,22 @@ impl LeafShard for TableMake {
     })
   }
 
-  fn instantiate(entries: &Vec<(Arc<str>, Operand)>, _: &mut InstanceCtx) -> Result<Self::State> {
-    Ok(Arc::new(
-      entries
-        .iter()
-        .map(|(key, _)| (key.clone(), Var::None))
-        .collect(),
-    ))
+  fn instantiate(_: &Vec<(Arc<str>, Operand)>, _: &mut InstanceCtx) -> Result<()> {
+    Ok(())
   }
 
   fn activate(
     entries: &Vec<(Arc<str>, Operand)>,
-    state: &mut Self::State,
+    _: &mut (),
     ctx: &mut impl LeafCtx,
     _: &Var,
   ) -> Result<Flow> {
-    if let Some(output) = Arc::get_mut(state) {
-      for (key, operand) in entries {
-        *output.get_mut(key).expect("compiled table key") = operand.get(ctx);
-      }
-    } else {
-      *state = Arc::new(
-        entries
-          .iter()
-          .map(|(key, o)| (key.clone(), o.get(ctx)))
-          .collect(),
-      );
-    }
-    Ok(Flow::Next(Var::Table(state.clone())))
+    Ok(Flow::Next(Var::Table(Arc::new(
+      entries
+        .iter()
+        .map(|(k, o)| (k.clone(), o.get(ctx)))
+        .collect(),
+    ))))
   }
 }
 

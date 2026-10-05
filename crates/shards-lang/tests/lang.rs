@@ -56,7 +56,21 @@ macro_rules! lang_tests {
     }
 
     #[test]
-    fn reusable_collection_outputs_keep_saved_snapshots() {
+    fn constructor_segments_preserve_snapshots_and_change_table_shapes() {
+      let report = run(
+        "1 >= n\n{z: n a: 2}\n{a: 3 z: n} >= saved\n4 > n\n{b: n a: 5}\n{a: n b: 6} >= result\n[saved result]",
+        &no_defines(),
+      );
+      assert_eq!(completed(&report, "root"), Var::Seq(std::sync::Arc::new(vec![
+        Var::table([("a", Var::Int(3)), ("z", Var::Int(1))]),
+        Var::table([("a", Var::Int(4)), ("b", Var::Int(6))]),
+      ])));
+      let report = run("1 >= n\n{z: n a: 2}\n{c: n}", &no_defines());
+      assert_eq!(completed(&report, "root"), Var::table([("c", Var::Int(1))]));
+    }
+
+    #[test]
+    fn collection_outputs_keep_saved_snapshots() {
       for (expression, expected) in [
         ("[n n]", "[[1 1] [2 2] [3 3]]"),
         ("{a: n b: n}", "[{a: 1 b: 1} {a: 2 b: 2} {a: 3 b: 3}]"),

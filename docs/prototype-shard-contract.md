@@ -33,7 +33,8 @@ Consequence: most of the choices below become ordinary Rust API design, not ABI 
 **Commitment:** per-type static metadata plus shared compiled nodes.
 **Implemented optimization (2026-10-05):** compose selects immutable enum
 instructions for core Const/Get/Set/Ref/Update/Inc, specialized Add, Take and
-non-clearing Push. Selection uses the Rust implementation identity, never a
+non-clearing Push, plus consuming Seq.Make/Table.Make segments. Selection uses
+the Rust implementation identity, never a
 shard's name. Both schedulers run uninterrupted instruction segments through
 the same executor; other shards retain trait-object dispatch. Normal node
 instantiation and cleanup still run. See the [VM measurements](vm-execution-benchmarks.md).
@@ -141,6 +142,14 @@ snapshot before any generic shard, nested flow or suspension. Debug and
 Numeric scratch holds only explicitly constructed numeric variants, so it
 can be overwritten without running the general `Var` destructor dispatch.
 This is an internal optimization; host shard signatures are unchanged.
+
+Constructor segments consume the incoming value. They recover Vec/BTreeMap
+storage only from a uniquely owned Arc and reuse owned buffers across
+consecutive constructors; shared inputs remain snapshots. The output is
+wrapped in an Arc at the segment boundary. Constructor state is empty: it
+must not retain captured elements after consumers drop the output. This avoids
+forcing later mutation of those elements to copy shared storage. Checking
+builds validate every intermediate constructor output as well.
 **Prototype only:**
 - the output slot mechanism
 - the exact `ActivationCtx` API

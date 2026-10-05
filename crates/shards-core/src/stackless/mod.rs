@@ -304,6 +304,11 @@ impl CompiledFlow<Stackless> {
     };
     let mut index = start;
     while index < self.nodes.len() {
+      if self.code[index].is_constructor() {
+        (index, value) =
+          crate::inline::construct(&self.code, index, value, ctx.locals, ctx.mesh_frame)?;
+        continue;
+      }
       if !matches!(self.code[index].op, crate::inline::Op::Fallback) {
         (index, value) = crate::inline::run(&self.code, index, &value, ctx.locals, ctx.mesh_frame)?;
         continue;

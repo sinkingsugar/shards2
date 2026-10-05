@@ -24,8 +24,12 @@ Sources: [shard contract](prototype-shard-contract.md), [core design](shards-2-c
   share compose-selected builtin instructions and a borrowed accumulator,
   with owned snapshots at generic shard/suspension boundaries. Typed Add
   reuses numeric result storage; Float4 emits packed SIMD in the measured
-  release build. Take and non-clearing Push also have builtin paths, and
-  sequence/table constructors reuse unshared instance buffers. Generic host
+  release build. Take and non-clearing Push also have builtin paths.
+  Sequence/table constructor output caches were removed after review found
+  they retained captured values and made later accumulator appends quadratic.
+  Constructors now consume uniquely owned input buffers and reuse them only
+  across consecutive constructor instructions, without retaining outputs in
+  shard state. Generic host
   shard APIs and the Var enum layout remain unchanged. See the
   [report](vm-execution-benchmarks.md) for before/after results and remaining
   collection costs; the 2× target is not achieved across every workload.

@@ -1,0 +1,941 @@
+{
+  "method": "Three alternating process runs per engine/shape/size. Wall time includes CLI startup and parsing; CPU 2. Baseline runtime b7cfa9b (same as 7c974be); fixed sources in runtime-source.sha256. All result counters validated.",
+  "samples": [
+    {
+      "source": "before-b7cfa9b",
+      "binary_sha256": "d5126c44265db52176416002f3baffb341d9a248cb479061e7fde2a5ae54ef79",
+      "kind": "seq",
+      "backend": "stackless",
+      "iterations": 10000,
+      "round": 0,
+      "seconds": 0.12178259699430782,
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "/tmp/shards-f1-before",
+        "run",
+        "/tmp/shards-constructor-retention.shs"
+      ],
+      "script": "[] >= acc\nRepeat({[acc] | Count\n1 | Push(acc Clear: false)} Times: 10000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "output": "RETENTION_COUNT: 10000\nroot: 10000\n"
+    },
+    {
+      "source": "fixed-working-tree",
+      "binary_sha256": "fe9a97e9e7443134447cf5f0b0d0addda7a78bffb847f916f4cdca6825041e57",
+      "kind": "seq",
+      "backend": "stackless",
+      "iterations": 10000,
+      "round": 0,
+      "seconds": 0.0024046030011959374,
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "target/release/shards2",
+        "run",
+        "/tmp/shards-constructor-retention.shs"
+      ],
+      "script": "[] >= acc\nRepeat({[acc] | Count\n1 | Push(acc Clear: false)} Times: 10000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "output": "RETENTION_COUNT: 10000\nroot: 10000\n"
+    },
+    {
+      "source": "fixed-working-tree",
+      "binary_sha256": "fe9a97e9e7443134447cf5f0b0d0addda7a78bffb847f916f4cdca6825041e57",
+      "kind": "seq",
+      "backend": "stackless",
+      "iterations": 10000,
+      "round": 1,
+      "seconds": 0.0020993110083509237,
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "target/release/shards2",
+        "run",
+        "/tmp/shards-constructor-retention.shs"
+      ],
+      "script": "[] >= acc\nRepeat({[acc] | Count\n1 | Push(acc Clear: false)} Times: 10000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "output": "RETENTION_COUNT: 10000\nroot: 10000\n"
+    },
+    {
+      "source": "before-b7cfa9b",
+      "binary_sha256": "d5126c44265db52176416002f3baffb341d9a248cb479061e7fde2a5ae54ef79",
+      "kind": "seq",
+      "backend": "stackless",
+      "iterations": 10000,
+      "round": 1,
+      "seconds": 0.12170466300449334,
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "/tmp/shards-f1-before",
+        "run",
+        "/tmp/shards-constructor-retention.shs"
+      ],
+      "script": "[] >= acc\nRepeat({[acc] | Count\n1 | Push(acc Clear: false)} Times: 10000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "output": "RETENTION_COUNT: 10000\nroot: 10000\n"
+    },
+    {
+      "source": "before-b7cfa9b",
+      "binary_sha256": "d5126c44265db52176416002f3baffb341d9a248cb479061e7fde2a5ae54ef79",
+      "kind": "seq",
+      "backend": "stackless",
+      "iterations": 10000,
+      "round": 2,
+      "seconds": 0.1217906439997023,
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "/tmp/shards-f1-before",
+        "run",
+        "/tmp/shards-constructor-retention.shs"
+      ],
+      "script": "[] >= acc\nRepeat({[acc] | Count\n1 | Push(acc Clear: false)} Times: 10000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "output": "RETENTION_COUNT: 10000\nroot: 10000\n"
+    },
+    {
+      "source": "fixed-working-tree",
+      "binary_sha256": "fe9a97e9e7443134447cf5f0b0d0addda7a78bffb847f916f4cdca6825041e57",
+      "kind": "seq",
+      "backend": "stackless",
+      "iterations": 10000,
+      "round": 2,
+      "seconds": 0.002205284996307455,
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "target/release/shards2",
+        "run",
+        "/tmp/shards-constructor-retention.shs"
+      ],
+      "script": "[] >= acc\nRepeat({[acc] | Count\n1 | Push(acc Clear: false)} Times: 10000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "output": "RETENTION_COUNT: 10000\nroot: 10000\n"
+    },
+    {
+      "source": "before-b7cfa9b",
+      "binary_sha256": "d5126c44265db52176416002f3baffb341d9a248cb479061e7fde2a5ae54ef79",
+      "kind": "seq",
+      "backend": "stackful",
+      "iterations": 10000,
+      "round": 0,
+      "seconds": 0.12354285900073592,
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "/tmp/shards-f1-before",
+        "run",
+        "--stackful",
+        "/tmp/shards-constructor-retention.shs"
+      ],
+      "script": "[] >= acc\nRepeat({[acc] | Count\n1 | Push(acc Clear: false)} Times: 10000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "output": "RETENTION_COUNT: 10000\nroot: 10000\n"
+    },
+    {
+      "source": "fixed-working-tree",
+      "binary_sha256": "fe9a97e9e7443134447cf5f0b0d0addda7a78bffb847f916f4cdca6825041e57",
+      "kind": "seq",
+      "backend": "stackful",
+      "iterations": 10000,
+      "round": 0,
+      "seconds": 0.0023834939929656684,
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "target/release/shards2",
+        "run",
+        "--stackful",
+        "/tmp/shards-constructor-retention.shs"
+      ],
+      "script": "[] >= acc\nRepeat({[acc] | Count\n1 | Push(acc Clear: false)} Times: 10000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "output": "RETENTION_COUNT: 10000\nroot: 10000\n"
+    },
+    {
+      "source": "fixed-working-tree",
+      "binary_sha256": "fe9a97e9e7443134447cf5f0b0d0addda7a78bffb847f916f4cdca6825041e57",
+      "kind": "seq",
+      "backend": "stackful",
+      "iterations": 10000,
+      "round": 1,
+      "seconds": 0.0021804550051456317,
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "target/release/shards2",
+        "run",
+        "--stackful",
+        "/tmp/shards-constructor-retention.shs"
+      ],
+      "script": "[] >= acc\nRepeat({[acc] | Count\n1 | Push(acc Clear: false)} Times: 10000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "output": "RETENTION_COUNT: 10000\nroot: 10000\n"
+    },
+    {
+      "source": "before-b7cfa9b",
+      "binary_sha256": "d5126c44265db52176416002f3baffb341d9a248cb479061e7fde2a5ae54ef79",
+      "kind": "seq",
+      "backend": "stackful",
+      "iterations": 10000,
+      "round": 1,
+      "seconds": 0.12323899399780203,
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "/tmp/shards-f1-before",
+        "run",
+        "--stackful",
+        "/tmp/shards-constructor-retention.shs"
+      ],
+      "script": "[] >= acc\nRepeat({[acc] | Count\n1 | Push(acc Clear: false)} Times: 10000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "output": "RETENTION_COUNT: 10000\nroot: 10000\n"
+    },
+    {
+      "source": "before-b7cfa9b",
+      "binary_sha256": "d5126c44265db52176416002f3baffb341d9a248cb479061e7fde2a5ae54ef79",
+      "kind": "seq",
+      "backend": "stackful",
+      "iterations": 10000,
+      "round": 2,
+      "seconds": 0.12266039100359194,
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "/tmp/shards-f1-before",
+        "run",
+        "--stackful",
+        "/tmp/shards-constructor-retention.shs"
+      ],
+      "script": "[] >= acc\nRepeat({[acc] | Count\n1 | Push(acc Clear: false)} Times: 10000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "output": "RETENTION_COUNT: 10000\nroot: 10000\n"
+    },
+    {
+      "source": "fixed-working-tree",
+      "binary_sha256": "fe9a97e9e7443134447cf5f0b0d0addda7a78bffb847f916f4cdca6825041e57",
+      "kind": "seq",
+      "backend": "stackful",
+      "iterations": 10000,
+      "round": 2,
+      "seconds": 0.0023261039896169677,
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "target/release/shards2",
+        "run",
+        "--stackful",
+        "/tmp/shards-constructor-retention.shs"
+      ],
+      "script": "[] >= acc\nRepeat({[acc] | Count\n1 | Push(acc Clear: false)} Times: 10000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "output": "RETENTION_COUNT: 10000\nroot: 10000\n"
+    },
+    {
+      "source": "before-b7cfa9b",
+      "binary_sha256": "d5126c44265db52176416002f3baffb341d9a248cb479061e7fde2a5ae54ef79",
+      "kind": "seq",
+      "backend": "stackless",
+      "iterations": 40000,
+      "round": 0,
+      "seconds": 2.4719347019999987,
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "/tmp/shards-f1-before",
+        "run",
+        "/tmp/shards-constructor-retention.shs"
+      ],
+      "script": "[] >= acc\nRepeat({[acc] | Count\n1 | Push(acc Clear: false)} Times: 40000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "output": "RETENTION_COUNT: 40000\nroot: 40000\n"
+    },
+    {
+      "source": "fixed-working-tree",
+      "binary_sha256": "fe9a97e9e7443134447cf5f0b0d0addda7a78bffb847f916f4cdca6825041e57",
+      "kind": "seq",
+      "backend": "stackless",
+      "iterations": 40000,
+      "round": 0,
+      "seconds": 0.005472149990964681,
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "target/release/shards2",
+        "run",
+        "/tmp/shards-constructor-retention.shs"
+      ],
+      "script": "[] >= acc\nRepeat({[acc] | Count\n1 | Push(acc Clear: false)} Times: 40000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "output": "RETENTION_COUNT: 40000\nroot: 40000\n"
+    },
+    {
+      "source": "fixed-working-tree",
+      "binary_sha256": "fe9a97e9e7443134447cf5f0b0d0addda7a78bffb847f916f4cdca6825041e57",
+      "kind": "seq",
+      "backend": "stackless",
+      "iterations": 40000,
+      "round": 1,
+      "seconds": 0.0050495890027377754,
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "target/release/shards2",
+        "run",
+        "/tmp/shards-constructor-retention.shs"
+      ],
+      "script": "[] >= acc\nRepeat({[acc] | Count\n1 | Push(acc Clear: false)} Times: 40000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "output": "RETENTION_COUNT: 40000\nroot: 40000\n"
+    },
+    {
+      "source": "before-b7cfa9b",
+      "binary_sha256": "d5126c44265db52176416002f3baffb341d9a248cb479061e7fde2a5ae54ef79",
+      "kind": "seq",
+      "backend": "stackless",
+      "iterations": 40000,
+      "round": 1,
+      "seconds": 2.4654899279994424,
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "/tmp/shards-f1-before",
+        "run",
+        "/tmp/shards-constructor-retention.shs"
+      ],
+      "script": "[] >= acc\nRepeat({[acc] | Count\n1 | Push(acc Clear: false)} Times: 40000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "output": "RETENTION_COUNT: 40000\nroot: 40000\n"
+    },
+    {
+      "source": "before-b7cfa9b",
+      "binary_sha256": "d5126c44265db52176416002f3baffb341d9a248cb479061e7fde2a5ae54ef79",
+      "kind": "seq",
+      "backend": "stackless",
+      "iterations": 40000,
+      "round": 2,
+      "seconds": 2.459965519999969,
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "/tmp/shards-f1-before",
+        "run",
+        "/tmp/shards-constructor-retention.shs"
+      ],
+      "script": "[] >= acc\nRepeat({[acc] | Count\n1 | Push(acc Clear: false)} Times: 40000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "output": "RETENTION_COUNT: 40000\nroot: 40000\n"
+    },
+    {
+      "source": "fixed-working-tree",
+      "binary_sha256": "fe9a97e9e7443134447cf5f0b0d0addda7a78bffb847f916f4cdca6825041e57",
+      "kind": "seq",
+      "backend": "stackless",
+      "iterations": 40000,
+      "round": 2,
+      "seconds": 0.0054754120064899325,
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "target/release/shards2",
+        "run",
+        "/tmp/shards-constructor-retention.shs"
+      ],
+      "script": "[] >= acc\nRepeat({[acc] | Count\n1 | Push(acc Clear: false)} Times: 40000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "output": "RETENTION_COUNT: 40000\nroot: 40000\n"
+    },
+    {
+      "source": "before-b7cfa9b",
+      "binary_sha256": "d5126c44265db52176416002f3baffb341d9a248cb479061e7fde2a5ae54ef79",
+      "kind": "seq",
+      "backend": "stackful",
+      "iterations": 40000,
+      "round": 0,
+      "seconds": 2.4839214489911683,
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "/tmp/shards-f1-before",
+        "run",
+        "--stackful",
+        "/tmp/shards-constructor-retention.shs"
+      ],
+      "script": "[] >= acc\nRepeat({[acc] | Count\n1 | Push(acc Clear: false)} Times: 40000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "output": "RETENTION_COUNT: 40000\nroot: 40000\n"
+    },
+    {
+      "source": "fixed-working-tree",
+      "binary_sha256": "fe9a97e9e7443134447cf5f0b0d0addda7a78bffb847f916f4cdca6825041e57",
+      "kind": "seq",
+      "backend": "stackful",
+      "iterations": 40000,
+      "round": 0,
+      "seconds": 0.00561073501012288,
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "target/release/shards2",
+        "run",
+        "--stackful",
+        "/tmp/shards-constructor-retention.shs"
+      ],
+      "script": "[] >= acc\nRepeat({[acc] | Count\n1 | Push(acc Clear: false)} Times: 40000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "output": "RETENTION_COUNT: 40000\nroot: 40000\n"
+    },
+    {
+      "source": "fixed-working-tree",
+      "binary_sha256": "fe9a97e9e7443134447cf5f0b0d0addda7a78bffb847f916f4cdca6825041e57",
+      "kind": "seq",
+      "backend": "stackful",
+      "iterations": 40000,
+      "round": 1,
+      "seconds": 0.005114052997669205,
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "target/release/shards2",
+        "run",
+        "--stackful",
+        "/tmp/shards-constructor-retention.shs"
+      ],
+      "script": "[] >= acc\nRepeat({[acc] | Count\n1 | Push(acc Clear: false)} Times: 40000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "output": "RETENTION_COUNT: 40000\nroot: 40000\n"
+    },
+    {
+      "source": "before-b7cfa9b",
+      "binary_sha256": "d5126c44265db52176416002f3baffb341d9a248cb479061e7fde2a5ae54ef79",
+      "kind": "seq",
+      "backend": "stackful",
+      "iterations": 40000,
+      "round": 1,
+      "seconds": 2.4735659980069613,
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "/tmp/shards-f1-before",
+        "run",
+        "--stackful",
+        "/tmp/shards-constructor-retention.shs"
+      ],
+      "script": "[] >= acc\nRepeat({[acc] | Count\n1 | Push(acc Clear: false)} Times: 40000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "output": "RETENTION_COUNT: 40000\nroot: 40000\n"
+    },
+    {
+      "source": "before-b7cfa9b",
+      "binary_sha256": "d5126c44265db52176416002f3baffb341d9a248cb479061e7fde2a5ae54ef79",
+      "kind": "seq",
+      "backend": "stackful",
+      "iterations": 40000,
+      "round": 2,
+      "seconds": 2.4722615490027238,
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "/tmp/shards-f1-before",
+        "run",
+        "--stackful",
+        "/tmp/shards-constructor-retention.shs"
+      ],
+      "script": "[] >= acc\nRepeat({[acc] | Count\n1 | Push(acc Clear: false)} Times: 40000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "output": "RETENTION_COUNT: 40000\nroot: 40000\n"
+    },
+    {
+      "source": "fixed-working-tree",
+      "binary_sha256": "fe9a97e9e7443134447cf5f0b0d0addda7a78bffb847f916f4cdca6825041e57",
+      "kind": "seq",
+      "backend": "stackful",
+      "iterations": 40000,
+      "round": 2,
+      "seconds": 0.00546448199020233,
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "target/release/shards2",
+        "run",
+        "--stackful",
+        "/tmp/shards-constructor-retention.shs"
+      ],
+      "script": "[] >= acc\nRepeat({[acc] | Count\n1 | Push(acc Clear: false)} Times: 40000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "output": "RETENTION_COUNT: 40000\nroot: 40000\n"
+    },
+    {
+      "source": "before-b7cfa9b",
+      "binary_sha256": "d5126c44265db52176416002f3baffb341d9a248cb479061e7fde2a5ae54ef79",
+      "kind": "table",
+      "backend": "stackless",
+      "iterations": 10000,
+      "round": 0,
+      "seconds": 0.12182483400101773,
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "/tmp/shards-f1-before",
+        "run",
+        "/tmp/shards-constructor-retention.shs"
+      ],
+      "script": "[] >= acc\nRepeat({{a: acc} | Count\n1 | Push(acc Clear: false)} Times: 10000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "output": "RETENTION_COUNT: 10000\nroot: 10000\n"
+    },
+    {
+      "source": "fixed-working-tree",
+      "binary_sha256": "fe9a97e9e7443134447cf5f0b0d0addda7a78bffb847f916f4cdca6825041e57",
+      "kind": "table",
+      "backend": "stackless",
+      "iterations": 10000,
+      "round": 0,
+      "seconds": 0.00257003000297118,
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "target/release/shards2",
+        "run",
+        "/tmp/shards-constructor-retention.shs"
+      ],
+      "script": "[] >= acc\nRepeat({{a: acc} | Count\n1 | Push(acc Clear: false)} Times: 10000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "output": "RETENTION_COUNT: 10000\nroot: 10000\n"
+    },
+    {
+      "source": "fixed-working-tree",
+      "binary_sha256": "fe9a97e9e7443134447cf5f0b0d0addda7a78bffb847f916f4cdca6825041e57",
+      "kind": "table",
+      "backend": "stackless",
+      "iterations": 10000,
+      "round": 1,
+      "seconds": 0.0022583749960176647,
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "target/release/shards2",
+        "run",
+        "/tmp/shards-constructor-retention.shs"
+      ],
+      "script": "[] >= acc\nRepeat({{a: acc} | Count\n1 | Push(acc Clear: false)} Times: 10000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "output": "RETENTION_COUNT: 10000\nroot: 10000\n"
+    },
+    {
+      "source": "before-b7cfa9b",
+      "binary_sha256": "d5126c44265db52176416002f3baffb341d9a248cb479061e7fde2a5ae54ef79",
+      "kind": "table",
+      "backend": "stackless",
+      "iterations": 10000,
+      "round": 1,
+      "seconds": 0.1230627250042744,
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "/tmp/shards-f1-before",
+        "run",
+        "/tmp/shards-constructor-retention.shs"
+      ],
+      "script": "[] >= acc\nRepeat({{a: acc} | Count\n1 | Push(acc Clear: false)} Times: 10000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "output": "RETENTION_COUNT: 10000\nroot: 10000\n"
+    },
+    {
+      "source": "before-b7cfa9b",
+      "binary_sha256": "d5126c44265db52176416002f3baffb341d9a248cb479061e7fde2a5ae54ef79",
+      "kind": "table",
+      "backend": "stackless",
+      "iterations": 10000,
+      "round": 2,
+      "seconds": 0.12112469000567216,
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "/tmp/shards-f1-before",
+        "run",
+        "/tmp/shards-constructor-retention.shs"
+      ],
+      "script": "[] >= acc\nRepeat({{a: acc} | Count\n1 | Push(acc Clear: false)} Times: 10000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "output": "RETENTION_COUNT: 10000\nroot: 10000\n"
+    },
+    {
+      "source": "fixed-working-tree",
+      "binary_sha256": "fe9a97e9e7443134447cf5f0b0d0addda7a78bffb847f916f4cdca6825041e57",
+      "kind": "table",
+      "backend": "stackless",
+      "iterations": 10000,
+      "round": 2,
+      "seconds": 0.0023454699985450134,
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "target/release/shards2",
+        "run",
+        "/tmp/shards-constructor-retention.shs"
+      ],
+      "script": "[] >= acc\nRepeat({{a: acc} | Count\n1 | Push(acc Clear: false)} Times: 10000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "output": "RETENTION_COUNT: 10000\nroot: 10000\n"
+    },
+    {
+      "source": "before-b7cfa9b",
+      "binary_sha256": "d5126c44265db52176416002f3baffb341d9a248cb479061e7fde2a5ae54ef79",
+      "kind": "table",
+      "backend": "stackful",
+      "iterations": 10000,
+      "round": 0,
+      "seconds": 0.12288370399619453,
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "/tmp/shards-f1-before",
+        "run",
+        "--stackful",
+        "/tmp/shards-constructor-retention.shs"
+      ],
+      "script": "[] >= acc\nRepeat({{a: acc} | Count\n1 | Push(acc Clear: false)} Times: 10000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "output": "RETENTION_COUNT: 10000\nroot: 10000\n"
+    },
+    {
+      "source": "fixed-working-tree",
+      "binary_sha256": "fe9a97e9e7443134447cf5f0b0d0addda7a78bffb847f916f4cdca6825041e57",
+      "kind": "table",
+      "backend": "stackful",
+      "iterations": 10000,
+      "round": 0,
+      "seconds": 0.002394741997704841,
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "target/release/shards2",
+        "run",
+        "--stackful",
+        "/tmp/shards-constructor-retention.shs"
+      ],
+      "script": "[] >= acc\nRepeat({{a: acc} | Count\n1 | Push(acc Clear: false)} Times: 10000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "output": "RETENTION_COUNT: 10000\nroot: 10000\n"
+    },
+    {
+      "source": "fixed-working-tree",
+      "binary_sha256": "fe9a97e9e7443134447cf5f0b0d0addda7a78bffb847f916f4cdca6825041e57",
+      "kind": "table",
+      "backend": "stackful",
+      "iterations": 10000,
+      "round": 1,
+      "seconds": 0.0023843929957365617,
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "target/release/shards2",
+        "run",
+        "--stackful",
+        "/tmp/shards-constructor-retention.shs"
+      ],
+      "script": "[] >= acc\nRepeat({{a: acc} | Count\n1 | Push(acc Clear: false)} Times: 10000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "output": "RETENTION_COUNT: 10000\nroot: 10000\n"
+    },
+    {
+      "source": "before-b7cfa9b",
+      "binary_sha256": "d5126c44265db52176416002f3baffb341d9a248cb479061e7fde2a5ae54ef79",
+      "kind": "table",
+      "backend": "stackful",
+      "iterations": 10000,
+      "round": 1,
+      "seconds": 0.12428209799691103,
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "/tmp/shards-f1-before",
+        "run",
+        "--stackful",
+        "/tmp/shards-constructor-retention.shs"
+      ],
+      "script": "[] >= acc\nRepeat({{a: acc} | Count\n1 | Push(acc Clear: false)} Times: 10000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "output": "RETENTION_COUNT: 10000\nroot: 10000\n"
+    },
+    {
+      "source": "before-b7cfa9b",
+      "binary_sha256": "d5126c44265db52176416002f3baffb341d9a248cb479061e7fde2a5ae54ef79",
+      "kind": "table",
+      "backend": "stackful",
+      "iterations": 10000,
+      "round": 2,
+      "seconds": 0.12351059599313885,
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "/tmp/shards-f1-before",
+        "run",
+        "--stackful",
+        "/tmp/shards-constructor-retention.shs"
+      ],
+      "script": "[] >= acc\nRepeat({{a: acc} | Count\n1 | Push(acc Clear: false)} Times: 10000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "output": "RETENTION_COUNT: 10000\nroot: 10000\n"
+    },
+    {
+      "source": "fixed-working-tree",
+      "binary_sha256": "fe9a97e9e7443134447cf5f0b0d0addda7a78bffb847f916f4cdca6825041e57",
+      "kind": "table",
+      "backend": "stackful",
+      "iterations": 10000,
+      "round": 2,
+      "seconds": 0.0026284280029358342,
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "target/release/shards2",
+        "run",
+        "--stackful",
+        "/tmp/shards-constructor-retention.shs"
+      ],
+      "script": "[] >= acc\nRepeat({{a: acc} | Count\n1 | Push(acc Clear: false)} Times: 10000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "output": "RETENTION_COUNT: 10000\nroot: 10000\n"
+    },
+    {
+      "source": "before-b7cfa9b",
+      "binary_sha256": "d5126c44265db52176416002f3baffb341d9a248cb479061e7fde2a5ae54ef79",
+      "kind": "table",
+      "backend": "stackless",
+      "iterations": 40000,
+      "round": 0,
+      "seconds": 2.4693644889921416,
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "/tmp/shards-f1-before",
+        "run",
+        "/tmp/shards-constructor-retention.shs"
+      ],
+      "script": "[] >= acc\nRepeat({{a: acc} | Count\n1 | Push(acc Clear: false)} Times: 40000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "output": "RETENTION_COUNT: 40000\nroot: 40000\n"
+    },
+    {
+      "source": "fixed-working-tree",
+      "binary_sha256": "fe9a97e9e7443134447cf5f0b0d0addda7a78bffb847f916f4cdca6825041e57",
+      "kind": "table",
+      "backend": "stackless",
+      "iterations": 40000,
+      "round": 0,
+      "seconds": 0.005974049010546878,
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "target/release/shards2",
+        "run",
+        "/tmp/shards-constructor-retention.shs"
+      ],
+      "script": "[] >= acc\nRepeat({{a: acc} | Count\n1 | Push(acc Clear: false)} Times: 40000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "output": "RETENTION_COUNT: 40000\nroot: 40000\n"
+    },
+    {
+      "source": "fixed-working-tree",
+      "binary_sha256": "fe9a97e9e7443134447cf5f0b0d0addda7a78bffb847f916f4cdca6825041e57",
+      "kind": "table",
+      "backend": "stackless",
+      "iterations": 40000,
+      "round": 1,
+      "seconds": 0.005742427005316131,
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "target/release/shards2",
+        "run",
+        "/tmp/shards-constructor-retention.shs"
+      ],
+      "script": "[] >= acc\nRepeat({{a: acc} | Count\n1 | Push(acc Clear: false)} Times: 40000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "output": "RETENTION_COUNT: 40000\nroot: 40000\n"
+    },
+    {
+      "source": "before-b7cfa9b",
+      "binary_sha256": "d5126c44265db52176416002f3baffb341d9a248cb479061e7fde2a5ae54ef79",
+      "kind": "table",
+      "backend": "stackless",
+      "iterations": 40000,
+      "round": 1,
+      "seconds": 2.4598962149902945,
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "/tmp/shards-f1-before",
+        "run",
+        "/tmp/shards-constructor-retention.shs"
+      ],
+      "script": "[] >= acc\nRepeat({{a: acc} | Count\n1 | Push(acc Clear: false)} Times: 40000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "output": "RETENTION_COUNT: 40000\nroot: 40000\n"
+    },
+    {
+      "source": "before-b7cfa9b",
+      "binary_sha256": "d5126c44265db52176416002f3baffb341d9a248cb479061e7fde2a5ae54ef79",
+      "kind": "table",
+      "backend": "stackless",
+      "iterations": 40000,
+      "round": 2,
+      "seconds": 2.4617510050011333,
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "/tmp/shards-f1-before",
+        "run",
+        "/tmp/shards-constructor-retention.shs"
+      ],
+      "script": "[] >= acc\nRepeat({{a: acc} | Count\n1 | Push(acc Clear: false)} Times: 40000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "output": "RETENTION_COUNT: 40000\nroot: 40000\n"
+    },
+    {
+      "source": "fixed-working-tree",
+      "binary_sha256": "fe9a97e9e7443134447cf5f0b0d0addda7a78bffb847f916f4cdca6825041e57",
+      "kind": "table",
+      "backend": "stackless",
+      "iterations": 40000,
+      "round": 2,
+      "seconds": 0.006018414002028294,
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "target/release/shards2",
+        "run",
+        "/tmp/shards-constructor-retention.shs"
+      ],
+      "script": "[] >= acc\nRepeat({{a: acc} | Count\n1 | Push(acc Clear: false)} Times: 40000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "output": "RETENTION_COUNT: 40000\nroot: 40000\n"
+    },
+    {
+      "source": "before-b7cfa9b",
+      "binary_sha256": "d5126c44265db52176416002f3baffb341d9a248cb479061e7fde2a5ae54ef79",
+      "kind": "table",
+      "backend": "stackful",
+      "iterations": 40000,
+      "round": 0,
+      "seconds": 2.4808207790047163,
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "/tmp/shards-f1-before",
+        "run",
+        "--stackful",
+        "/tmp/shards-constructor-retention.shs"
+      ],
+      "script": "[] >= acc\nRepeat({{a: acc} | Count\n1 | Push(acc Clear: false)} Times: 40000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "output": "RETENTION_COUNT: 40000\nroot: 40000\n"
+    },
+    {
+      "source": "fixed-working-tree",
+      "binary_sha256": "fe9a97e9e7443134447cf5f0b0d0addda7a78bffb847f916f4cdca6825041e57",
+      "kind": "table",
+      "backend": "stackful",
+      "iterations": 40000,
+      "round": 0,
+      "seconds": 0.005996545005473308,
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "target/release/shards2",
+        "run",
+        "--stackful",
+        "/tmp/shards-constructor-retention.shs"
+      ],
+      "script": "[] >= acc\nRepeat({{a: acc} | Count\n1 | Push(acc Clear: false)} Times: 40000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "output": "RETENTION_COUNT: 40000\nroot: 40000\n"
+    },
+    {
+      "source": "fixed-working-tree",
+      "binary_sha256": "fe9a97e9e7443134447cf5f0b0d0addda7a78bffb847f916f4cdca6825041e57",
+      "kind": "table",
+      "backend": "stackful",
+      "iterations": 40000,
+      "round": 1,
+      "seconds": 0.0058913380053127185,
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "target/release/shards2",
+        "run",
+        "--stackful",
+        "/tmp/shards-constructor-retention.shs"
+      ],
+      "script": "[] >= acc\nRepeat({{a: acc} | Count\n1 | Push(acc Clear: false)} Times: 40000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "output": "RETENTION_COUNT: 40000\nroot: 40000\n"
+    },
+    {
+      "source": "before-b7cfa9b",
+      "binary_sha256": "d5126c44265db52176416002f3baffb341d9a248cb479061e7fde2a5ae54ef79",
+      "kind": "table",
+      "backend": "stackful",
+      "iterations": 40000,
+      "round": 1,
+      "seconds": 2.4598932480002986,
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "/tmp/shards-f1-before",
+        "run",
+        "--stackful",
+        "/tmp/shards-constructor-retention.shs"
+      ],
+      "script": "[] >= acc\nRepeat({{a: acc} | Count\n1 | Push(acc Clear: false)} Times: 40000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "output": "RETENTION_COUNT: 40000\nroot: 40000\n"
+    },
+    {
+      "source": "before-b7cfa9b",
+      "binary_sha256": "d5126c44265db52176416002f3baffb341d9a248cb479061e7fde2a5ae54ef79",
+      "kind": "table",
+      "backend": "stackful",
+      "iterations": 40000,
+      "round": 2,
+      "seconds": 2.460036991004017,
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "/tmp/shards-f1-before",
+        "run",
+        "--stackful",
+        "/tmp/shards-constructor-retention.shs"
+      ],
+      "script": "[] >= acc\nRepeat({{a: acc} | Count\n1 | Push(acc Clear: false)} Times: 40000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "output": "RETENTION_COUNT: 40000\nroot: 40000\n"
+    },
+    {
+      "source": "fixed-working-tree",
+      "binary_sha256": "fe9a97e9e7443134447cf5f0b0d0addda7a78bffb847f916f4cdca6825041e57",
+      "kind": "table",
+      "backend": "stackful",
+      "iterations": 40000,
+      "round": 2,
+      "seconds": 0.0060452550096670166,
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "target/release/shards2",
+        "run",
+        "--stackful",
+        "/tmp/shards-constructor-retention.shs"
+      ],
+      "script": "[] >= acc\nRepeat({{a: acc} | Count\n1 | Push(acc Clear: false)} Times: 40000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "output": "RETENTION_COUNT: 40000\nroot: 40000\n"
+    }
+  ]
+}

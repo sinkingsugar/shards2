@@ -38,6 +38,58 @@ macro_rules! acceptance_tests {
         .count()
     }
 
+    fn check_discarded_constructor(table: bool) {
+      use std::sync::Arc;
+      use shards_core::shards::{data, values};
+      use shards_core::ShardDef;
+
+      fn owners(value: &Var) -> usize {
+        match value {
+          Var::Seq(v) => Arc::strong_count(v),
+          Var::Table(v) => Arc::strong_count(v),
+          Var::String(v) => Arc::strong_count(v),
+          _ => unreachable!(),
+        }
+      }
+
+      for value in [
+        Var::Seq(Arc::new(vec![Var::Int(7)])),
+        Var::table([("field", Var::Int(7))]),
+        Var::string("captured value"),
+      ] {
+        let constructor = if table {
+          ShardDef::new(&data::TABLE_MAKE, vec![
+            val(Var::Seq(Arc::new(vec![Var::string("field")]))), var("captured"),
+          ])
+        } else {
+          ShardDef::new(&data::SEQ_MAKE, vec![var("captured")])
+        };
+        let mut mesh = Mesh::new();
+        mesh.declare_var("captured", value.clone(), true);
+        mesh.add_wire(wire("main", false, vec![
+          constructor, ShardDef::new(&values::COUNT, vec![]), pause(),
+        ]));
+        let compiled = mesh.compile("main", Type::none()).unwrap();
+        let id = mesh.spawn(&compiled, Var::None).unwrap();
+        let before = owners(&value);
+        mesh.tick();
+        assert_eq!(mesh.outcome(id), None, "constructor state must still be alive");
+        assert_eq!(owners(&value), before, "discarded output still pins {value:?}");
+        mesh.tick();
+        assert_eq!(mesh.outcome(id), Some(&Outcome::Completed(Var::Int(1))));
+      }
+    }
+
+    #[test]
+    fn discarded_sequence_constructor_releases_captured_values() {
+      check_discarded_constructor(false);
+    }
+
+    #[test]
+    fn discarded_table_constructor_releases_captured_values() {
+      check_discarded_constructor(true);
+    }
+
     #[test]
     fn inline_output_is_a_snapshot_across_suspend_and_nested_writes() {
       for boundary in [pause(), sub(vec![konst(Var::string("nested")), update("shared")])] {

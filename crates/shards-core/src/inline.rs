@@ -29,6 +29,8 @@ pub(crate) enum Op {
   Inc(Binding),
   Take(Operand),
   Push(Binding),
+  SeqMake(Vec<Operand>),
+  TableMake(Vec<(std::sync::Arc<str>, Operand)>, Type),
   AddIntConst(i64),
   AddIntBound(Binding),
   AddFloatConst(f64),
@@ -44,6 +46,10 @@ pub(crate) struct Instruction {
 }
 
 impl Instruction {
+  pub fn is_constructor(&self) -> bool {
+    matches!(self.op, Op::SeqMake(_) | Op::TableMake(..))
+  }
+
   pub fn new(op: Option<InlineOp>, _name: &'static str, _output: Type) -> Self {
     Self {
       op: op.map_or(Op::Fallback, |v| v.0),
@@ -72,6 +78,14 @@ pub(crate) fn leaf<L: LeafShard>(c: &L::Compiled, output: Type) -> Option<Inline
     Op::Inc(*c.downcast_ref::<Binding>()?)
   } else if id == TypeId::of::<data::Take>() {
     Op::Take(c.downcast_ref::<Operand>()?.clone())
+  } else if id == TypeId::of::<data::SeqMake>() {
+    Op::SeqMake(c.downcast_ref::<Vec<Operand>>()?.clone())
+  } else if id == TypeId::of::<data::TableMake>() {
+    let mut entries = c
+      .downcast_ref::<Vec<(std::sync::Arc<str>, Operand)>>()?
+      .clone();
+    entries.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+    Op::TableMake(entries, output)
   } else if id == TypeId::of::<data::Push>() {
     let c = c.downcast_ref::<data::PushCompiled>()?;
     if c.clear {
@@ -159,7 +173,7 @@ pub(crate) fn run(
     // reference survives replacement of its owner; no callback can mutate it.
     unsafe {
       match &instruction.op {
-        Op::Fallback => break,
+        Op::Fallback | Op::SeqMake(_) | Op::TableMake(..) => break,
         Op::Const(v) => value = v,
         Op::Get(b) => value = frames.slot(*b),
         Op::Set(b) => {
@@ -275,6 +289,92 @@ fn add_generic(a: &Var, b: &Var) -> Result<Var> {
   crate::shards::math::arith(crate::shards::math::BinOp::Add, "Math.Add", a, b)
 }
 
+/// Constructors consume their input. Reuse only its uniquely owned allocation,
+/// never a value retained in shard state. All operands are read-only frame or
+/// compiled values, so clearing unique input storage cannot change an operand.
+/// The returned value owns the output; nothing stays behind after consumption.
+pub(crate) fn construct(
+  code: &[Instruction],
+  mut index: usize,
+  mut value: Var,
+  locals: &[Var],
+  mesh: &[Var],
+) -> Result<(usize, Var)> {
+  use std::sync::Arc;
+  let read = |operand: &Operand| match operand {
+    Operand::Const(v) => v.clone(),
+    Operand::Bound(Binding::Local(i)) => locals[*i].clone(),
+    Operand::Bound(Binding::Mesh(i)) => mesh[*i].clone(),
+  };
+  while let Some(instruction) = code.get(index) {
+    match &instruction.op {
+      Op::SeqMake(_) => {
+        // Consume the old output. A shared allocation belongs to a saved
+        // snapshot, so leave it alone and start empty; never copy its items.
+        let mut output = match std::mem::take(&mut value) {
+          Var::Seq(items) => Arc::try_unwrap(items).unwrap_or_default(),
+          _ => Vec::new(),
+        };
+        while let Some(instruction) = code.get(index) {
+          let Op::SeqMake(items) = &instruction.op else {
+            break;
+          };
+          output.clear();
+          output.extend(items.iter().map(&read));
+          // Checking builds materialize each intermediate output; release
+          // keeps the owned buffer until the constructor segment ends.
+          #[cfg(any(debug_assertions, feature = "output-checks"))]
+          leaf::check_output(
+            instruction.check.0,
+            instruction.check.1,
+            &Var::Seq(Arc::new(output.clone())),
+          )?;
+          index += 1;
+        }
+        value = Var::Seq(Arc::new(output));
+      }
+      Op::TableMake(..) => {
+        let mut output = match std::mem::take(&mut value) {
+          Var::Table(entries) => Arc::try_unwrap(entries).unwrap_or_default(),
+          _ => std::collections::BTreeMap::new(),
+        };
+        let mut table_shape = None;
+        while let Some(instruction) = code.get(index) {
+          let Op::TableMake(entries, shape) = &instruction.op else {
+            break;
+          };
+          if table_shape == Some(*shape) || output.keys().eq(entries.iter().map(|(key, _)| key)) {
+            // Compiled entries and BTreeMap use sorted keys. A matching
+            // fixed output type proves equal key sets within this segment;
+            // there are no callbacks or frame writes between constructors.
+            for (slot, (_, operand)) in output.values_mut().zip(entries) {
+              *slot = read(operand);
+            }
+          } else {
+            output.clear();
+            output.extend(
+              entries
+                .iter()
+                .map(|(key, operand)| (key.clone(), read(operand))),
+            );
+          }
+          table_shape = Some(*shape);
+          #[cfg(any(debug_assertions, feature = "output-checks"))]
+          leaf::check_output(
+            instruction.check.0,
+            instruction.check.1,
+            &Var::Table(Arc::new(output.clone())),
+          )?;
+          index += 1;
+        }
+        value = Var::Table(Arc::new(output));
+      }
+      _ => break,
+    }
+  }
+  Ok((index, value))
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -284,6 +384,33 @@ mod tests {
       .into_iter()
       .map(|op| Instruction::new(Some(InlineOp(op)), "test", Type::any()))
       .collect()
+  }
+
+  #[test]
+  fn constructor_reuses_unique_sequence_storage_but_preserves_shared_input() {
+    use std::sync::Arc;
+    let mut buffer = Vec::with_capacity(8);
+    buffer.push(Var::Int(1));
+    let allocation = buffer.as_ptr();
+    let code = instructions([
+      Op::SeqMake(vec![Operand::Const(Var::Int(2))]),
+      Op::SeqMake(vec![
+        Operand::Const(Var::Int(3)),
+        Operand::Const(Var::Int(4)),
+      ]),
+    ]);
+    let (index, output) = construct(&code, 0, Var::Seq(Arc::new(buffer)), &[], &[]).unwrap();
+    assert_eq!(index, 2);
+    let Var::Seq(items) = output else {
+      panic!("expected sequence")
+    };
+    assert_eq!(items.as_ptr(), allocation);
+    assert_eq!(&**items, &[Var::Int(3), Var::Int(4)]);
+    let snapshot = Var::Seq(items);
+    let code = instructions([Op::SeqMake(vec![Operand::Const(Var::Int(5))])]);
+    let (_, output) = construct(&code, 0, snapshot.clone(), &[], &[]).unwrap();
+    assert_eq!(snapshot, Var::Seq(Arc::new(vec![Var::Int(3), Var::Int(4)])));
+    assert_eq!(output, Var::Seq(Arc::new(vec![Var::Int(5)])));
   }
 
   #[test]

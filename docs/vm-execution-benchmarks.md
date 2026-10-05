@@ -15,7 +15,9 @@ compiled/state split or a conclusion about Rust versus C++ in general.
 **Follow-up:** the [builtin executor rerun](#builtin-executor-follow-up-2026-10-05)
 reaches roughly 1.x speed for the measured Add chains and most cheap value
 operations. Collection construction, table lookup and shared-sequence Push
-still miss the 2× target. The original measurements below remain the baseline.
+still miss the 2× target. Constructor caching was subsequently removed to
+fix a retention regression; see the [review follow-up](#constructor-retention-review-follow-up).
+The original measurements below remain the baseline.
 
 ## Method
 
@@ -351,3 +353,85 @@ increased from 535.1 to 546.6 ns/instance/tick (2.1%). This small three-run
 sample is not evidence of zero regression on every workload.
 [Commands, binary hashes and every output](../bench/vm-execution/results/2026-10-05-inline/scheduler-rerun.json)
 are retained alongside the hot-chain data.
+
+## Constructor retention review follow-up
+
+[Review F1](../.agent-handoffs/reviews/2026-10-05-7c974be-claude-929d96.md)
+identified a regression in the buffer caches introduced at `7c974be`:
+constructing `[acc]` or `{a: acc}` and discarding that output still left the
+captured accumulator in constructor state. A subsequent Push detached and
+copied the growing sequence on each iteration, producing quadratic work.
+Captured strings and tables were also retained beyond the output's lifetime.
+
+Seq.Make and Table.Make now have unit state again and keep no output cache.
+The builtin executor recognizes constructor segments and consumes their
+incoming value. `Arc::try_unwrap` recovers uniquely owned Vec/BTreeMap storage;
+shared inputs are left intact and a fresh buffer is used instead. Consecutive
+constructors work on an owned buffer and wrap it in an Arc only at a boundary.
+Table constructors sort compiled entries once and reuse matching key layouts;
+shape changes rebuild the keys. No buffers or captured values remain in shard
+state after output consumption. This path uses safe Rust.
+
+Debug and release `output-checks` builds materialize each intermediate output
+for validation. Normal release execution avoids those copies. Numeric scratch
+and SIMD arithmetic remain unchanged. The historical measurements above still
+describe `7c974be`; the corrected construction results are recorded separately
+below. Constructor reuse is limited to consumed input and uninterrupted
+constructor runs, not a cache persisting across arbitrary shard activations.
+
+The shared `discarded_sequence_constructor_releases_captured_values` and
+`discarded_table_constructor_releases_captured_values` regressions compare
+Arc owner counts before activation and while paused after consuming the
+output with Count. They cover captured sequences, strings and tables while
+the constructor's instance is still alive. Both tests fail on both native
+backends with the old cache (three owners instead of two for the sequence)
+and pass after its removal. Saved-output snapshot coverage remains in
+`collection_outputs_keep_saved_snapshots`. These deterministic ownership
+checks guard the cause of the regression without a wall-clock threshold.
+
+The corrected build was rerun with the complete matched suite: 25 workloads,
+four widths and nine retained samples per engine/cell. All value/count checks
+passed. [Raw measurements and source fingerprints](../bench/vm-execution/results/2026-10-05-owned-constructors/)
+are from the working tree based on `b7cfa9b`, containing this review fix.
+Selected full 256-motif iteration medians (ns):
+
+| Workload | 1.x rerun | 2.0 stackful | 2.0 stackless | Stackless / 1.x |
+|---|---:|---:|---:|---:|
+| make-seq | 1,370.4 | 4,439.0 | 4,437.6 | 3.24× |
+| make-table | 1,524.2 | 4,695.0 | 4,686.4 | 3.07× |
+| add-int | 289.5 | 217.2 | 218.2 | 0.75× |
+| add-float | 364.7 | 359.4 | 361.5 | 0.99× |
+| add-float4 | 360.5 | 371.6 | 367.0 | 1.02× |
+
+Compared with the previous 2.0 medians, sequence construction fell from
+11,399.0 to 4,437.6 ns and table construction from 11,398.4 to 4,686.4 ns.
+They remain over the 2× target against the paired 1.x rerun. The unchanged
+1.x table workload also ran faster in this suite than the earlier suite;
+compare paired ratios and retain the machine/frequency caveats above.
+
+The residual collection work differs concretely: 1.x's `Const` uses a
+`VariableResolver` prepared during warmup. In `shards/core/foundation.hpp`,
+`reassign` copies SHVar fields directly between resolved pointers in an
+existing collection template. Rust still clones/drops owned Var elements.
+Likewise, 1.x Take has cached-field/fixed-index paths while Rust's table
+lookup remains a BTreeMap lookup. These are implementation and ownership
+contracts, not proof that C++ inherently executes equivalent work faster.
+The 1.x resolver explicitly clears borrowed fields at cleanup to avoid
+freeing their storage; a borrowed-view design in Rust would also need an
+explicit lifetime contract.
+
+The review's growing-accumulator scripts were run separately, at 10,000 and
+40,000 iterations, three alternating process runs per variant/backend before
+and after the fix, pinned to CPU 2. Every final count matched. At 40,000,
+sequence medians fell from 2.465/2.474 seconds to 5.47/5.46 ms
+(stackless/stackful); table medians fell from 2.462/2.460 seconds to
+5.97/6.00 ms. These are whole-process wall times, including startup and parsing,
+not isolated VM timings. [Scripts, commands, binary hashes and raw samples](../bench/vm-execution/results/2026-10-05-owned-constructors/retention-repro.json)
+are retained. The owner-count regressions provide the deterministic guard;
+timing alone does not prove an asymptotic bound.
+
+The complete local check set passed again, including native and WASI shared
+regressions, release nesting limits, docs-off tests and both clippy variants.
+Release core tests with `output-checks`, frontend constructor tests with
+`shards-core/output-checks`, and all five inline executor Miri tests also
+passed. Independent verification of the review fix remains a separate step.

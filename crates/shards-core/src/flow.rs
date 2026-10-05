@@ -51,6 +51,12 @@ impl CompiledFlow<Stackful> {
     let mut value = input.clone();
     let mut index = 0;
     while index < self.nodes.len() {
+      if self.code[index].is_constructor() {
+        let mesh = ctx.mesh.borrow();
+        (index, value) =
+          crate::inline::construct(&self.code, index, value, ctx.locals, &mesh.frame)?;
+        continue;
+      }
       if !matches!(self.code[index].op, crate::inline::Op::Fallback) {
         let mut mesh = ctx.mesh.borrow_mut();
         (index, value) =

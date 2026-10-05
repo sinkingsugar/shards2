@@ -51,8 +51,9 @@ and other system activity can affect the result despite affinity.
 - `get-*`: repeated reads of a local holding that value.
 - `update-*`: a chain of `Update(slot)` calls starting from a seed. In 1.x,
   Update returns the destination cell, so calls after the first become
-  self-assignment (`_cloneVarSlow` returns immediately). In 2.0 it returns an
-  owned clone of the input. This measures that forwarding/alias fast path,
+  self-assignment (`_cloneVarSlow` returns immediately). The optimized 2.0
+  builtin executor also forwards the destination cell within its instruction
+  segment. This measures that forwarding/alias fast path,
   **not** repeated independent copies.
 - `assign-*`: every motif is `Get(seed) | Update(slot)`, so each assignment
   reads the original source again. Source and destination remain distinct.

@@ -31,7 +31,12 @@ Consequence: most of the choices below become ordinary Rust API design, not ABI 
 | `inlineShardId` written by compose, so the VM can switch on hot shards | Compose may return a specialized activation (e.g. a different `Compiled` variant or function) chosen at compose time. Nothing is written into shared nodes. |
 
 **Commitment:** per-type static metadata plus shared compiled nodes.
-**Prototype only:** dynamic dispatch through trait objects. Enum or generic dispatch for hot shards (the 1.x `InlineShard` equivalent) is a later optimization, measured against the baseline.
+**Implemented optimization (2026-10-05):** compose selects immutable enum
+instructions for core Const/Get/Set/Ref/Update/Inc, specialized Add, Take and
+non-clearing Push. Selection uses the Rust implementation identity, never a
+shard's name. Both schedulers run uninterrupted instruction segments through
+the same executor; other shards retain trait-object dispatch. Normal node
+instantiation and cleanup still run. See the [VM measurements](vm-execution-benchmarks.md).
 
 ## 2. Parameters
 
@@ -125,6 +130,17 @@ records the API, restart behavior and limitations.
 | `SHContext`: everything else (variables, suspension, the mesh, errors) is reached through one opaque context | **`ActivationCtx`** (prototype): an explicit execution interface, giving short-lived access to the instance's frames (§8), scheduler operations (suspend, run a sub-wire for `Do`) and resource services. |
 
 **Commitment:** explicit result types for values, errors and flow control, instead of context flags. An explicit execution context instead of an opaque one.
+
+The builtin executor borrows its accumulator from input, constants, frame
+slots or call-local scratch storage. Its raw pointers cannot escape the
+call: frames are exclusively borrowed, cannot resize, and no callbacks or
+suspension occur inside a segment. Every write consumes its input before
+replacement and reanchors the accumulator. Segment exit produces an owned
+snapshot before any generic shard, nested flow or suspension. Debug and
+`output-checks` builds validate every builtin's declared output as usual.
+Numeric scratch holds only explicitly constructed numeric variants, so it
+can be overwritten without running the general `Var` destructor dispatch.
+This is an internal optimization; host shard signatures are unchanged.
 **Prototype only:**
 - the output slot mechanism
 - the exact `ActivationCtx` API
@@ -170,9 +186,10 @@ Prototype rules: one scheduler thread, and a mutable frame borrow is never held 
 finds a substantial gap against 1.x on hot cheap-shard chains, while independent
 collection assignment can benefit from sharing. On x86-64 the current `Var`
 is smaller than `SHVar`, but owned output transfer, reference counting and the
-activation result envelope still cost work. Keep value forwarding/output slots
-and compose-selected activation paths open alongside layout; the compiled/state
-split is not contingent on the current by-value output choice.
+activation result envelope still cost work. Compose-selected builtin segments
+now avoid those transfers; Float4 Add emits packed SIMD on the measured x86-64
+release build. The `Var` enum layout itself is unchanged and remains open to
+measurement. The compiled/state split is not contingent on by-value outputs.
 
 
 ## 10. Dropped or deferred from `shards.h`

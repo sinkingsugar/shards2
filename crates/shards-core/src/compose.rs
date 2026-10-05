@@ -24,6 +24,11 @@ use crate::types::Type;
 pub trait Backend: Sized + 'static {
   type Node: ?Sized + Send + Sync + 'static;
 
+  #[doc(hidden)]
+  fn inline(_node: &Self::Node) -> Option<crate::inline::InlineOp> {
+    None
+  }
+
   fn compose_shard(
     ty: &ShardType,
     args: &Args,
@@ -339,6 +344,7 @@ impl<B: Backend> ComposeCtx<'_, B> {
   fn compose_flow_at_depth(&mut self, flow: &[ShardDef], input: Type) -> Result<CompiledFlow<B>> {
     let saved = self.input;
     let mut nodes = Vec::with_capacity(flow.len());
+    let mut code = Vec::with_capacity(flow.len());
     let mut ty = input;
     // Once a shard never produces a value (`Stop`), the rest of the flow is
     // unreachable but still checked: the next shard gets a None input (it
@@ -398,6 +404,11 @@ impl<B: Backend> ComposeCtx<'_, B> {
           }));
         }
       };
+      code.push(crate::inline::Instruction::new(
+        B::inline(&composed.compiled),
+        def.ty.name(),
+        composed.output,
+      ));
       nodes.push(composed.compiled);
       if composed.output == Type::never() {
         diverged = true;
@@ -406,7 +417,11 @@ impl<B: Backend> ComposeCtx<'_, B> {
     }
     self.input = saved;
     let output = if diverged { Type::never() } else { ty };
-    Ok(CompiledFlow { nodes, output })
+    Ok(CompiledFlow {
+      nodes,
+      code,
+      output,
+    })
   }
 
   fn wire_def(&mut self, name: &str) -> Option<WireDef> {

@@ -79,7 +79,8 @@ macro_rules! run_depth {
 fn main() {
   let stackless = std::env::args().any(|a| a == "--stackless");
   let scheduler = if stackless { "stackless" } else { "stackful" };
-  for depth in [1, 4, 16, 64] {
+  // Include the root/callee levels within the current 48-level compose limit.
+  for depth in [1, 4, 16, 32] {
     let (tick_ns, resumes) = if stackless {
       run_depth!(shards_core::stackless::Mesh::new(), depth)
     } else {

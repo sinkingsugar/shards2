@@ -39,6 +39,37 @@ macro_rules! acceptance_tests {
     }
 
     #[test]
+    fn inline_output_is_a_snapshot_across_suspend_and_nested_writes() {
+      for boundary in [pause(), sub(vec![konst(Var::string("nested")), update("shared")])] {
+        let mut mesh = Mesh::new();
+        mesh.declare_var("shared", Var::string("original"), true);
+        mesh.add_wire(wire("reader", false, vec![get("shared"), boundary]));
+        mesh.add_wire(wire("writer", false, vec![konst(Var::string("writer")), update("shared")]));
+        let reader = mesh.compile("reader", Type::none()).unwrap();
+        let writer = mesh.compile("writer", Type::none()).unwrap();
+        let id = mesh.spawn(&reader, Var::None).unwrap();
+        mesh.spawn(&writer, Var::None).unwrap();
+        mesh.tick();
+        mesh.tick();
+        assert_eq!(mesh.outcome(id), Some(&Outcome::Completed(Var::string("original"))));
+        assert_eq!(mesh.get_var("shared"), Some(Var::string("writer")));
+      }
+    }
+
+    #[test]
+    fn inline_assignment_preserves_other_aliases() {
+      let mut mesh = Mesh::new();
+      mesh.add_wire(wire("main", false, vec![
+        konst(Var::Int(7)), set("a"), set("b"), update("a"),
+        add(var("a")), update("a"), inc("a"), get("b"),
+      ]));
+      let compiled = mesh.compile("main", Type::none()).unwrap();
+      let id = mesh.spawn(&compiled, Var::None).unwrap();
+      mesh.tick();
+      assert_eq!(mesh.outcome(id), Some(&Outcome::Completed(Var::Int(7))));
+    }
+
+    #[test]
     fn do_checks_reload_registry_once_per_revision() {
       use std::collections::HashSet;
       let wires = |body: &str| {

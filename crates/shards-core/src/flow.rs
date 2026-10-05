@@ -15,6 +15,7 @@ use crate::var::Var;
 /// A compiled flow: a sequence of compiled nodes of one scheduler's kind.
 pub struct CompiledFlow<B: Backend> {
   pub(crate) nodes: Vec<Arc<B::Node>>,
+  pub(crate) code: Vec<crate::inline::Instruction>,
   pub output: Type,
 }
 
@@ -48,11 +49,19 @@ impl CompiledFlow<Stackful> {
     input: &Var,
   ) -> Result<Flow> {
     let mut value = input.clone();
-    for (node, node_state) in self.nodes.iter().zip(state.states.iter_mut()) {
-      match node.activate(node_state.as_mut(), ctx, &value)? {
+    let mut index = 0;
+    while index < self.nodes.len() {
+      if !matches!(self.code[index].op, crate::inline::Op::Fallback) {
+        let mut mesh = ctx.mesh.borrow_mut();
+        (index, value) =
+          crate::inline::run(&self.code, index, &value, ctx.locals, &mut mesh.frame)?;
+        continue;
+      }
+      match self.nodes[index].activate(state.states[index].as_mut(), ctx, &value)? {
         Flow::Next(output) => value = output,
         other => return Ok(other),
       }
+      index += 1;
     }
     Ok(Flow::Next(value))
   }

@@ -19,15 +19,18 @@ Sources: [shard contract](prototype-shard-contract.md), [core design](shards-2-c
 
 ## Implemented
 
-- **VM execution benchmark (2026-10-05):** a matched, non-suspending suite
-  measures precomposed hot shard chains on 1.x and both 2.0 backends, with
-  raw samples and result/counter checks. It exposes a substantial cheap-shard
-  throughput gap despite the earlier instance/scheduler wins; independent
-  collection assignment can favor 2.0's sharing. Value forwarding, activation
-  result movement and compose-selected builtin paths need optimization before
-  the execution contract is considered settled. No runtime implementation
-  changed. See [the report](vm-execution-benchmarks.md) for scope, compiler
-  sensitivity and validation; this is not a whole-application speed claim.
+- **VM execution optimization (2026-10-05):** the matched benchmark exposed
+  a large gap in uninterrupted cheap-shard throughput. Both schedulers now
+  share compose-selected builtin instructions and a borrowed accumulator,
+  with owned snapshots at generic shard/suspension boundaries. Typed Add
+  reuses numeric result storage; Float4 emits packed SIMD in the measured
+  release build. Take and non-clearing Push also have builtin paths, and
+  sequence/table constructors reuse unshared instance buffers. Generic host
+  shard APIs and the Var enum layout remain unchanged. See the
+  [report](vm-execution-benchmarks.md) for before/after results and remaining
+  collection costs; the 2× target is not achieved across every workload.
+  Aliasing/snapshot regressions cover both schedulers, and the pointer
+  executor passes Miri. This is not a whole-application speed claim.
 
 - **Hot reload:** `shards_lang::Session` supports full restart (`reload`) and
   preserving reload (`reload_preserving`) on both schedulers. Preserving

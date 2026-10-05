@@ -40,6 +40,10 @@ pub struct Stackless;
 impl Backend for Stackless {
   type Node = dyn CompiledNode;
 
+  fn inline(node: &Self::Node) -> Option<crate::inline::InlineOp> {
+    node.inline()
+  }
+
   fn compose_shard(
     ty: &ShardType,
     args: &Args,
@@ -162,6 +166,11 @@ pub trait Shard: 'static {
 
   fn instantiate(compiled: &Self::Compiled, ctx: &mut InstanceCtx) -> Result<Self::State>;
 
+  #[doc(hidden)]
+  fn inline(_compiled: &Self::Compiled) -> Option<crate::inline::InlineOp> {
+    None
+  }
+
   /// Starts an activation, or continues one that returned [`Step::Suspend`].
   /// A shard that can suspend (directly or through a nested flow) must keep
   /// its resume point in `state`, and must reset it whenever it returns
@@ -182,6 +191,11 @@ pub trait Shard: 'static {
 
 /// Type-erased stackless compiled node.
 pub trait CompiledNode: Send + Sync {
+  #[doc(hidden)]
+  fn inline(&self) -> Option<crate::inline::InlineOp> {
+    None
+  }
+
   fn name(&self) -> &'static str;
   fn instantiate(&self, ctx: &mut InstanceCtx) -> Result<Box<dyn Any>>;
   fn activate(&self, state: &mut dyn Any, ctx: &mut ActivationCtx<'_>, input: &Var)
@@ -193,6 +207,10 @@ pub trait CompiledNode: Send + Sync {
 struct Node<S: Shard>(S::Compiled);
 
 impl<S: Shard> CompiledNode for Node<S> {
+  fn inline(&self) -> Option<crate::inline::InlineOp> {
+    S::inline(&self.0)
+  }
+
   fn name(&self) -> &'static str {
     S::NAME
   }
@@ -284,7 +302,12 @@ impl CompiledFlow<Stackless> {
       Some((index, value)) => (index, value),
       None => (0, input.clone()),
     };
-    for index in start..self.nodes.len() {
+    let mut index = start;
+    while index < self.nodes.len() {
+      if !matches!(self.code[index].op, crate::inline::Op::Fallback) {
+        (index, value) = crate::inline::run(&self.code, index, &value, ctx.locals, ctx.mesh_frame)?;
+        continue;
+      }
       match self.nodes[index].activate(state.states[index].as_mut(), ctx, &value)? {
         Step::Next(output) => value = output,
         Step::Suspend => {
@@ -293,6 +316,7 @@ impl CompiledFlow<Stackless> {
         }
         other => return Ok(other),
       }
+      index += 1;
     }
     Ok(Step::Next(value))
   }

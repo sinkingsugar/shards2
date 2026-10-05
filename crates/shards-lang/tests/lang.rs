@@ -55,6 +55,17 @@ macro_rules! lang_tests {
       }
     }
 
+    #[test]
+    fn reusable_collection_outputs_keep_saved_snapshots() {
+      for (expression, expected) in [
+        ("[n n]", "[[1 1] [2 2] [3 3]]"),
+        ("{a: n b: n}", "[{a: 1 b: 1} {a: 2 b: 2} {a: 3 b: 3}]"),
+      ] {
+        let source = format!("0 >= n\n[] >= saved\nRepeat({{ Inc(n) {expression} | Push(saved Clear: false) }} Times: 3)\nsaved | Is({expected})");
+        assert_eq!(completed(&run(&source, &no_defines()), "root"), Var::Bool(true));
+      }
+    }
+
     fn reload(session: &mut shards_lang::Session<Mesh>, text: &str) -> Vec<shards_lang::Finished> {
       session.reload(Source::new("reload.shs", text), &catalog(), &no_defines())
         .unwrap_or_else(|(_, d)| panic!("reload failed: {d:?}"))

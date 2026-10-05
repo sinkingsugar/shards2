@@ -16,6 +16,8 @@ pub mod describe;
 pub mod diagnostic;
 pub mod error;
 pub mod flow;
+#[doc(hidden)]
+pub mod inline;
 pub mod instance;
 mod lifecycle;
 pub mod log;

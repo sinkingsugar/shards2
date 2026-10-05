@@ -37,9 +37,10 @@ Mutation check: making the stackless `FlowState` restart from the beginning inst
 
 **Separate execution-throughput evidence (2026-10-05):** the
 [VM execution benchmark](vm-execution-benchmarks.md) measures long uninterrupted
-shard chains and finds substantial 1.x advantages on cheap operations, on both
-2.0 schedulers. The scheduler/instance results below do not establish competitive
-per-shard throughput; the two suites measure different costs.
+shard chains. Its initial baseline found substantial 1.x advantages on cheap
+operations; the follow-up introduces a shared builtin executor and reports
+the remaining gaps. The scheduler/instance results below do not establish
+competitive per-shard throughput; the two suites measure different costs.
 
 Release builds, Linux, i9-14900KF, 3 runs each. `bench_instances` is the entity benchmark from the design doc §5 (two nesting levels, one suspension per iteration); `bench_depth` isolates resume cost.
 

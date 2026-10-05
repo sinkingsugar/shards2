@@ -113,6 +113,10 @@ impl<L: LeafShard> Shard for Leaf<L> {
     L::instantiate(&c.inner, ctx)
   }
 
+  fn inline(c: &Checked<L::Compiled>) -> Option<crate::inline::InlineOp> {
+    crate::inline::leaf::<L>(&c.inner, c.output)
+  }
+
   fn activate(
     c: &Checked<L::Compiled>,
     s: &mut L::State,
@@ -146,6 +150,10 @@ impl<L: LeafShard> stackless::Shard for Leaf<L> {
 
   fn instantiate(c: &Checked<L::Compiled>, ctx: &mut InstanceCtx) -> Result<L::State> {
     L::instantiate(&c.inner, ctx)
+  }
+
+  fn inline(c: &Checked<L::Compiled>) -> Option<crate::inline::InlineOp> {
+    crate::inline::leaf::<L>(&c.inner, c.output)
   }
 
   fn activate(

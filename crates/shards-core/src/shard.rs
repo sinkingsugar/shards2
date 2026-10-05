@@ -79,6 +79,11 @@ pub trait Shard: 'static {
   /// acquired: no `cleanup` follows (contract §5).
   fn instantiate(compiled: &Self::Compiled, ctx: &mut InstanceCtx) -> Result<Self::State>;
 
+  #[doc(hidden)]
+  fn inline(_compiled: &Self::Compiled) -> Option<crate::inline::InlineOp> {
+    None
+  }
+
   fn activate(
     compiled: &Self::Compiled,
     state: &mut Self::State,
@@ -99,6 +104,11 @@ pub trait Shard: 'static {
 
 /// Type-erased compiled node, as stored in a compiled flow.
 pub trait CompiledNode: Send + Sync {
+  #[doc(hidden)]
+  fn inline(&self) -> Option<crate::inline::InlineOp> {
+    None
+  }
+
   fn name(&self) -> &'static str;
   fn instantiate(&self, ctx: &mut InstanceCtx) -> Result<Box<dyn Any>>;
   fn activate(&self, state: &mut dyn Any, ctx: &mut ActivationCtx<'_>, input: &Var)
@@ -111,6 +121,10 @@ pub trait CompiledNode: Send + Sync {
 struct Node<S: Shard>(S::Compiled);
 
 impl<S: Shard> CompiledNode for Node<S> {
+  fn inline(&self) -> Option<crate::inline::InlineOp> {
+    S::inline(&self.0)
+  }
+
   fn name(&self) -> &'static str {
     S::NAME
   }
@@ -300,6 +314,10 @@ pub struct Stackful;
 
 impl Backend for Stackful {
   type Node = dyn CompiledNode;
+
+  fn inline(node: &Self::Node) -> Option<crate::inline::InlineOp> {
+    node.inline()
+  }
 
   fn compose_shard(
     ty: &ShardType,

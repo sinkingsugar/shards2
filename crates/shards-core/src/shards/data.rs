@@ -166,26 +166,31 @@ impl LeafShard for Take {
 
   fn activate(key: &Operand, _: &mut (), ctx: &mut impl LeafCtx, input: &Var) -> Result<Flow> {
     let key = key.get(ctx);
-    let index = |len: usize| match key {
-      Var::Int(i) if i >= 0 && (i as usize) < len => Ok(i as usize),
-      Var::Int(i) => Err(Error::Activation(format!(
-        "Take: index {i} is out of range (length {len})"
-      ))),
-      _ => Err(Error::Activation("Take: the key must be an Int".into())),
-    };
-    let value = match input {
-      Var::Seq(items) => items[index(items.len())?].clone(),
-      Var::Float2(v) => Var::Float(v[index(2)?]),
-      Var::Float3(v) => Var::Float(f64::from(v[index(3)?])),
-      Var::Float4(v) => Var::Float(f64::from(v[index(4)?])),
-      Var::Table(entries) => match &key {
-        Var::String(k) => entries.get(&**k).cloned().unwrap_or(Var::None),
-        _ => return Err(Error::Activation("Take: the key must be a String".into())),
-      },
-      _ => return Err(Error::Activation("Take: input type mismatch".into())),
-    };
-    Ok(Flow::Next(value))
+    take_value(input, &key).map(Flow::Next)
   }
+}
+
+#[inline]
+pub(crate) fn take_value(input: &Var, key: &Var) -> Result<Var> {
+  let index = |len: usize| match key {
+    Var::Int(i) if *i >= 0 && (*i as usize) < len => Ok(*i as usize),
+    Var::Int(i) => Err(Error::Activation(format!(
+      "Take: index {i} is out of range (length {len})"
+    ))),
+    _ => Err(Error::Activation("Take: the key must be an Int".into())),
+  };
+  let value = match input {
+    Var::Seq(items) => items[index(items.len())?].clone(),
+    Var::Float2(v) => Var::Float(v[index(2)?]),
+    Var::Float3(v) => Var::Float(f64::from(v[index(3)?])),
+    Var::Float4(v) => Var::Float(f64::from(v[index(4)?])),
+    Var::Table(entries) => match &key {
+      Var::String(k) => entries.get(&**k).cloned().unwrap_or(Var::None),
+      _ => return Err(Error::Activation("Take: the key must be a String".into())),
+    },
+    _ => return Err(Error::Activation("Take: input type mismatch".into())),
+  };
+  Ok(value)
 }
 
 // --- Push ---
@@ -228,9 +233,9 @@ pub const PUSH_DESC: ShardDesc = ShardDesc {
 pub struct Push;
 
 pub struct PushCompiled {
-  binding: Binding,
+  pub(crate) binding: Binding,
   /// This Push declared the variable and clears it each iteration.
-  clear: bool,
+  pub(crate) clear: bool,
 }
 
 impl LeafShard for Push {
@@ -385,7 +390,7 @@ pub struct SeqMake;
 
 impl LeafShard for SeqMake {
   type Compiled = Vec<Operand>;
-  type State = ();
+  type State = Arc<Vec<Var>>;
   const DESC: ShardDesc = SEQ_MAKE_DESC;
 
   fn compose<B: Backend>(
@@ -404,14 +409,25 @@ impl LeafShard for SeqMake {
     })
   }
 
-  fn instantiate(_: &Vec<Operand>, _: &mut InstanceCtx) -> Result<()> {
-    Ok(())
+  fn instantiate(items: &Vec<Operand>, _: &mut InstanceCtx) -> Result<Self::State> {
+    Ok(Arc::new(Vec::with_capacity(items.len())))
   }
 
-  fn activate(items: &Vec<Operand>, _: &mut (), ctx: &mut impl LeafCtx, _: &Var) -> Result<Flow> {
-    Ok(Flow::Next(Var::Seq(Arc::new(
-      items.iter().map(|o| o.get(ctx)).collect(),
-    ))))
+  fn activate(
+    items: &Vec<Operand>,
+    state: &mut Self::State,
+    ctx: &mut impl LeafCtx,
+    _: &Var,
+  ) -> Result<Flow> {
+    // Reuse storage only when no previous output still observes it. If a
+    // caller kept a snapshot, build fresh rather than copying obsolete items.
+    if let Some(output) = Arc::get_mut(state) {
+      output.clear();
+      output.extend(items.iter().map(|o| o.get(ctx)));
+    } else {
+      *state = Arc::new(items.iter().map(|o| o.get(ctx)).collect());
+    }
+    Ok(Flow::Next(Var::Seq(state.clone())))
   }
 }
 
@@ -452,7 +468,7 @@ pub struct TableMake;
 
 impl LeafShard for TableMake {
   type Compiled = Vec<(Arc<str>, Operand)>;
-  type State = ();
+  type State = Arc<std::collections::BTreeMap<Arc<str>, Var>>;
   const DESC: ShardDesc = TABLE_MAKE_DESC;
 
   fn compose<B: Backend>(
@@ -503,22 +519,34 @@ impl LeafShard for TableMake {
     })
   }
 
-  fn instantiate(_: &Vec<(Arc<str>, Operand)>, _: &mut InstanceCtx) -> Result<()> {
-    Ok(())
+  fn instantiate(entries: &Vec<(Arc<str>, Operand)>, _: &mut InstanceCtx) -> Result<Self::State> {
+    Ok(Arc::new(
+      entries
+        .iter()
+        .map(|(key, _)| (key.clone(), Var::None))
+        .collect(),
+    ))
   }
 
   fn activate(
     entries: &Vec<(Arc<str>, Operand)>,
-    _: &mut (),
+    state: &mut Self::State,
     ctx: &mut impl LeafCtx,
     _: &Var,
   ) -> Result<Flow> {
-    Ok(Flow::Next(Var::Table(Arc::new(
-      entries
-        .iter()
-        .map(|(k, o)| (k.clone(), o.get(ctx)))
-        .collect(),
-    ))))
+    if let Some(output) = Arc::get_mut(state) {
+      for (key, operand) in entries {
+        *output.get_mut(key).expect("compiled table key") = operand.get(ctx);
+      }
+    } else {
+      *state = Arc::new(
+        entries
+          .iter()
+          .map(|(key, o)| (key.clone(), o.get(ctx)))
+          .collect(),
+      );
+    }
+    Ok(Flow::Next(Var::Table(state.clone())))
   }
 }
 

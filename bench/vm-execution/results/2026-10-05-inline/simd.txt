@@ -1,0 +1,9 @@
+Default release binary; hash recorded in metadata.json.
+Float4 Add packed-SIMD excerpt from shards_core::inline::run:
+  25e309:	06 
+  25e30a:	41 0f 10 40 04       	movups 0x4(%r8),%xmm0
+  25e30f:	41 0f 10 49 04       	movups 0x4(%r9),%xmm1
+  25e314:	0f 58 c8             	addps  %xmm0,%xmm1
+  25e317:	0f 11 8c 24 bc 00 00 	movups %xmm1,0xbc(%rsp)
+  25e31e:	00 
+  25e31f:	4c 8d 84 24 b8 00 00 	lea    0xb8(%rsp),%r8

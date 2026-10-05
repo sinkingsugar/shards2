@@ -310,7 +310,7 @@ impl CompiledFlow<Stackless> {
         continue;
       }
       if !matches!(self.code[index].op, crate::inline::Op::Fallback) {
-        (index, value) = crate::inline::run(&self.code, index, &value, ctx.locals, ctx.mesh_frame)?;
+        (index, value) = crate::inline::run(&self.code, index, value, ctx.locals, ctx.mesh_frame)?;
         continue;
       }
       match self.nodes[index].activate(state.states[index].as_mut(), ctx, &value)? {

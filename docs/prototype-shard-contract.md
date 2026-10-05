@@ -132,8 +132,11 @@ records the API, restart behavior and limitations.
 
 **Commitment:** explicit result types for values, errors and flow control, instead of context flags. An explicit execution context instead of an opaque one.
 
-The builtin executor borrows its accumulator from input, constants, frame
-slots or call-local scratch storage. Its raw pointers cannot escape the
+The builtin executor consumes its incoming value into owned scratch and
+borrows its accumulator from constants, frame slots or call-local storage.
+Obsolete reference-counted scratch is released when the accumulator moves
+elsewhere; it must not keep captured collections shared through a later frame
+mutation. Numeric scratch needs no resource cleanup. Its raw pointers cannot escape the
 call: frames are exclusively borrowed, cannot resize, and no callbacks or
 suspension occur inside a segment. Every write consumes its input before
 replacement and reanchors the accumulator. Segment exit produces an owned

@@ -1,11 +1,11 @@
 //! Compose-selected builtins and a borrowed accumulator for uninterrupted runs.
 //!
-//! The pointer accumulator never escapes `run`. It refers to the call's input,
-//! an immutable instruction constant, a frame slot, or a local scratch value.
+//! The pointer accumulator never escapes `run`. It refers to owned scratch,
+//! an immutable instruction constant, a frame slot, or numeric result storage.
 //! Frames are exclusively borrowed and cannot resize or suspend during a run.
 //! Each operation consumes its input before replacing storage and reanchors the
 //! accumulator after a write. A run ends before any arbitrary shard activation,
-//! cloning its output so nested flows, host writes and suspension see a snapshot.
+//! returning owned output so nested flows, host writes and suspension see a snapshot.
 
 use std::any::{Any, TypeId};
 
@@ -147,7 +147,7 @@ impl Frames {
 pub(crate) fn run(
   code: &[Instruction],
   mut index: usize,
-  input: &Var,
+  input: Var,
   locals: &mut [Var],
   mesh: &mut [Var],
 ) -> Result<(usize, Var)> {
@@ -157,25 +157,35 @@ pub(crate) fn run(
     mesh: mesh.as_mut_ptr(),
     mesh_len: mesh.len(),
   };
-  // Initial None is overwritten before a pointer is taken; subsequent values
-  // are read through `value` and must still be dropped when replaced.
-  #[allow(unused_assignments)]
-  let mut scratch = Var::None;
+  // Own the incoming output so replacing it releases captured values before
+  // later frame mutations. Const/Get/Set/Inc release it when reanchoring to
+  // external storage; Take/Push/generic arithmetic replace it with their output.
+  // Typed numeric arithmetic can leave only a resource-free numeric value in
+  // scratch: its input must be numeric, and no obsolete owning value survives
+  // the other reanchoring operations. This avoids a cleanup branch per Add.
+  let mut scratch = input;
   // Numeric results own no heap storage. Overwrite this slot without running
   // Var's general drop dispatch on every arithmetic operation. Only explicit
   // Int/Float/Float4 constructors may be written here; generic results use
   // `scratch`. It is never read until initialized and no pointer escapes run.
   let mut numeric = std::mem::MaybeUninit::<Var>::uninit();
-  let mut value: *const Var = input;
+  let mut value: *const Var = &scratch;
   while let Some(instruction) = code.get(index) {
-    // SAFETY: `value` starts at input and each arm reanchors it to live input,
-    // code, scratch or a checked frame slot. Reads end before any write. No
-    // reference survives replacement of its owner; no callback can mutate it.
+    // SAFETY: `value` starts at scratch and each arm reanchors it to live
+    // code, scratch, numeric storage or a checked frame slot. Reads end before
+    // any write. No reference survives replacement of its owner; no callback
+    // can mutate it.
     unsafe {
       match &instruction.op {
         Op::Fallback | Op::SeqMake(_) | Op::TableMake(..) => break,
-        Op::Const(v) => value = v,
-        Op::Get(b) => value = frames.slot(*b),
+        Op::Const(v) => {
+          value = v;
+          clear_scratch(&mut scratch);
+        }
+        Op::Get(b) => {
+          value = frames.slot(*b);
+          clear_scratch(&mut scratch);
+        }
         Op::Set(b) => {
           let target = frames.slot(*b);
           if !std::ptr::eq(value, target) {
@@ -183,6 +193,7 @@ pub(crate) fn run(
             *target = copy;
           }
           value = target;
+          clear_scratch(&mut scratch);
         }
         Op::Inc(b) => {
           let target = frames.slot(*b);
@@ -193,6 +204,7 @@ pub(crate) fn run(
             .checked_add(1)
             .ok_or_else(|| Error::Activation("Inc: integer overflow".into()))?;
           value = target;
+          clear_scratch(&mut scratch);
         }
         Op::Take(key) => {
           let key = match key {
@@ -281,7 +293,21 @@ pub(crate) fn run(
   }
   // SAFETY: the accumulator is still live by the invariant above. Cloning at
   // the boundary makes the result independent of all borrowed storage.
-  Ok((index, unsafe { (*value).clone() }))
+  let output = if std::ptr::eq(value, &scratch) {
+    scratch
+  } else {
+    unsafe { (*value).clone() }
+  };
+  Ok((index, output))
+}
+
+// Most Const/Get chains have no owned scratch after their first operation.
+// Avoid repeatedly writing the empty tag in those hot chains.
+#[inline(always)]
+fn clear_scratch(scratch: &mut Var) {
+  if !matches!(scratch, Var::None) {
+    *scratch = Var::None;
+  }
 }
 
 #[cold]
@@ -414,6 +440,51 @@ mod tests {
   }
 
   #[test]
+  fn obsolete_input_and_take_scratch_are_released_before_push() {
+    use std::sync::Arc;
+    for through_take in [false, true] {
+      for replacement in [Op::Const(Var::Int(1)), Op::Get(Binding::Local(1))] {
+        let mut locals = vec![Var::Seq(Arc::new(vec![Var::Int(7)])), Var::Int(1)];
+        let Var::Seq(items) = &locals[0] else {
+          unreachable!()
+        };
+        let allocation = Arc::as_ptr(items);
+        let captured = Var::Seq(Arc::new(vec![locals[0].clone()]));
+        let (input, mut ops) = if through_take {
+          (
+            Var::Seq(Arc::new(vec![captured])),
+            vec![Op::Take(Operand::Const(Var::Int(0)))],
+          )
+        } else {
+          (captured, vec![])
+        };
+        ops.extend([replacement, Op::Push(Binding::Local(0))]);
+        let (_, output) = run(&instructions(ops), 0, input, &mut locals, &mut []).unwrap();
+        assert_eq!(output, Var::Int(1));
+        let Var::Seq(items) = &locals[0] else {
+          unreachable!()
+        };
+        assert_eq!(Arc::as_ptr(items), allocation);
+        assert_eq!(&**items, &[Var::Int(7), Var::Int(1)]);
+      }
+    }
+  }
+
+  #[test]
+  fn owned_input_survives_passthrough_and_self_push() {
+    use std::sync::Arc;
+    let input = Var::Seq(Arc::new(vec![Var::Int(7)]));
+    let code = instructions([Op::Fallback]);
+    let (_, output) = run(&code, 0, input.clone(), &mut [], &mut []).unwrap();
+    assert_eq!(output, input);
+    let mut locals = vec![input.clone()];
+    let code = instructions([Op::Push(Binding::Local(0))]);
+    let (_, output) = run(&code, 0, input.clone(), &mut locals, &mut []).unwrap();
+    assert_eq!(output, input);
+    assert_eq!(locals[0], Var::Seq(Arc::new(vec![Var::Int(7), input])));
+  }
+
+  #[test]
   fn borrowed_slots_and_scratch_match_owned_execution() {
     // Differential execution exercises self-assignment, both frame kinds,
     // scratch reuse, and replacing reference-counted values with numbers.
@@ -473,7 +544,7 @@ mod tests {
         code.push(op);
       }
       let code = instructions(code);
-      let (index, actual) = run(&code, 0, &input, &mut locals, &mut mesh).unwrap();
+      let (index, actual) = run(&code, 0, input, &mut locals, &mut mesh).unwrap();
       assert_eq!(index, code.len());
       assert_eq!(actual, expected);
       assert_eq!(locals, expected_locals);
@@ -489,7 +560,7 @@ mod tests {
       Op::Set(Binding::Local(0)),
       Op::Fallback,
     ]);
-    let (index, output) = run(&code, 0, &Var::None, &mut locals, &mut []).unwrap();
+    let (index, output) = run(&code, 0, Var::None, &mut locals, &mut []).unwrap();
     assert_eq!(index, 2);
     locals[0] = Var::string("changed");
     drop(code);
@@ -506,7 +577,7 @@ mod tests {
       Op::Take(Operand::Const(Var::Int(0))),
       Op::Set(Binding::Local(0)),
     ]);
-    let (_, output) = run(&code, 0, &Var::None, &mut locals, &mut []).unwrap();
+    let (_, output) = run(&code, 0, Var::None, &mut locals, &mut []).unwrap();
     assert_eq!(output, Var::string("element"));
     assert_eq!(locals[0], output);
     locals[0] = old.clone();
@@ -515,7 +586,7 @@ mod tests {
       Op::Push(Binding::Local(0)),
       Op::Push(Binding::Local(0)),
     ]);
-    let (_, output) = run(&code, 0, &Var::None, &mut locals, &mut []).unwrap();
+    let (_, output) = run(&code, 0, Var::None, &mut locals, &mut []).unwrap();
     assert_eq!(output, old);
     assert_eq!(
       locals[0],
@@ -549,13 +620,13 @@ mod tests {
       ),
     ] {
       let expected = add_generic(&lhs, &rhs).unwrap();
-      let (_, actual) = run(&instructions([op]), 0, &lhs, &mut [rhs], &mut []).unwrap();
+      let (_, actual) = run(&instructions([op]), 0, lhs, &mut [rhs], &mut []).unwrap();
       assert_eq!(actual, expected);
     }
     let error = run(
       &instructions([Op::AddIntConst(1)]),
       0,
-      &Var::Int(i64::MAX),
+      Var::Int(i64::MAX),
       &mut [],
       &mut [],
     )

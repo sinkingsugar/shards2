@@ -91,6 +91,41 @@ macro_rules! acceptance_tests {
     }
 
     #[test]
+    fn discarded_inline_input_does_not_copy_captured_sequence() {
+      use std::sync::Arc;
+      use shards_core::shards::data;
+      use shards_core::ShardDef;
+
+      for table in [false, true] {
+        let mut mesh = Mesh::new();
+        mesh.declare_var("acc", Var::Seq(Arc::new(vec![Var::Int(7)])), true);
+        let allocation = match mesh.get_var("acc").unwrap() {
+          Var::Seq(items) => Arc::as_ptr(&items),
+          _ => unreachable!(),
+        };
+        let constructor = if table {
+          ShardDef::new(&data::TABLE_MAKE, vec![
+            val(Var::Seq(Arc::new(vec![Var::string("field")]))), var("acc"),
+          ])
+        } else {
+          ShardDef::new(&data::SEQ_MAKE, vec![var("acc")])
+        };
+        mesh.add_wire(wire("main", false, vec![
+          constructor, konst(Var::Int(1)),
+          ShardDef::new(&data::PUSH, vec![var("acc"), val(Var::Bool(false))]),
+          pause(),
+        ]));
+        let compiled = mesh.compile("main", Type::none()).unwrap();
+        let id = mesh.spawn(&compiled, Var::None).unwrap();
+        mesh.tick();
+        assert_eq!(mesh.outcome(id), None);
+        let Some(Var::Seq(items)) = mesh.get_var("acc") else { unreachable!() };
+        assert_eq!(&**items, &[Var::Int(7), Var::Int(1)]);
+        assert_eq!(Arc::as_ptr(&items), allocation, "obsolete input forced a copy");
+      }
+    }
+
+    #[test]
     fn inline_output_is_a_snapshot_across_suspend_and_nested_writes() {
       for boundary in [pause(), sub(vec![konst(Var::string("nested")), update("shared")])] {
         let mut mesh = Mesh::new();

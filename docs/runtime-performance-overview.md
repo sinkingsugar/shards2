@@ -5,6 +5,12 @@ All native binaries are release builds. This refresh covers the existing CPU VM,
 instance/tick, nested-resume, simulated async and local HTTP benchmarks. It does
 not measure a full application, graphics, physics, or embedded performance.
 
+**Subsequent ownership fix:** the [inline segment follow-up](vm-execution-benchmarks.md#inline-segment-input-lifetime-review-follow-up)
+fixes an additional quadratic retention case and reruns the complete VM suite.
+Arithmetic remains near parity; 19/25 long-chain cases meet ≤2× (Get(Int) now
+2.05×). The tables below describe the explicitly identified earlier snapshot;
+the scheduler/HTTP refresh has not been repeated for the later fix.
+
 ## Results
 
 The [complete VM suite](vm-execution-benchmarks.md#constructor-retention-review-follow-up)

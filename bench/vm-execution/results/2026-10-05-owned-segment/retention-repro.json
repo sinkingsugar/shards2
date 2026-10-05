@@ -1,0 +1,941 @@
+{
+  "method": "Three alternating before/after release processes per shape/backend/count on CPU 2. Wall clock includes startup/parsing. All final counts verified.",
+  "samples": [
+    {
+      "source": "before-a003cb7",
+      "kind": "seq",
+      "backend": "stackless",
+      "iterations": 10000,
+      "round": 0,
+      "seconds": 0.12286808699718677,
+      "script": "[] >= acc\nRepeat({[acc]\n1 | Push(acc Clear: false)} Times: 10000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "/tmp/shards-segment-before",
+        "run",
+        "/tmp/shards-segment-repro.shs"
+      ],
+      "output": "RETENTION_COUNT: 10000\nroot: 10000\n",
+      "binary_sha256": "fe9a97e9e7443134447cf5f0b0d0addda7a78bffb847f916f4cdca6825041e57"
+    },
+    {
+      "source": "fixed",
+      "kind": "seq",
+      "backend": "stackless",
+      "iterations": 10000,
+      "round": 0,
+      "seconds": 0.002303853994817473,
+      "script": "[] >= acc\nRepeat({[acc]\n1 | Push(acc Clear: false)} Times: 10000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "target/release/shards2",
+        "run",
+        "/tmp/shards-segment-repro.shs"
+      ],
+      "output": "RETENTION_COUNT: 10000\nroot: 10000\n",
+      "binary_sha256": "601ff4e18aee2e64d478d4f36ed2392b560ef35e45e9fb7a8e33affb6affbadd"
+    },
+    {
+      "source": "fixed",
+      "kind": "seq",
+      "backend": "stackless",
+      "iterations": 10000,
+      "round": 1,
+      "seconds": 0.001970397002878599,
+      "script": "[] >= acc\nRepeat({[acc]\n1 | Push(acc Clear: false)} Times: 10000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "target/release/shards2",
+        "run",
+        "/tmp/shards-segment-repro.shs"
+      ],
+      "output": "RETENTION_COUNT: 10000\nroot: 10000\n",
+      "binary_sha256": "601ff4e18aee2e64d478d4f36ed2392b560ef35e45e9fb7a8e33affb6affbadd"
+    },
+    {
+      "source": "before-a003cb7",
+      "kind": "seq",
+      "backend": "stackless",
+      "iterations": 10000,
+      "round": 1,
+      "seconds": 0.12316295200434979,
+      "script": "[] >= acc\nRepeat({[acc]\n1 | Push(acc Clear: false)} Times: 10000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "/tmp/shards-segment-before",
+        "run",
+        "/tmp/shards-segment-repro.shs"
+      ],
+      "output": "RETENTION_COUNT: 10000\nroot: 10000\n",
+      "binary_sha256": "fe9a97e9e7443134447cf5f0b0d0addda7a78bffb847f916f4cdca6825041e57"
+    },
+    {
+      "source": "before-a003cb7",
+      "kind": "seq",
+      "backend": "stackless",
+      "iterations": 10000,
+      "round": 2,
+      "seconds": 0.12371174499276094,
+      "script": "[] >= acc\nRepeat({[acc]\n1 | Push(acc Clear: false)} Times: 10000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "/tmp/shards-segment-before",
+        "run",
+        "/tmp/shards-segment-repro.shs"
+      ],
+      "output": "RETENTION_COUNT: 10000\nroot: 10000\n",
+      "binary_sha256": "fe9a97e9e7443134447cf5f0b0d0addda7a78bffb847f916f4cdca6825041e57"
+    },
+    {
+      "source": "fixed",
+      "kind": "seq",
+      "backend": "stackless",
+      "iterations": 10000,
+      "round": 2,
+      "seconds": 0.00213819500640966,
+      "script": "[] >= acc\nRepeat({[acc]\n1 | Push(acc Clear: false)} Times: 10000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "target/release/shards2",
+        "run",
+        "/tmp/shards-segment-repro.shs"
+      ],
+      "output": "RETENTION_COUNT: 10000\nroot: 10000\n",
+      "binary_sha256": "601ff4e18aee2e64d478d4f36ed2392b560ef35e45e9fb7a8e33affb6affbadd"
+    },
+    {
+      "source": "before-a003cb7",
+      "kind": "seq",
+      "backend": "stackful",
+      "iterations": 10000,
+      "round": 0,
+      "seconds": 0.12432673899456859,
+      "script": "[] >= acc\nRepeat({[acc]\n1 | Push(acc Clear: false)} Times: 10000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "/tmp/shards-segment-before",
+        "run",
+        "/tmp/shards-segment-repro.shs",
+        "--stackful"
+      ],
+      "output": "RETENTION_COUNT: 10000\nroot: 10000\n",
+      "binary_sha256": "fe9a97e9e7443134447cf5f0b0d0addda7a78bffb847f916f4cdca6825041e57"
+    },
+    {
+      "source": "fixed",
+      "kind": "seq",
+      "backend": "stackful",
+      "iterations": 10000,
+      "round": 0,
+      "seconds": 0.0023779950133757666,
+      "script": "[] >= acc\nRepeat({[acc]\n1 | Push(acc Clear: false)} Times: 10000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "target/release/shards2",
+        "run",
+        "/tmp/shards-segment-repro.shs",
+        "--stackful"
+      ],
+      "output": "RETENTION_COUNT: 10000\nroot: 10000\n",
+      "binary_sha256": "601ff4e18aee2e64d478d4f36ed2392b560ef35e45e9fb7a8e33affb6affbadd"
+    },
+    {
+      "source": "fixed",
+      "kind": "seq",
+      "backend": "stackful",
+      "iterations": 10000,
+      "round": 1,
+      "seconds": 0.002046809997409582,
+      "script": "[] >= acc\nRepeat({[acc]\n1 | Push(acc Clear: false)} Times: 10000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "target/release/shards2",
+        "run",
+        "/tmp/shards-segment-repro.shs",
+        "--stackful"
+      ],
+      "output": "RETENTION_COUNT: 10000\nroot: 10000\n",
+      "binary_sha256": "601ff4e18aee2e64d478d4f36ed2392b560ef35e45e9fb7a8e33affb6affbadd"
+    },
+    {
+      "source": "before-a003cb7",
+      "kind": "seq",
+      "backend": "stackful",
+      "iterations": 10000,
+      "round": 1,
+      "seconds": 0.12406071199802682,
+      "script": "[] >= acc\nRepeat({[acc]\n1 | Push(acc Clear: false)} Times: 10000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "/tmp/shards-segment-before",
+        "run",
+        "/tmp/shards-segment-repro.shs",
+        "--stackful"
+      ],
+      "output": "RETENTION_COUNT: 10000\nroot: 10000\n",
+      "binary_sha256": "fe9a97e9e7443134447cf5f0b0d0addda7a78bffb847f916f4cdca6825041e57"
+    },
+    {
+      "source": "before-a003cb7",
+      "kind": "seq",
+      "backend": "stackful",
+      "iterations": 10000,
+      "round": 2,
+      "seconds": 0.12454302099649794,
+      "script": "[] >= acc\nRepeat({[acc]\n1 | Push(acc Clear: false)} Times: 10000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "/tmp/shards-segment-before",
+        "run",
+        "/tmp/shards-segment-repro.shs",
+        "--stackful"
+      ],
+      "output": "RETENTION_COUNT: 10000\nroot: 10000\n",
+      "binary_sha256": "fe9a97e9e7443134447cf5f0b0d0addda7a78bffb847f916f4cdca6825041e57"
+    },
+    {
+      "source": "fixed",
+      "kind": "seq",
+      "backend": "stackful",
+      "iterations": 10000,
+      "round": 2,
+      "seconds": 0.002293621000717394,
+      "script": "[] >= acc\nRepeat({[acc]\n1 | Push(acc Clear: false)} Times: 10000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "target/release/shards2",
+        "run",
+        "/tmp/shards-segment-repro.shs",
+        "--stackful"
+      ],
+      "output": "RETENTION_COUNT: 10000\nroot: 10000\n",
+      "binary_sha256": "601ff4e18aee2e64d478d4f36ed2392b560ef35e45e9fb7a8e33affb6affbadd"
+    },
+    {
+      "source": "before-a003cb7",
+      "kind": "table",
+      "backend": "stackless",
+      "iterations": 10000,
+      "round": 0,
+      "seconds": 0.1262869500060333,
+      "script": "[] >= acc\nRepeat({{a: acc}\n1 | Push(acc Clear: false)} Times: 10000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "/tmp/shards-segment-before",
+        "run",
+        "/tmp/shards-segment-repro.shs"
+      ],
+      "output": "RETENTION_COUNT: 10000\nroot: 10000\n",
+      "binary_sha256": "fe9a97e9e7443134447cf5f0b0d0addda7a78bffb847f916f4cdca6825041e57"
+    },
+    {
+      "source": "fixed",
+      "kind": "table",
+      "backend": "stackless",
+      "iterations": 10000,
+      "round": 0,
+      "seconds": 0.0023209209903143346,
+      "script": "[] >= acc\nRepeat({{a: acc}\n1 | Push(acc Clear: false)} Times: 10000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "target/release/shards2",
+        "run",
+        "/tmp/shards-segment-repro.shs"
+      ],
+      "output": "RETENTION_COUNT: 10000\nroot: 10000\n",
+      "binary_sha256": "601ff4e18aee2e64d478d4f36ed2392b560ef35e45e9fb7a8e33affb6affbadd"
+    },
+    {
+      "source": "fixed",
+      "kind": "table",
+      "backend": "stackless",
+      "iterations": 10000,
+      "round": 1,
+      "seconds": 0.0019439010065980256,
+      "script": "[] >= acc\nRepeat({{a: acc}\n1 | Push(acc Clear: false)} Times: 10000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "target/release/shards2",
+        "run",
+        "/tmp/shards-segment-repro.shs"
+      ],
+      "output": "RETENTION_COUNT: 10000\nroot: 10000\n",
+      "binary_sha256": "601ff4e18aee2e64d478d4f36ed2392b560ef35e45e9fb7a8e33affb6affbadd"
+    },
+    {
+      "source": "before-a003cb7",
+      "kind": "table",
+      "backend": "stackless",
+      "iterations": 10000,
+      "round": 1,
+      "seconds": 0.1263973910099594,
+      "script": "[] >= acc\nRepeat({{a: acc}\n1 | Push(acc Clear: false)} Times: 10000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "/tmp/shards-segment-before",
+        "run",
+        "/tmp/shards-segment-repro.shs"
+      ],
+      "output": "RETENTION_COUNT: 10000\nroot: 10000\n",
+      "binary_sha256": "fe9a97e9e7443134447cf5f0b0d0addda7a78bffb847f916f4cdca6825041e57"
+    },
+    {
+      "source": "before-a003cb7",
+      "kind": "table",
+      "backend": "stackless",
+      "iterations": 10000,
+      "round": 2,
+      "seconds": 0.12683945600292645,
+      "script": "[] >= acc\nRepeat({{a: acc}\n1 | Push(acc Clear: false)} Times: 10000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "/tmp/shards-segment-before",
+        "run",
+        "/tmp/shards-segment-repro.shs"
+      ],
+      "output": "RETENTION_COUNT: 10000\nroot: 10000\n",
+      "binary_sha256": "fe9a97e9e7443134447cf5f0b0d0addda7a78bffb847f916f4cdca6825041e57"
+    },
+    {
+      "source": "fixed",
+      "kind": "table",
+      "backend": "stackless",
+      "iterations": 10000,
+      "round": 2,
+      "seconds": 0.002301936998264864,
+      "script": "[] >= acc\nRepeat({{a: acc}\n1 | Push(acc Clear: false)} Times: 10000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "target/release/shards2",
+        "run",
+        "/tmp/shards-segment-repro.shs"
+      ],
+      "output": "RETENTION_COUNT: 10000\nroot: 10000\n",
+      "binary_sha256": "601ff4e18aee2e64d478d4f36ed2392b560ef35e45e9fb7a8e33affb6affbadd"
+    },
+    {
+      "source": "before-a003cb7",
+      "kind": "table",
+      "backend": "stackful",
+      "iterations": 10000,
+      "round": 0,
+      "seconds": 0.12624076000065543,
+      "script": "[] >= acc\nRepeat({{a: acc}\n1 | Push(acc Clear: false)} Times: 10000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "/tmp/shards-segment-before",
+        "run",
+        "/tmp/shards-segment-repro.shs",
+        "--stackful"
+      ],
+      "output": "RETENTION_COUNT: 10000\nroot: 10000\n",
+      "binary_sha256": "fe9a97e9e7443134447cf5f0b0d0addda7a78bffb847f916f4cdca6825041e57"
+    },
+    {
+      "source": "fixed",
+      "kind": "table",
+      "backend": "stackful",
+      "iterations": 10000,
+      "round": 0,
+      "seconds": 0.00238776599871926,
+      "script": "[] >= acc\nRepeat({{a: acc}\n1 | Push(acc Clear: false)} Times: 10000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "target/release/shards2",
+        "run",
+        "/tmp/shards-segment-repro.shs",
+        "--stackful"
+      ],
+      "output": "RETENTION_COUNT: 10000\nroot: 10000\n",
+      "binary_sha256": "601ff4e18aee2e64d478d4f36ed2392b560ef35e45e9fb7a8e33affb6affbadd"
+    },
+    {
+      "source": "fixed",
+      "kind": "table",
+      "backend": "stackful",
+      "iterations": 10000,
+      "round": 1,
+      "seconds": 0.0021495249966392294,
+      "script": "[] >= acc\nRepeat({{a: acc}\n1 | Push(acc Clear: false)} Times: 10000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "target/release/shards2",
+        "run",
+        "/tmp/shards-segment-repro.shs",
+        "--stackful"
+      ],
+      "output": "RETENTION_COUNT: 10000\nroot: 10000\n",
+      "binary_sha256": "601ff4e18aee2e64d478d4f36ed2392b560ef35e45e9fb7a8e33affb6affbadd"
+    },
+    {
+      "source": "before-a003cb7",
+      "kind": "table",
+      "backend": "stackful",
+      "iterations": 10000,
+      "round": 1,
+      "seconds": 0.1262508119980339,
+      "script": "[] >= acc\nRepeat({{a: acc}\n1 | Push(acc Clear: false)} Times: 10000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "/tmp/shards-segment-before",
+        "run",
+        "/tmp/shards-segment-repro.shs",
+        "--stackful"
+      ],
+      "output": "RETENTION_COUNT: 10000\nroot: 10000\n",
+      "binary_sha256": "fe9a97e9e7443134447cf5f0b0d0addda7a78bffb847f916f4cdca6825041e57"
+    },
+    {
+      "source": "before-a003cb7",
+      "kind": "table",
+      "backend": "stackful",
+      "iterations": 10000,
+      "round": 2,
+      "seconds": 0.1296935059945099,
+      "script": "[] >= acc\nRepeat({{a: acc}\n1 | Push(acc Clear: false)} Times: 10000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "/tmp/shards-segment-before",
+        "run",
+        "/tmp/shards-segment-repro.shs",
+        "--stackful"
+      ],
+      "output": "RETENTION_COUNT: 10000\nroot: 10000\n",
+      "binary_sha256": "fe9a97e9e7443134447cf5f0b0d0addda7a78bffb847f916f4cdca6825041e57"
+    },
+    {
+      "source": "fixed",
+      "kind": "table",
+      "backend": "stackful",
+      "iterations": 10000,
+      "round": 2,
+      "seconds": 0.002429463987937197,
+      "script": "[] >= acc\nRepeat({{a: acc}\n1 | Push(acc Clear: false)} Times: 10000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "target/release/shards2",
+        "run",
+        "/tmp/shards-segment-repro.shs",
+        "--stackful"
+      ],
+      "output": "RETENTION_COUNT: 10000\nroot: 10000\n",
+      "binary_sha256": "601ff4e18aee2e64d478d4f36ed2392b560ef35e45e9fb7a8e33affb6affbadd"
+    },
+    {
+      "source": "before-a003cb7",
+      "kind": "seq",
+      "backend": "stackless",
+      "iterations": 40000,
+      "round": 0,
+      "seconds": 2.5864701849932317,
+      "script": "[] >= acc\nRepeat({[acc]\n1 | Push(acc Clear: false)} Times: 40000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "/tmp/shards-segment-before",
+        "run",
+        "/tmp/shards-segment-repro.shs"
+      ],
+      "output": "RETENTION_COUNT: 40000\nroot: 40000\n",
+      "binary_sha256": "fe9a97e9e7443134447cf5f0b0d0addda7a78bffb847f916f4cdca6825041e57"
+    },
+    {
+      "source": "fixed",
+      "kind": "seq",
+      "backend": "stackless",
+      "iterations": 40000,
+      "round": 0,
+      "seconds": 0.004766641999594867,
+      "script": "[] >= acc\nRepeat({[acc]\n1 | Push(acc Clear: false)} Times: 40000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "target/release/shards2",
+        "run",
+        "/tmp/shards-segment-repro.shs"
+      ],
+      "output": "RETENTION_COUNT: 40000\nroot: 40000\n",
+      "binary_sha256": "601ff4e18aee2e64d478d4f36ed2392b560ef35e45e9fb7a8e33affb6affbadd"
+    },
+    {
+      "source": "fixed",
+      "kind": "seq",
+      "backend": "stackless",
+      "iterations": 40000,
+      "round": 1,
+      "seconds": 0.004641245002858341,
+      "script": "[] >= acc\nRepeat({[acc]\n1 | Push(acc Clear: false)} Times: 40000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "target/release/shards2",
+        "run",
+        "/tmp/shards-segment-repro.shs"
+      ],
+      "output": "RETENTION_COUNT: 40000\nroot: 40000\n",
+      "binary_sha256": "601ff4e18aee2e64d478d4f36ed2392b560ef35e45e9fb7a8e33affb6affbadd"
+    },
+    {
+      "source": "before-a003cb7",
+      "kind": "seq",
+      "backend": "stackless",
+      "iterations": 40000,
+      "round": 1,
+      "seconds": 2.5686910539952805,
+      "script": "[] >= acc\nRepeat({[acc]\n1 | Push(acc Clear: false)} Times: 40000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "/tmp/shards-segment-before",
+        "run",
+        "/tmp/shards-segment-repro.shs"
+      ],
+      "output": "RETENTION_COUNT: 40000\nroot: 40000\n",
+      "binary_sha256": "fe9a97e9e7443134447cf5f0b0d0addda7a78bffb847f916f4cdca6825041e57"
+    },
+    {
+      "source": "before-a003cb7",
+      "kind": "seq",
+      "backend": "stackless",
+      "iterations": 40000,
+      "round": 2,
+      "seconds": 2.59620780700061,
+      "script": "[] >= acc\nRepeat({[acc]\n1 | Push(acc Clear: false)} Times: 40000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "/tmp/shards-segment-before",
+        "run",
+        "/tmp/shards-segment-repro.shs"
+      ],
+      "output": "RETENTION_COUNT: 40000\nroot: 40000\n",
+      "binary_sha256": "fe9a97e9e7443134447cf5f0b0d0addda7a78bffb847f916f4cdca6825041e57"
+    },
+    {
+      "source": "fixed",
+      "kind": "seq",
+      "backend": "stackless",
+      "iterations": 40000,
+      "round": 2,
+      "seconds": 0.004643838998163119,
+      "script": "[] >= acc\nRepeat({[acc]\n1 | Push(acc Clear: false)} Times: 40000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "target/release/shards2",
+        "run",
+        "/tmp/shards-segment-repro.shs"
+      ],
+      "output": "RETENTION_COUNT: 40000\nroot: 40000\n",
+      "binary_sha256": "601ff4e18aee2e64d478d4f36ed2392b560ef35e45e9fb7a8e33affb6affbadd"
+    },
+    {
+      "source": "before-a003cb7",
+      "kind": "seq",
+      "backend": "stackful",
+      "iterations": 40000,
+      "round": 0,
+      "seconds": 2.595136289994116,
+      "script": "[] >= acc\nRepeat({[acc]\n1 | Push(acc Clear: false)} Times: 40000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "/tmp/shards-segment-before",
+        "run",
+        "/tmp/shards-segment-repro.shs",
+        "--stackful"
+      ],
+      "output": "RETENTION_COUNT: 40000\nroot: 40000\n",
+      "binary_sha256": "fe9a97e9e7443134447cf5f0b0d0addda7a78bffb847f916f4cdca6825041e57"
+    },
+    {
+      "source": "fixed",
+      "kind": "seq",
+      "backend": "stackful",
+      "iterations": 40000,
+      "round": 0,
+      "seconds": 0.004737487994134426,
+      "script": "[] >= acc\nRepeat({[acc]\n1 | Push(acc Clear: false)} Times: 40000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "target/release/shards2",
+        "run",
+        "/tmp/shards-segment-repro.shs",
+        "--stackful"
+      ],
+      "output": "RETENTION_COUNT: 40000\nroot: 40000\n",
+      "binary_sha256": "601ff4e18aee2e64d478d4f36ed2392b560ef35e45e9fb7a8e33affb6affbadd"
+    },
+    {
+      "source": "fixed",
+      "kind": "seq",
+      "backend": "stackful",
+      "iterations": 40000,
+      "round": 1,
+      "seconds": 0.004720990007626824,
+      "script": "[] >= acc\nRepeat({[acc]\n1 | Push(acc Clear: false)} Times: 40000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "target/release/shards2",
+        "run",
+        "/tmp/shards-segment-repro.shs",
+        "--stackful"
+      ],
+      "output": "RETENTION_COUNT: 40000\nroot: 40000\n",
+      "binary_sha256": "601ff4e18aee2e64d478d4f36ed2392b560ef35e45e9fb7a8e33affb6affbadd"
+    },
+    {
+      "source": "before-a003cb7",
+      "kind": "seq",
+      "backend": "stackful",
+      "iterations": 40000,
+      "round": 1,
+      "seconds": 2.5882857160031563,
+      "script": "[] >= acc\nRepeat({[acc]\n1 | Push(acc Clear: false)} Times: 40000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "/tmp/shards-segment-before",
+        "run",
+        "/tmp/shards-segment-repro.shs",
+        "--stackful"
+      ],
+      "output": "RETENTION_COUNT: 40000\nroot: 40000\n",
+      "binary_sha256": "fe9a97e9e7443134447cf5f0b0d0addda7a78bffb847f916f4cdca6825041e57"
+    },
+    {
+      "source": "before-a003cb7",
+      "kind": "seq",
+      "backend": "stackful",
+      "iterations": 40000,
+      "round": 2,
+      "seconds": 2.5915554289967986,
+      "script": "[] >= acc\nRepeat({[acc]\n1 | Push(acc Clear: false)} Times: 40000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "/tmp/shards-segment-before",
+        "run",
+        "/tmp/shards-segment-repro.shs",
+        "--stackful"
+      ],
+      "output": "RETENTION_COUNT: 40000\nroot: 40000\n",
+      "binary_sha256": "fe9a97e9e7443134447cf5f0b0d0addda7a78bffb847f916f4cdca6825041e57"
+    },
+    {
+      "source": "fixed",
+      "kind": "seq",
+      "backend": "stackful",
+      "iterations": 40000,
+      "round": 2,
+      "seconds": 0.0048218360025202855,
+      "script": "[] >= acc\nRepeat({[acc]\n1 | Push(acc Clear: false)} Times: 40000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "target/release/shards2",
+        "run",
+        "/tmp/shards-segment-repro.shs",
+        "--stackful"
+      ],
+      "output": "RETENTION_COUNT: 40000\nroot: 40000\n",
+      "binary_sha256": "601ff4e18aee2e64d478d4f36ed2392b560ef35e45e9fb7a8e33affb6affbadd"
+    },
+    {
+      "source": "before-a003cb7",
+      "kind": "table",
+      "backend": "stackless",
+      "iterations": 40000,
+      "round": 0,
+      "seconds": 2.5947252070036484,
+      "script": "[] >= acc\nRepeat({{a: acc}\n1 | Push(acc Clear: false)} Times: 40000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "/tmp/shards-segment-before",
+        "run",
+        "/tmp/shards-segment-repro.shs"
+      ],
+      "output": "RETENTION_COUNT: 40000\nroot: 40000\n",
+      "binary_sha256": "fe9a97e9e7443134447cf5f0b0d0addda7a78bffb847f916f4cdca6825041e57"
+    },
+    {
+      "source": "fixed",
+      "kind": "table",
+      "backend": "stackless",
+      "iterations": 40000,
+      "round": 0,
+      "seconds": 0.005179576008231379,
+      "script": "[] >= acc\nRepeat({{a: acc}\n1 | Push(acc Clear: false)} Times: 40000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "target/release/shards2",
+        "run",
+        "/tmp/shards-segment-repro.shs"
+      ],
+      "output": "RETENTION_COUNT: 40000\nroot: 40000\n",
+      "binary_sha256": "601ff4e18aee2e64d478d4f36ed2392b560ef35e45e9fb7a8e33affb6affbadd"
+    },
+    {
+      "source": "fixed",
+      "kind": "table",
+      "backend": "stackless",
+      "iterations": 40000,
+      "round": 1,
+      "seconds": 0.004939631005981937,
+      "script": "[] >= acc\nRepeat({{a: acc}\n1 | Push(acc Clear: false)} Times: 40000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "target/release/shards2",
+        "run",
+        "/tmp/shards-segment-repro.shs"
+      ],
+      "output": "RETENTION_COUNT: 40000\nroot: 40000\n",
+      "binary_sha256": "601ff4e18aee2e64d478d4f36ed2392b560ef35e45e9fb7a8e33affb6affbadd"
+    },
+    {
+      "source": "before-a003cb7",
+      "kind": "table",
+      "backend": "stackless",
+      "iterations": 40000,
+      "round": 1,
+      "seconds": 2.589410524989944,
+      "script": "[] >= acc\nRepeat({{a: acc}\n1 | Push(acc Clear: false)} Times: 40000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "/tmp/shards-segment-before",
+        "run",
+        "/tmp/shards-segment-repro.shs"
+      ],
+      "output": "RETENTION_COUNT: 40000\nroot: 40000\n",
+      "binary_sha256": "fe9a97e9e7443134447cf5f0b0d0addda7a78bffb847f916f4cdca6825041e57"
+    },
+    {
+      "source": "before-a003cb7",
+      "kind": "table",
+      "backend": "stackless",
+      "iterations": 40000,
+      "round": 2,
+      "seconds": 2.592882405006094,
+      "script": "[] >= acc\nRepeat({{a: acc}\n1 | Push(acc Clear: false)} Times: 40000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "/tmp/shards-segment-before",
+        "run",
+        "/tmp/shards-segment-repro.shs"
+      ],
+      "output": "RETENTION_COUNT: 40000\nroot: 40000\n",
+      "binary_sha256": "fe9a97e9e7443134447cf5f0b0d0addda7a78bffb847f916f4cdca6825041e57"
+    },
+    {
+      "source": "fixed",
+      "kind": "table",
+      "backend": "stackless",
+      "iterations": 40000,
+      "round": 2,
+      "seconds": 0.005304698992404155,
+      "script": "[] >= acc\nRepeat({{a: acc}\n1 | Push(acc Clear: false)} Times: 40000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "target/release/shards2",
+        "run",
+        "/tmp/shards-segment-repro.shs"
+      ],
+      "output": "RETENTION_COUNT: 40000\nroot: 40000\n",
+      "binary_sha256": "601ff4e18aee2e64d478d4f36ed2392b560ef35e45e9fb7a8e33affb6affbadd"
+    },
+    {
+      "source": "before-a003cb7",
+      "kind": "table",
+      "backend": "stackful",
+      "iterations": 40000,
+      "round": 0,
+      "seconds": 2.5900918639963493,
+      "script": "[] >= acc\nRepeat({{a: acc}\n1 | Push(acc Clear: false)} Times: 40000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "/tmp/shards-segment-before",
+        "run",
+        "/tmp/shards-segment-repro.shs",
+        "--stackful"
+      ],
+      "output": "RETENTION_COUNT: 40000\nroot: 40000\n",
+      "binary_sha256": "fe9a97e9e7443134447cf5f0b0d0addda7a78bffb847f916f4cdca6825041e57"
+    },
+    {
+      "source": "fixed",
+      "kind": "table",
+      "backend": "stackful",
+      "iterations": 40000,
+      "round": 0,
+      "seconds": 0.0053851330012548715,
+      "script": "[] >= acc\nRepeat({{a: acc}\n1 | Push(acc Clear: false)} Times: 40000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "target/release/shards2",
+        "run",
+        "/tmp/shards-segment-repro.shs",
+        "--stackful"
+      ],
+      "output": "RETENTION_COUNT: 40000\nroot: 40000\n",
+      "binary_sha256": "601ff4e18aee2e64d478d4f36ed2392b560ef35e45e9fb7a8e33affb6affbadd"
+    },
+    {
+      "source": "fixed",
+      "kind": "table",
+      "backend": "stackful",
+      "iterations": 40000,
+      "round": 1,
+      "seconds": 0.004995237992261536,
+      "script": "[] >= acc\nRepeat({{a: acc}\n1 | Push(acc Clear: false)} Times: 40000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "target/release/shards2",
+        "run",
+        "/tmp/shards-segment-repro.shs",
+        "--stackful"
+      ],
+      "output": "RETENTION_COUNT: 40000\nroot: 40000\n",
+      "binary_sha256": "601ff4e18aee2e64d478d4f36ed2392b560ef35e45e9fb7a8e33affb6affbadd"
+    },
+    {
+      "source": "before-a003cb7",
+      "kind": "table",
+      "backend": "stackful",
+      "iterations": 40000,
+      "round": 1,
+      "seconds": 2.5926898080069805,
+      "script": "[] >= acc\nRepeat({{a: acc}\n1 | Push(acc Clear: false)} Times: 40000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "/tmp/shards-segment-before",
+        "run",
+        "/tmp/shards-segment-repro.shs",
+        "--stackful"
+      ],
+      "output": "RETENTION_COUNT: 40000\nroot: 40000\n",
+      "binary_sha256": "fe9a97e9e7443134447cf5f0b0d0addda7a78bffb847f916f4cdca6825041e57"
+    },
+    {
+      "source": "before-a003cb7",
+      "kind": "table",
+      "backend": "stackful",
+      "iterations": 40000,
+      "round": 2,
+      "seconds": 2.5870207300031325,
+      "script": "[] >= acc\nRepeat({{a: acc}\n1 | Push(acc Clear: false)} Times: 40000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "/tmp/shards-segment-before",
+        "run",
+        "/tmp/shards-segment-repro.shs",
+        "--stackful"
+      ],
+      "output": "RETENTION_COUNT: 40000\nroot: 40000\n",
+      "binary_sha256": "fe9a97e9e7443134447cf5f0b0d0addda7a78bffb847f916f4cdca6825041e57"
+    },
+    {
+      "source": "fixed",
+      "kind": "table",
+      "backend": "stackful",
+      "iterations": 40000,
+      "round": 2,
+      "seconds": 0.0052483570034382865,
+      "script": "[] >= acc\nRepeat({{a: acc}\n1 | Push(acc Clear: false)} Times: 40000)\nacc | Count | Log(\"RETENTION_COUNT\")\n",
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "target/release/shards2",
+        "run",
+        "/tmp/shards-segment-repro.shs",
+        "--stackful"
+      ],
+      "output": "RETENTION_COUNT: 40000\nroot: 40000\n",
+      "binary_sha256": "601ff4e18aee2e64d478d4f36ed2392b560ef35e45e9fb7a8e33affb6affbadd"
+    }
+  ]
+}

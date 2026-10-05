@@ -435,3 +435,69 @@ regressions, release nesting limits, docs-off tests and both clippy variants.
 Release core tests with `output-checks`, frontend constructor tests with
 `shards-core/output-checks`, and all five inline executor Miri tests also
 passed. Independent verification of the review fix remains a separate step.
+
+## Inline segment input lifetime review follow-up
+
+A second review (`2026-10-05-a003cb7-claude-3dc841#F1`) found that even without
+constructor state caches, `inline::run` borrowed the previous output for its
+whole segment. `[acc]` followed directly by `1 | Push(acc Clear: false)` kept
+that captured accumulator shared during Push, causing repeated full copies.
+The earlier constructor-cache finding was independently verified as fixed;
+this is a separate retention cause.
+
+Both schedulers now move the incoming Var into the builtin executor. Const,
+Get, Set and Inc release obsolete owned scratch when reanchoring; Take, Push
+and generic arithmetic replace it with their owned result. Typed numeric
+arithmetic can leave only resource-free numeric scratch, so its hot loop does
+not need a general cleanup check. At segment exit, scratch output is moved,
+while borrowed code/frame/numeric output is cloned into an owned snapshot.
+No borrowed pointer crosses the existing callback/suspension boundaries.
+
+`discarded_inline_input_does_not_copy_captured_sequence` checks actual Arc
+allocation identity across constructor → Const → Push → Pause for sequence
+and table constructors on both schedulers. It failed on both backends before
+the fix. Unit regressions also cover Get replacement, intermediate Take
+scratch, passthrough, and self-push snapshots. All pass with the fix, including
+shared-suite WASI coverage and all seven inline Miri tests.
+
+At 40,000 iterations, three alternating release process runs per shape/backend
+on CPU 2 gave these medians (whole-process time, startup/parsing included):
+
+| Constructor feeding Const → Push | Before stackless / stackful | Fixed stackless / stackful |
+|---|---:|---:|
+| `[acc]` | 2,586.5 / 2,591.6 ms | 4.64 / 4.74 ms |
+| `{a: acc}` | 2,592.9 / 2,590.1 ms | 5.18 / 5.25 ms |
+
+At 10,000 iterations the fixed runs took 2.14–2.39 ms, versus 123–126 ms
+before. All final counts matched. Allocation-identity assertions guard the
+cause without timing thresholds. This does not claim to fix the pre-existing
+passthrough-retention behavior discussed in the review.
+
+The final implementation passed the full 25-workload VM suite, four widths,
+nine retained samples per engine/cell, with every value/count check passing.
+[Raw results, reproductions and source fingerprints](../bench/vm-execution/results/2026-10-05-owned-segment/)
+identify the working tree based on `a003cb7`. Selected 256-motif medians (ns):
+
+| Workload | 1.x | 2.0 stackful | 2.0 stackless | Stackless / 1.x |
+|---|---:|---:|---:|---:|
+| add-int | 303.7 | 238.1 | 234.8 | 0.77× |
+| add-float | 378.6 | 375.5 | 372.4 | 0.98× |
+| add-float4 | 376.6 | 391.3 | 389.1 | 1.03× |
+| const-int | 128.6 | 197.8 | 195.5 | 1.52× |
+| get-int | 129.6 | 266.6 | 265.4 | 2.05× |
+| make-seq | 1,443.4 | 4,577.3 | 4,576.9 | 3.17× |
+| make-table | 1,583.8 | 4,857.1 | 4,849.7 | 3.06× |
+
+19/25 stackless cases now meet ≤2× at width 256, versus 20/25 in the previous
+run: Get(Int) crosses the threshold. Const/Get and Do have measurable overhead;
+arithmetic remains near or faster than 1.x. These are separately measured
+runs with unlocked CPU frequency; the 1.x timings also changed. This fix does
+not claim a throughput improvement across every workload. Scheduler/HTTP
+measurements in the runtime overview remain explicitly pinned to the earlier
+runtime and were not repeated for this ownership change.
+
+The full required local check set passed on the final implementation, including
+both native backends, WASI execution, docs-off tests, release nesting limits,
+TLS and WASI clippy. Release core tests with output checks, all seven inline
+Miri tests, and benchmark validator tests passed. Independent verification of
+this new finding remains a separate step.

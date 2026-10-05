@@ -59,8 +59,7 @@ impl CompiledFlow<Stackful> {
       }
       if !matches!(self.code[index].op, crate::inline::Op::Fallback) {
         let mut mesh = ctx.mesh.borrow_mut();
-        (index, value) =
-          crate::inline::run(&self.code, index, &value, ctx.locals, &mut mesh.frame)?;
+        (index, value) = crate::inline::run(&self.code, index, value, ctx.locals, &mut mesh.frame)?;
         continue;
       }
       match self.nodes[index].activate(state.states[index].as_mut(), ctx, &value)? {

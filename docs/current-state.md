@@ -27,6 +27,9 @@ Sources: [shard contract](prototype-shard-contract.md), [core design](shards-2-c
   release build. Take and non-clearing Push also have builtin paths.
   Sequence/table constructor output caches were removed after review found
   they retained captured values and made later accumulator appends quadratic.
+  A subsequent review found segment inputs could also retain captured values
+  across later writes. Builtin segments now consume their input and release
+  obsolete owned scratch as soon as the accumulator moves elsewhere.
   Constructors now consume uniquely owned input buffers and reuse them only
   across consecutive constructor instructions, without retaining outputs in
   shard state. Generic host

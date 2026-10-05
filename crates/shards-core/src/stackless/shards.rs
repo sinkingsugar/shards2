@@ -122,38 +122,84 @@ impl Shard for Pause {
 /// needs none of its own.
 pub struct Do;
 
+pub struct DoState {
+  call: Arc<crate::reload::InlineCall<Stackless>>,
+  state: Option<FlowState>,
+  active: bool,
+}
+
 impl Shard for Do {
-  type Compiled = CompiledFlow<Stackless>;
-  type State = FlowState;
+  type Compiled = Arc<crate::reload::InlineCall<Stackless>>;
+  type State = DoState;
   const NAME: &'static str = DO_DESC.name;
   const VERSION: u32 = DO_DESC.version;
 
-  fn compose(args: &Args, ctx: Ctx) -> Result<Composed<CompiledFlow<Stackless>>> {
+  fn compose(args: &Args, ctx: &mut ComposeCtx<'_, Stackless>) -> Result<Composed<Self::Compiled>> {
     compose_do(args, ctx)
   }
 
-  fn instantiate(flow: &CompiledFlow<Stackless>, ctx: &mut InstanceCtx) -> Result<FlowState> {
-    flow.instantiate(ctx)
+  fn instantiate(call: &Self::Compiled, ctx: &mut InstanceCtx) -> Result<DoState> {
+    Ok(DoState {
+      call: call.clone(),
+      state: Some(call.flow.instantiate(ctx)?),
+      active: false,
+    })
   }
 
   fn activate(
-    flow: &CompiledFlow<Stackless>,
-    state: &mut FlowState,
+    _: &Self::Compiled,
+    state: &mut DoState,
     ctx: &mut ActivationCtx<'_>,
     input: &Var,
   ) -> Result<Step> {
-    match flow.activate(state, ctx, input)? {
+    if !state.active {
+      if let Some(next) = ctx.inline_call(&state.call.key)
+        && next.signature == state.call.signature
+        && next.deps != state.call.deps
+      {
+        // Take before cleanup: if cleanup panics, terminal cleanup must not
+        // attempt this state a second time.
+        if let Some(mut old) = state.state.take() {
+          state.call.flow.cleanup(
+            &mut old,
+            &mut CleanupCtx {
+              instance: ctx.instance(),
+            },
+          );
+        }
+        state.call = next;
+      }
+      if state.state.is_none() {
+        state.state = Some(state.call.flow.instantiate(&mut InstanceCtx {
+          instance: ctx.instance(),
+        })?);
+      }
+      state.active = true;
+    }
+    let result = state
+      .call
+      .flow
+      .activate(state.state.as_mut().expect("Do state"), ctx, input);
+    if !matches!(result, Ok(Step::Suspend)) {
+      state.active = false;
+    }
+    match result? {
       Step::Return(value) => Ok(Step::Next(value)),
       other => Ok(other),
     }
   }
 
-  fn cleanup(flow: &CompiledFlow<Stackless>, state: &mut FlowState, ctx: &mut CleanupCtx) {
-    flow.cleanup(state, ctx);
+  fn cleanup(_: &Self::Compiled, state: &mut DoState, ctx: &mut CleanupCtx) {
+    if let Some(mut flow_state) = state.state.take() {
+      state.call.flow.cleanup(&mut flow_state, ctx);
+    }
   }
 
-  fn nested_state_size(flow: &CompiledFlow<Stackless>, state: &FlowState) -> usize {
-    flow.state_size(state)
+  fn nested_state_size(_: &Self::Compiled, state: &DoState) -> usize {
+    state
+      .state
+      .as_ref()
+      .map_or(0, |s| state.call.flow.state_size(s))
   }
 }
 

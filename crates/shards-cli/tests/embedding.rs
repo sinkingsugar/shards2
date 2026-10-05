@@ -241,6 +241,7 @@ fn a_host_checks_and_runs_a_script_with_its_own_shards() {
 // keeping an attached resource warm across revisions without live I/O.
 #[derive(Default)]
 struct WarmService {
+  ready: std::cell::Cell<bool>,
   starts: std::cell::Cell<i64>,
   dropped: std::cell::Cell<i64>,
 }
@@ -261,7 +262,7 @@ impl std::future::Future for WarmOperation {
     self: std::pin::Pin<&mut Self>,
     _: &mut std::task::Context<'_>,
   ) -> std::task::Poll<Self::Output> {
-    if self.pending {
+    if self.pending && !self.service.ready.get() {
       std::task::Poll::Pending
     } else {
       std::task::Poll::Ready(Ok(Var::Int(self.service.starts.get())))
@@ -345,6 +346,49 @@ fn reload_keeps_host_service_warm_and_cancels_pending_operations() {
     drop(session); // Drop also cancels pending work.
     assert_eq!(service.dropped.get(), 3);
     assert_eq!(std::rc::Rc::strong_count(&service), 2); // Host + service registry only.
+    WARM_SERVICE.with(|s| *s.borrow_mut() = None);
+  }
+  exercise::<shards_core::Mesh>();
+  exercise::<shards_core::StackfulMesh>();
+}
+
+#[test]
+fn preserving_reload_keeps_pending_host_operation_until_its_call_returns() {
+  fn exercise<H: shards_lang::ReloadHost>() {
+    static WARM: ShardType = async_type::<Warm>();
+    let catalog = Catalog::new(&[shards_core::shards::CATALOG, &[&WARM]]).unwrap();
+    let service = std::rc::Rc::new(WarmService::default());
+    WARM_SERVICE.with(|s| *s.borrow_mut() = Some(service.clone()));
+    let mut session = shards_lang::Session::<H>::new();
+    let defines = HashMap::new();
+    let load = |session: &mut shards_lang::Session<H>, input| {
+      let source = format!(
+        r#"@wire(inner {{{input} Host.Warm}})
+@wire(main {{Once({{0 >= n}}) Inc(n) Log Do(inner)}} Looped: true)
+@mesh(m) @schedule(m main) @run(m)"#
+      );
+      session
+        .reload_preserving(Source::new("warm.shs", source), &catalog, &defines)
+        .unwrap_or_else(|(_, d)| panic!("{d:?}"))
+    };
+    load(&mut session, 0);
+    let (_, lines) = shards_core::log::capture(|| {
+      session.tick();
+      assert_eq!(service.starts.get(), 1);
+      assert!(load(&mut session, 1).is_empty());
+      session.tick();
+      assert_eq!(service.dropped.get(), 0); // Accepted edit does not cancel the active call.
+      assert_eq!(service.starts.get(), 1);
+      service.ready.set(true);
+      session.tick(); // Existing operation finishes before replacement starts.
+      assert_eq!(service.dropped.get(), 1);
+      session.tick();
+    });
+    assert_eq!(lines, ["1", "2"]);
+    assert_eq!(service.starts.get(), 2);
+    assert_eq!(service.dropped.get(), 2);
+    drop(session);
+    assert_eq!(std::rc::Rc::strong_count(&service), 2);
     WARM_SERVICE.with(|s| *s.borrow_mut() = None);
   }
   exercise::<shards_core::Mesh>();

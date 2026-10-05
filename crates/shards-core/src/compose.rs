@@ -14,6 +14,7 @@ use crate::args::{Args, decode};
 use crate::diagnostic::PathStep;
 use crate::error::Result;
 use crate::flow::CompiledFlow;
+use crate::reload::{InlineCall, InlineKey, InlineRegistry, InlineSignature, SiteStep};
 use crate::shard::{Composed, ShardDef, ShardType};
 use crate::types::Type;
 
@@ -112,7 +113,7 @@ pub struct ComposeEnv<'a> {
 }
 
 impl Dep {
-  fn still_valid(&self, env: &ComposeEnv<'_>) -> bool {
+  pub(crate) fn still_valid(&self, env: &ComposeEnv<'_>) -> bool {
     match self {
       Dep::MeshVar { name, found } => env.mesh_layout.lookup(name) == *found,
       Dep::Wire { name, def } => env.wires.get(name) == def.as_ref(),
@@ -130,6 +131,9 @@ pub struct CompiledWire<B: Backend> {
   pub locals: FrameLayout,
   /// Everything this compose read, for revalidation (e.g. by another mesh).
   pub deps: Vec<Dep>,
+  pub(crate) definition: Arc<WireDef>,
+  pub(crate) restart_deps: Vec<Dep>,
+  pub(crate) inline_calls: InlineRegistry<B>,
 }
 
 impl<B: Backend> CompiledWire<B> {
@@ -155,6 +159,10 @@ pub struct ComposeCtx<'a, B: Backend> {
   cache: &'a mut ComposeCache<B>,
   composing: &'a mut Vec<String>,
   deps: Vec<Dep>,
+  restart_deps: Vec<Dep>,
+  inline_calls: InlineRegistry<B>,
+  site: InlineKey,
+  next_flow: usize,
   /// Definite initialization of each local slot at the current compose point.
   initialized: Vec<bool>,
   /// The child flow or wire the last error came out of.
@@ -189,10 +197,12 @@ impl<B: Backend> ComposeCtx<'_, B> {
       });
     }
     let found = self.env.mesh_layout.lookup(name);
-    self.deps.push(Dep::MeshVar {
+    let dep = Dep::MeshVar {
       name: name.to_string(),
       found,
-    });
+    };
+    self.deps.push(dep.clone());
+    self.restart_deps.push(dep);
     found.map(|slot| VarInfo {
       binding: Binding::Mesh(slot.index),
       ty: slot.ty,
@@ -295,7 +305,12 @@ impl<B: Backend> ComposeCtx<'_, B> {
       )));
     }
     self.depth += 1;
+    let child = self.next_flow;
+    self.next_flow = 0;
+    self.site.path.push(SiteStep::Flow(child));
     let result = self.compose_flow_at_depth(flow, input);
+    self.site.path.pop();
+    self.next_flow = child + 1;
     self.depth -= 1;
     result
   }
@@ -319,6 +334,9 @@ impl<B: Backend> ComposeCtx<'_, B> {
       self.cache.stats.shard_composes += 1;
       // Decode against the shard's declared parameters (the same
       // declarations its documentation is generated from), then compose.
+      self.site.path.push(SiteStep::Node(index));
+      let saved_next = self.next_flow;
+      self.next_flow = 0;
       let composed = decode(&def.ty.desc, &def.args).and_then(|args| {
         B::compose_shard(def.ty, &args, self).map_err(|err| {
           // An error from a nested flow or wire: name the parameter
@@ -335,6 +353,8 @@ impl<B: Backend> ComposeCtx<'_, B> {
           }
         })
       });
+      self.site.path.pop();
+      self.next_flow = saved_next;
       let composed = match composed {
         Ok(c) => c,
         Err(err) => {
@@ -360,10 +380,12 @@ impl<B: Backend> ComposeCtx<'_, B> {
 
   fn wire_def(&mut self, name: &str) -> Option<WireDef> {
     let def = self.env.wires.get(name).cloned();
-    self.deps.push(Dep::Wire {
+    let dep = Dep::Wire {
       name: name.to_string(),
       def: def.clone(),
-    });
+    };
+    self.deps.push(dep.clone());
+    self.restart_deps.push(dep);
     def
   }
 
@@ -387,6 +409,45 @@ impl<B: Backend> ComposeCtx<'_, B> {
     flow
   }
 
+  /// Composes a Do call with a mesh-local replacement boundary. The complete
+  /// dependency list still validates caches; dependencies inside this call
+  /// do not force an otherwise unchanged caller to restart.
+  pub fn compose_reloadable_inline(
+    &mut self,
+    name: &str,
+    input: Type,
+  ) -> Result<Arc<InlineCall<B>>> {
+    let key = self.site.clone();
+    let before = self.locals.clone();
+    let initialized_before = self.initialized.clone();
+    let parent_deps = std::mem::take(&mut self.restart_deps);
+    // Descendant keys include this body's identity: an old in-flight body
+    // cannot accidentally select a newly rearranged descendant call site.
+    if let Some(def) = self.env.wires.get(name) {
+      self.site.path.push(SiteStep::Wire(Arc::new(def.clone())));
+    }
+    let result = self.compose_inline(name, input);
+    self.site = key.clone();
+    let deps = std::mem::replace(&mut self.restart_deps, parent_deps);
+    let flow = result?;
+    let call = Arc::new(InlineCall {
+      key: key.clone(),
+      name: name.to_string(),
+      signature: InlineSignature {
+        input,
+        before,
+        after: self.locals.clone(),
+        initialized_before,
+        initialized_after: self.initialized.clone(),
+        output: flow.output,
+      },
+      deps,
+      flow,
+    });
+    self.inline_calls.insert(key, call.clone());
+    Ok(call)
+  }
+
   /// Compiles another wire on its own (`Spawn`), through the cache. Its
   /// dependencies become dependencies of the wire being composed.
   pub fn compose_wire(&mut self, name: &str, input: Type) -> Result<Arc<CompiledWire<B>>> {
@@ -407,6 +468,13 @@ impl<B: Backend> ComposeCtx<'_, B> {
         }
       })?;
     self.deps.extend(wire.deps.iter().cloned());
+    self.restart_deps.extend(wire.deps.iter().cloned());
+    self.inline_calls.extend(
+      wire
+        .inline_calls
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone())),
+    );
     Ok(wire)
   }
 }
@@ -538,17 +606,33 @@ impl<B: Backend> ComposeCache<B> {
         cache: self,
         composing,
         deps: Vec::new(),
+        restart_deps: Vec::new(),
+        inline_calls: HashMap::new(),
+        site: InlineKey {
+          root: Arc::new(def.clone()),
+          input,
+          path: Vec::new(),
+        },
+        next_flow: 0,
         initialized: Vec::new(),
         failed_child: None,
         depth,
       };
       ctx
         .compose_flow(&def.flow, input)
-        .map(|flow| (flow, ctx.locals, ctx.deps))
+        .map(|flow| {
+          (
+            flow,
+            ctx.locals,
+            ctx.deps,
+            ctx.restart_deps,
+            ctx.inline_calls,
+          )
+        })
         .map_err(|err| err.prefix_path(PathStep::Wire(def.name.clone())))
     };
     composing.pop();
-    let (flow, locals, deps) = result?;
+    let (flow, locals, deps, restart_deps, inline_calls) = result?;
 
     self.stats.wire_composes += 1;
     let compiled = Arc::new(CompiledWire {
@@ -558,6 +642,9 @@ impl<B: Backend> ComposeCache<B> {
       flow,
       locals,
       deps,
+      definition: Arc::new(def.clone()),
+      restart_deps,
+      inline_calls,
     });
     self.entries.entry(key).or_default().push(Entry {
       def: def.clone(),

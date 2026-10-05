@@ -1,10 +1,10 @@
 //! Host-driven execution with transactional source replacement.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use shards_core::diagnostic::Diagnostic;
-use shards_core::{Catalog, Outcome};
+use shards_core::{Catalog, InstanceId, Outcome};
 
 use crate::{Host, Program, Source};
 
@@ -38,8 +38,16 @@ pub struct Finished {
   pub outcome: Outcome,
 }
 
-struct Execution<H> {
+struct Entry<W> {
+  name: String,
+  wire: W,
+  id: InstanceId,
+}
+
+struct Execution<H: Host> {
   mesh: H,
+  entries: Vec<Entry<H::Wire>>,
+  failed: HashSet<InstanceId>,
   ticks: u64,
   iterations: Option<u64>,
   frame_interval: Option<Duration>,
@@ -47,11 +55,11 @@ struct Execution<H> {
 
 /// A reloadable program on a host-owned event loop (stackless by default).
 ///
-/// `reload` validates all wires before replacing the active execution. A
-/// rejected edit leaves it untouched. A successful edit cancels the entire
-/// old mesh before the new program's first tick. Locals, `Once`, suspended
-/// continuations and mesh variables restart; host services live outside this
-/// object and survive. Each revision owns its compose cache.
+/// `reload` validates all wires and explicitly restarts the whole mesh.
+/// `reload_preserving` (with a [`ReloadHost`]) retains compatible callers,
+/// locals and mesh values, selecting nested Do bodies at call boundaries.
+/// Rejected edits leave execution untouched. Host services live outside this
+/// object and survive either mode. Each revision owns its compose cache.
 ///
 /// Calls are synchronous and require exclusive access: reload between ticks.
 /// Compilation can delay the host loop. Cancellation drops pending futures;
@@ -69,6 +77,22 @@ impl<H: SessionHost> Default for Session<H> {
 impl<H: SessionHost> Session<H> {
   pub fn new() -> Self {
     Self { active: None }
+  }
+
+  /// Starts with a host-configured, idle mesh. Use `reload_preserving` to
+  /// keep its declared mesh variables across source revisions.
+  pub fn with_mesh(mesh: H) -> Self {
+    assert_eq!(mesh.running(), 0, "Session requires an idle mesh");
+    Self {
+      active: Some(Execution {
+        mesh,
+        entries: Vec::new(),
+        failed: HashSet::new(),
+        ticks: 0,
+        iterations: None,
+        frame_interval: None,
+      }),
+    }
   }
 
   /// Parses, lowers, composes every wire and schedules the entries on a fresh
@@ -90,35 +114,25 @@ impl<H: SessionHost> Session<H> {
     for def in &program.lowered.wires {
       mesh.add_wire(def.clone());
     }
-    let mut entries = Vec::new();
-    let mut diagnostics = Vec::new();
-    for name in program.entries() {
-      match mesh.compile(&name) {
-        Ok(wire) => entries.push((name, wire)),
-        Err(err) => diagnostics.push(program.diagnostic(&name, err)),
-      }
-    }
-    for name in program.unreachable_roots() {
-      if let Err(err) = mesh.compile(&name) {
-        let d = program.diagnostic(&name, err);
-        if !diagnostics.contains(&d) {
-          diagnostics.push(d);
+    let entries = match compose_entries(&program, &mut mesh) {
+      Ok(entries) => entries,
+      Err(diagnostics) => return Err((program.source, diagnostics)),
+    };
+    let mut scheduled = Vec::new();
+    for (name, wire) in entries {
+      match mesh.spawn(&wire) {
+        Ok(id) => scheduled.push(Entry { name, wire, id }),
+        Err(err) => {
+          let diagnostic = program.diagnostic(&name, err);
+          return Err((program.source, vec![diagnostic]));
         }
       }
-    }
-    if diagnostics.is_empty() {
-      for (name, wire) in entries {
-        if let Err(err) = mesh.spawn(&wire) {
-          diagnostics.push(program.diagnostic(&name, err));
-        }
-      }
-    }
-    if !diagnostics.is_empty() {
-      return Err((program.source, diagnostics));
     }
     let run = program.lowered.run.as_ref();
     let next = Execution {
       mesh,
+      entries: scheduled,
+      failed: HashSet::new(),
       ticks: 0,
       iterations: run.and_then(|r| r.iterations).map(|n| n as u64),
       frame_interval: run
@@ -145,7 +159,18 @@ impl<H: SessionHost> Session<H> {
     if active.iterations.is_some_and(|n| active.ticks >= n) {
       active.mesh.cancel_all();
     }
-    drain(&mut active.mesh)
+    let entries: HashSet<_> = active.entries.iter().map(|e| e.id).collect();
+    active
+      .mesh
+      .take_finished()
+      .into_iter()
+      .map(|(id, wire, outcome)| {
+        if entries.contains(&id) && matches!(outcome, Outcome::Failed(_)) {
+          active.failed.insert(id);
+        }
+        Finished { wire, outcome }
+      })
+      .collect()
   }
 
   /// Cancels all entries and children, reports their outcomes and releases
@@ -181,4 +206,148 @@ fn drain<H: Host>(mesh: &mut H) -> Vec<Finished> {
     .into_iter()
     .map(|(_, wire, outcome)| Finished { wire, outcome })
     .collect()
+}
+
+/// A mesh supporting checked, call-boundary replacement. Candidates must be
+/// isolated from running instances; commit may only install a successfully
+/// validated candidate. Scheduling a wire compiled by that candidate must
+/// not fail after commit (except unrecoverable allocation failure).
+pub trait ReloadHost: SessionHost {
+  fn revision(&self) -> Self;
+  fn can_retain(&self, wire: &Self::Wire) -> bool;
+  fn validate_reload(
+    &self,
+    next: &mut Self,
+    removed: &HashSet<InstanceId>,
+  ) -> shards_core::Result<()>;
+  fn install_revision(&mut self, next: Self, removed: &HashSet<InstanceId>);
+}
+
+macro_rules! reload_host {
+  ($mesh:ty) => {
+    impl ReloadHost for $mesh {
+      fn revision(&self) -> Self {
+        <$mesh>::revision(self)
+      }
+      fn can_retain(&self, wire: &Self::Wire) -> bool {
+        <$mesh>::can_retain(self, wire)
+      }
+      fn validate_reload(
+        &self,
+        next: &mut Self,
+        removed: &HashSet<InstanceId>,
+      ) -> shards_core::Result<()> {
+        <$mesh>::validate_reload(self, next, removed)
+      }
+      fn install_revision(&mut self, next: Self, removed: &HashSet<InstanceId>) {
+        <$mesh>::install_revision(self, next, removed)
+      }
+    }
+  };
+}
+reload_host!(shards_core::Mesh);
+#[cfg(not(any(target_family = "wasm", target_os = "espidf")))]
+reload_host!(shards_core::StackfulMesh);
+
+impl<H: ReloadHost> Session<H> {
+  /// Retains unchanged callers and their locals, Once state and suspended
+  /// execution. Changed Do bodies take effect on their next call; a call
+  /// already in flight pins its body until it returns. Compatible mesh
+  /// variables remain in the same frame. Changes to a root's own definition
+  /// or static dependencies restart that root; removed roots are cancelled.
+  ///
+  /// An incompatible Do interface or binding layout rejects the whole edit.
+  /// Use `reload` for an explicit full restart. Unchanged completed entries
+  /// stay finished; failed entries retry after an accepted reload.
+  pub fn reload_preserving(
+    &mut self,
+    source: Source,
+    catalog: &Catalog,
+    defines: &HashMap<String, String>,
+  ) -> Result<Vec<Finished>, (Source, Vec<Diagnostic>)> {
+    if self.active.is_none() {
+      return self.reload(source, catalog, defines);
+    }
+    let program = Program::load(source, catalog, defines)?;
+    let active = self.active.as_mut().expect("active mesh");
+    let mut candidate = active.mesh.revision();
+    for def in &program.lowered.wires {
+      candidate.add_wire(def.clone());
+    }
+    let entries = match compose_entries(&program, &mut candidate) {
+      Ok(entries) => entries,
+      Err(diagnostics) => return Err((program.source, diagnostics)),
+    };
+    // Match scheduled occurrences, not only names (one wire may be scheduled
+    // more than once). Finished entry IDs remain here after record retirement.
+    let mut retained = HashSet::new();
+    let mut plan = Vec::new();
+    for (name, wire) in entries {
+      let old = active.entries.iter().find(|entry| {
+        entry.name == name
+          && !retained.contains(&entry.id)
+          && !active.failed.contains(&entry.id)
+          && candidate.can_retain(&entry.wire)
+      });
+      let id = old.map(|entry| entry.id);
+      if let Some(id) = id {
+        retained.insert(id);
+      }
+      plan.push((name, wire, id));
+    }
+    let removed = active
+      .entries
+      .iter()
+      .map(|e| e.id)
+      .filter(|id| !retained.contains(id))
+      .collect();
+    if let Err(err) = active.mesh.validate_reload(&mut candidate, &removed) {
+      let d = program.diagnostic("", err);
+      return Err((program.source, vec![d]));
+    }
+    active.mesh.install_revision(candidate, &removed);
+    let finished = drain(&mut active.mesh);
+    active.entries = plan
+      .into_iter()
+      .map(|(name, wire, id)| {
+        let id = id.unwrap_or_else(|| active.mesh.spawn(&wire).expect("validated candidate wire"));
+        Entry { name, wire, id }
+      })
+      .collect();
+    let run = program.lowered.run.as_ref();
+    active.failed.clear();
+    active.ticks = 0;
+    active.iterations = run.and_then(|r| r.iterations).map(|n| n as u64);
+    active.frame_interval = run
+      .and_then(|r| r.fps)
+      .and_then(|fps| Duration::try_from_secs_f64(1.0 / fps).ok());
+    Ok(finished)
+  }
+}
+
+fn compose_entries<H: Host>(
+  program: &Program,
+  mesh: &mut H,
+) -> Result<Vec<(String, H::Wire)>, Vec<Diagnostic>> {
+  let mut entries = Vec::new();
+  let mut diagnostics = Vec::new();
+  for name in program.entries() {
+    match mesh.compile(&name) {
+      Ok(wire) => entries.push((name, wire)),
+      Err(err) => diagnostics.push(program.diagnostic(&name, err)),
+    }
+  }
+  for name in program.unreachable_roots() {
+    if let Err(err) = mesh.compile(&name) {
+      let d = program.diagnostic(&name, err);
+      if !diagnostics.contains(&d) {
+        diagnostics.push(d);
+      }
+    }
+  }
+  if diagnostics.is_empty() {
+    Ok(entries)
+  } else {
+    Err(diagnostics)
+  }
 }

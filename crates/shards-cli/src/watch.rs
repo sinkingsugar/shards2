@@ -6,41 +6,54 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use shards_core::Outcome;
-use shards_lang::{Finished, Session, SessionHost, Source, render};
+use shards_lang::{Finished, ReloadHost, Session, Source, render};
 
 use crate::{Options, catalog};
 
 const POLL: Duration = Duration::from_millis(100);
 const DEFAULT_FRAME: Duration = Duration::from_millis(16);
 
-pub(super) fn watch<H: SessionHost>(o: &Options) -> Result<ExitCode, String> {
+pub(super) fn watch<H: ReloadHost>(o: &Options) -> Result<ExitCode, String> {
   let (quit, input) = mpsc::channel();
   let signal_quit = quit.clone();
   let signal = shards_io::runtime::runtime().spawn(async move {
-    let result = tokio::signal::ctrl_c().await.map_err(|e| e.to_string());
+    let result = tokio::signal::ctrl_c()
+      .await
+      .map(|()| false)
+      .map_err(|e| e.to_string());
     let _ = signal_quit.send(result);
   });
   std::thread::spawn(move || {
     for line in std::io::stdin().lock().lines() {
       match line {
+        Ok(line) if line.trim() == "r" => {
+          if quit.send(Ok(true)).is_err() {
+            return;
+          }
+        }
         Ok(line) if line.trim() != "q" => continue,
         _ => break,
       }
     }
-    let _ = quit.send(Ok(()));
+    let _ = quit.send(Ok(false));
   });
-  eprintln!("watching {}; Ctrl-C, q or stdin EOF stops cleanly", o.file);
+  eprintln!(
+    "watching {}; r restarts; Ctrl-C, q or stdin EOF stops cleanly",
+    o.file
+  );
   let catalog = catalog();
   let mut session = Session::<H>::new();
   let mut changes = Changes::default();
   let mut poll_at = Instant::now();
   let mut tick_at = poll_at;
   loop {
+    let mut restart = false;
     match input.try_recv() {
+      Ok(Ok(true)) => restart = true,
       Ok(result) => {
         signal.abort();
         print_finished(session.stop());
-        return result.map(|()| ExitCode::SUCCESS);
+        return result.map(|_| ExitCode::SUCCESS);
       }
       Err(mpsc::TryRecvError::Disconnected) => {
         signal.abort();
@@ -50,23 +63,46 @@ pub(super) fn watch<H: SessionHost>(o: &Options) -> Result<ExitCode, String> {
       Err(mpsc::TryRecvError::Empty) => {}
     }
     let now = Instant::now();
-    if now >= poll_at {
+    if restart || now >= poll_at {
       let read = std::fs::read_to_string(&o.file).map_err(|e| e.to_string());
-      if let Some(change) = changes.observe(read) {
+      let change = if restart {
+        changes.previous = Some(read.clone());
+        changes.attempted = Some(read.clone());
+        Some(read)
+      } else {
+        changes.observe(read)
+      };
+      if let Some(change) = change {
         match change {
-          Ok(text) => match session.reload(Source::new(&o.file, text), &catalog, &o.defines) {
-            Ok(finished) => {
-              print_finished(finished);
-              eprintln!("{}: reloaded", o.file);
-              tick_at = Instant::now();
-            }
-            Err((source, diagnostics)) => {
-              for d in diagnostics {
-                eprint!("{}", render(&d, &source));
+          Ok(text) => {
+            let source = Source::new(&o.file, text);
+            let result = if restart {
+              session.reload(source, &catalog, &o.defines)
+            } else {
+              session.reload_preserving(source, &catalog, &o.defines)
+            };
+            match result {
+              Ok(finished) => {
+                print_finished(finished);
+                eprintln!(
+                  "{}: {}",
+                  o.file,
+                  if restart {
+                    "restarted"
+                  } else {
+                    "reloaded (nested edits apply at the next call boundary)"
+                  }
+                );
+                tick_at = Instant::now();
               }
-              eprintln!("{}: edit rejected; previous execution retained", o.file);
+              Err((source, diagnostics)) => {
+                for d in diagnostics {
+                  eprint!("{}", render(&d, &source));
+                }
+                eprintln!("{}: edit rejected; previous execution retained", o.file);
+              }
             }
-          },
+          }
           Err(e) => eprintln!("{}: {e}; previous execution retained", o.file),
         }
       }
@@ -91,7 +127,9 @@ fn print_finished(finished: Vec<Finished>) {
       Outcome::Completed(v) => println!("{wire}: {v}"),
       Outcome::Stopped => println!("{wire}: stopped"),
       Outcome::Cancelled => println!("{wire}: cancelled"),
-      Outcome::Failed(e) => eprintln!("{wire}: failed: {e}"),
+      Outcome::Failed(e) => eprintln!(
+        "{wire}: failed: {e}; stopped until the next successful reload or session restart"
+      ),
     }
   }
 }

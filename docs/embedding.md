@@ -76,73 +76,148 @@ Test host shards through scripts, on both schedulers, as `embedding.rs` does: `P
 
 ## 5. Warm sessions and hot reload
 
-Use `shards_lang::Session` when the host already owns its event loop and
-long-lived services. Keep connections and other expensive session resources
-in the host, and have shards look them up during activation. Replacing a
-script then reuses those services; setup inside a script's `Once` runs again.
+Use `shards_lang::Session` when the host owns its event loop and long-lived
+services. Keep connections and other expensive resources in the host and
+look them up during shard activation. Both native schedulers support the
+same API; stackless also supports WASI and ESP-IDF.
+
+There are two replacement modes:
+
+- **`reload_preserving`** keeps unchanged callers, locals, `Once` state,
+  mesh values and suspended execution. Edited nested `Do` bodies are selected
+  at their next call boundary. This is what `shards2 watch` uses.
+- **`reload`** explicitly restarts the whole program on a fresh mesh. All
+  script and mesh state, including host-declared mesh-variable schemas, is
+  discarded. Host services owned outside the mesh survive either mode.
+
+Both modes parse, lower and compose the candidate before committing. A
+rejected edit returns its source and located diagnostics; the current
+execution continues unchanged. Compilation is synchronous and pauses the
+host loop on that thread.
+
+### Preserving a caller while editing a nested wire
+
+```shards
+@wire(step { 10 | Log })
+@wire(main {
+  Once({ 0 >= counter })
+  Inc(counter) | Log
+  Do(step)
+} Looped: true)
+@mesh(m)
+@schedule(m main)
+@run(m FPS: 30)
+```
+
+Changing `10` to `20` in `step` keeps `main` running: its counter continues,
+its `Once` does not repeat, and its next `Do(step)` uses the edited body.
+This works through multiple nested `Do` calls, including a child called
+repeatedly inside a parent that never returns.
+
+An in-flight call pins the body it started with until it returns. A pending
+async operation is neither cancelled nor overlapped with its replacement by
+an accepted nested edit. If the edited call never returns, that call never
+adopts the edit; request a full restart to cancel it. Each nested call has
+its own boundary. An unchanged parent body can select a new child on its
+next child call; an edited parent body already in flight retains its old
+call sites, so rearranged descendants cannot be mistaken for old ones.
+
+Replacement must preserve a retained call site's input/output types, local
+slot layout, and definite-initialization contract. Type or binding changes,
+including new locals inside the changed callee, reject the edit with
+`reload-incompatible`. This is checked before any running instance changes.
+There is no arbitrary local-state migration or in-place coroutine rewriting.
+Use a full restart for incompatible edits. Changing the caller's own body
+restarts that caller and its locals, so stable initialization and counters
+should live in an unchanged caller above the editable `Do` body.
+
+Other lifetime rules:
+
+- Unrelated wires keep their execution, including pauses and pending I/O.
+  Changed scheduled roots restart; removed schedules are cancelled.
+  Retained instances keep scheduler order; new/restarted entries append.
+  Reordering `@schedule` alone does not reorder retained instances.
+- Unchanged nested `Do` bodies retain their shard state too. Their `Once`
+  blocks do not repeat merely because a different body was edited.
+- `Spawn` remains a static compiled dependency. Editing its target can
+  restart the code that owns that dependency. Spawned instances are detached:
+  compatible ones survive independently, while changed/removed ones are
+  cancelled; new spawns run the new code. The candidate also composes retained
+  children's input specializations, even if new entries no longer spawn those
+  types. Pending old calls can still spawn work belonging to their pinned code.
+- Unchanged completed/stopped entries remain finished, so saving a different
+  wire does not repeat setup effects. Failed entries stay stopped until the
+  next accepted reload, when they retry. Spawned failures are reported but
+  are not independently retried by the session.
+- Every replaced state gets cleanup attempted once. At a nested boundary,
+  cleanup and instantiation run when the next call starts. A failure there
+  is a runtime failure (`Maybe` can catch instantiation errors); it does not
+  roll back the committed revision. Terminal cleanup still visits the other
+  states if cleanup panics on native builds.
+
+### Driving a session and retaining explicit mesh values
 
 ```rust
 use std::collections::HashMap;
-use shards_core::{Catalog, Mesh};
+use shards_core::{Catalog, Mesh, Var};
 use shards_lang::{Session, Source};
 
 let catalog = Catalog::new(&[shards_core::shards::CATALOG]).unwrap();
 let defines = HashMap::new();
-let mut session = Session::<Mesh>::new();
-match session.reload(Source::new("live.shs", "40 | Add(2)"), &catalog, &defines) {
-  Ok(finished) => { /* consume old instances' cancellation/cleanup outcomes */ }
-  Err((source, diagnostics)) => { /* render diagnostics against rejected source */ }
+let mut mesh = Mesh::new();
+mesh.declare_var("shared-counter", Var::Int(0), true);
+let mut session = Session::with_mesh(mesh);
+match session.reload_preserving(
+    Source::new("live.shs", "Inc(shared-counter)"), &catalog, &defines,
+) {
+  Ok(finished) => { /* consume cancelled/replaced instances' outcomes */ }
+  Err((source, diagnostics)) => { /* render against the rejected source */ }
 }
-// In the host loop, call once per frame; this does not sleep.
+// In the host loop, once per frame; tick does not sleep.
 for finished in session.tick() {
   println!("{}: {:?}", finished.wire, finished.outcome);
 }
-// Submit new source through reload between ticks. On shutdown:
+// Submit edits through reload_preserving between ticks. On shutdown:
 let finished = session.stop();
 ```
 
-`Session::<StackfulMesh>` has the same API on native platforms. `SessionHost`
-extends the frontend's `Host` trait with cancellation of all instances;
-custom implementations must obey its deferred-activation and cleanup contract.
+`Session::with_mesh` accepts an idle, host-configured mesh. Preserving reload
+keeps its mesh-variable frame and schema unchanged, so values survive even
+when a scheduled root restarts. Scripts access declared mesh variables with
+the usual reads and updates. Creating/removing/changing the type of a mesh
+variable during preserving reload is not supported. To reset such a session,
+create a fresh configured mesh and session; `reload` alone starts from the
+default empty mesh schema.
 
-The replacement boundary is the **whole program**:
+`tick` returns every newly finished entry and child outcome once and retires
+the records. A session keeps no outcome history, only bounded entry status.
+At `Iterations`, remaining work is cancelled and reported in that tick.
+An accepted reload resets the revision's tick budget and updates its `FPS`;
+`frame_interval()` exposes the suggested delay, with pacing owned by the host.
+`stop` cancels everything and releases the mesh. Dropping the session also
+cancels work, but cannot return cleanup errors.
 
-- Parse, lower and compose all wires, including unreachable ones as `check`
-  does, on a candidate mesh. Rejected edits return located diagnostics and
-  leave the current execution and its tick count untouched.
-- Schedule the candidate entries without instantiating or activating shards.
-  After successful preparation, cancel every old entry and spawned child,
-  attempt every cleanup, release the old mesh, then install the candidate.
-  The new revision starts only on the next host tick.
-- Locals, mesh variables, `Once`, and coroutine continuations restart. There
-  is no implicit state migration. Changing a called wire recompiles its
-  callers; removed definitions cannot linger in the replacement mesh.
-- Reload returns the old instances' outcomes, including cleanup failures.
-  A cleanup failure does not roll back the replacement. Instantiation and
-  activation failures in the new revision are reported by `tick`, without
-  restoring an already-cancelled revision.
-- `tick` returns all newly finished entry and child outcomes exactly once.
-  It drains records each tick and retains no outcome history. At `Iterations`,
-  it cancels remaining work and returns those outcomes in the same call.
-  The host owns pacing; `frame_interval()` exposes `FPS` as a suggested delay.
-- `stop` cancels and releases the revision; dropping the session also cancels
-  work but cannot return cleanup errors. A fresh compose cache per revision
-  bounds cache retention across edits. The process-wide type registry still
-  interns types for the process lifetime.
+`ReloadHost` extends `SessionHost` for custom hosts that support isolated
+candidate compilation and validated installation. Compiled artifacts remain
+immutable. Inline revision selection belongs to a mesh; each active `Do`
+state retains an `Arc` to its selected immutable body. Candidate caches are
+fresh per revision. Old code remains only while referenced by retained roots
+or call state, not in a cumulative revision history. The process-wide type
+registry still interns types for the process lifetime.
 
-Reload is synchronous: compilation pauses ticking on that host thread. It
-is not a zero-latency or hard real-time operation. Cancellation drops pending
-futures before replacement activation, but it does not wait for detached
-workers to exit or undo external effects. Host operations must cooperate
-with cancellation; a host requiring strict worker quiescence must enforce
-that in its service before allowing a new operation.
+Cancellation on root replacement, stop, or full restart drops pending
+futures, but does not join detached blocking workers or undo external
+effects. Such operations must cooperate with cancellation; a host requiring
+strict worker quiescence must enforce it in its service before admitting new
+work. Preserving an in-flight `Do` avoids restarting that call, but does not
+solve every host-side cancellation race.
 
-The offline test `reload_keeps_host_service_warm_and_cancels_pending_operations`
-in `crates/shards-cli/tests/embedding.rs` exercises a fake host service on both
-schedulers: rejected edits preserve the pending operation; accepted edits
-cancel it and reuse the same service; dropping the session releases pending
-work. Hosts can use the same pattern with recorded inputs to test scripts
-without live I/O.
+Offline tests in `crates/shards-cli/tests/embedding.rs` verify warm service
+reuse, cancellation on full reload, and pending-operation completion across
+preserving reload on both schedulers. The shared frontend suite verifies
+caller counters, unchanged `Once` state, deep call boundaries, mesh values,
+incompatible edits, cleanup failures, and retained spawned specializations.
+Hosts can use the same pattern with recorded inputs to test without live I/O.
 
 ### Watching a file
 
@@ -152,17 +227,20 @@ cargo run -p shards-cli -- watch --stackful live.shs key:value
 ```
 
 The CLI polls contents every 100 ms and requires two identical samples before
-trying a revision, so atomic saves and same-size edits work. Invalid source
-or a read error leaves the previous execution running and is reported once
-until the observed contents/error change. A watcher stays alive after a
-program finishes, reaches `Iterations`, or fails, ready for the next edit.
-`FPS` controls ticking; without it the watcher uses a 16 ms frame interval.
-It checks for edits even when the script requests a very low frame rate.
-Ctrl-C, `q` followed by Enter, or stdin EOF cancels the current execution and
-exits. Watch mode reports runtime failures as they occur; its successful
-shutdown exit code is not a claim that every revision succeeded.
+trying a revision. Atomic saves and same-size edits work. Invalid source,
+incompatible changes or read errors preserve the current execution and are
+reported once until observed contents/error change. A watcher stays alive
+after completion, the iteration limit or runtime failure; failed wires are
+explicitly reported as stopped until the next successful reload/restart.
+`FPS` controls ticking; without it the watcher uses a 16 ms interval and
+continues checking edits even when the script requests a very low frame rate.
 
-This command watches one source file. Dependency watching, asynchronous
-compilation, cross-revision compose reuse, explicit state migration and a
-network serving protocol are deferred. A host can trigger `Session::reload`
-from its own watcher or command channel without using the CLI.
+Enter `r` to validate the current file and explicitly restart all script
+execution in the same process. Enter `q`, send Ctrl-C, or close stdin to
+cancel the execution and exit cleanly. Successful shutdown does not mean
+every revision ran successfully.
+
+This watches one source file. Dependency watching, asynchronous compilation,
+general state migration, cross-revision cache reuse and a network serving
+protocol remain deferred. An embedding host can trigger either reload mode
+from its own watcher or command channel.

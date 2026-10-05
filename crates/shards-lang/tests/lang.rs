@@ -60,6 +60,262 @@ macro_rules! lang_tests {
         .unwrap_or_else(|(_, d)| panic!("reload failed: {d:?}"))
     }
 
+    fn preserve(session: &mut shards_lang::Session<Mesh>, text: &str) -> Vec<shards_lang::Finished> {
+      session.reload_preserving(Source::new("preserve.shs", text), &catalog(), &no_defines())
+        .unwrap_or_else(|(_, d)| panic!("preserving reload failed: {d:?}"))
+    }
+
+    #[test]
+    fn preserving_reload_pins_suspended_do_and_keeps_caller_counter() {
+      let source = |value| format!(r#"@wire(inner {{ Pause() {value} }})
+@wire(outer {{ Do(inner) }})
+@wire(main {{ Once({{0 >= n}}) Inc(n) Log Do(outer) Log }} Looped: true)
+@mesh(m) @schedule(m main) @run(m)"#);
+      let mut session = shards_lang::Session::<Mesh>::new();
+      preserve(&mut session, &source(10));
+      let (_, lines) = shards_core::log::capture(|| {
+        session.tick(); // n=1, paused inside inner.
+        assert!(preserve(&mut session, &source(20)).is_empty());
+        session.tick(); // old call returns 10.
+        session.tick(); // n=2, enters new inner.
+        session.tick(); // new call returns 20.
+        assert!(preserve(&mut session, &source(30)).is_empty());
+        session.tick();
+        session.tick();
+      });
+      assert_eq!(lines, ["1", "10", "2", "20", "3", "30"]);
+    }
+
+    #[test]
+    fn preserving_reload_updates_deep_calls_inside_a_never_returning_parent() {
+      let source = |value| format!(r#"@wire(inner {{ {value} Log Pause() }})
+@wire(outer {{ Once({{0 >= n}}) Repeat({{ Inc(n) Log Do(inner) }} Forever: true) }})
+Do(outer)"#);
+      let mut session = shards_lang::Session::<Mesh>::new();
+      preserve(&mut session, &source(10));
+      let (_, lines) = shards_core::log::capture(|| {
+        session.tick();
+        assert!(preserve(&mut session, &source(20)).is_empty());
+        session.tick();
+        assert!(preserve(&mut session, &source(30)).is_empty());
+        session.tick();
+      });
+      assert_eq!(lines, ["1", "10", "2", "20", "3", "30"]);
+    }
+
+    #[test]
+    fn preserving_reload_keeps_unrelated_wires_and_mesh_values() {
+      let source = |value| format!(r#"@wire(main {{ Inc(shared) Log {value} Log }} Looped: true)
+@wire(ticker {{ Once({{100 >= n}}) Inc(n) Log }} Looped: true)
+@mesh(m) @schedule(m main) @schedule(m ticker) @run(m)"#);
+      let mut mesh = Mesh::new();
+      mesh.declare_var("shared", Var::Int(0), true);
+      let mut session = shards_lang::Session::with_mesh(mesh);
+      preserve(&mut session, &source(10));
+      let (_, lines) = shards_core::log::capture(|| {
+        session.tick();
+        let ended = preserve(&mut session, &source(20));
+        assert_eq!(ended.len(), 1);
+        assert_eq!(ended[0].wire, "main");
+        session.tick();
+      });
+      // Retained instances keep their scheduler order; replacements append.
+      assert_eq!(lines, ["1", "10", "101", "102", "2", "20"]);
+    }
+
+    #[test]
+    fn preserving_reload_rejects_incompatible_do_interfaces_atomically() {
+      let source = |body| format!(r#"@wire(inner {{ {body} }})
+@wire(main {{ Once({{0 >= n}}) Inc(n) Log Do(inner) ToString Log }} Looped: true)
+@mesh(m) @schedule(m main) @run(m)"#);
+      let mut session = shards_lang::Session::<Mesh>::new();
+      preserve(&mut session, &source("10"));
+      let (_, lines) = shards_core::log::capture(|| {
+        session.tick();
+        for body in [r#""new type""#, "1 = new-local 20"] {
+          let (_, d) = session.reload_preserving(Source::new("bad.shs", source(body)), &catalog(), &no_defines()).unwrap_err();
+          assert_eq!(d[0].code, "reload-incompatible");
+          assert_eq!(d[0].line, Some(1));
+          session.tick();
+        }
+      });
+      assert_eq!(lines, ["1", "10", "2", "10", "3", "10"]);
+    }
+
+    #[test]
+    fn preserving_reload_keeps_unchanged_do_once_state_and_other_sessions() {
+      let source = |value| format!(r#"@wire(stable {{Once({{0 >= n}}) Inc(n) Log}})
+@wire(changed {{{value} Log}})
+@wire(main {{Do(stable) Do(changed)}} Looped: true)
+@mesh(m) @schedule(m main) @run(m)"#);
+      let mut first = shards_lang::Session::<Mesh>::new();
+      let mut second = shards_lang::Session::<Mesh>::new();
+      preserve(&mut first, &source(10));
+      preserve(&mut second, &source(10));
+      let (_, lines) = shards_core::log::capture(|| {
+        first.tick();
+        second.tick();
+        preserve(&mut first, &source(20));
+        first.tick();
+        second.tick();
+      });
+      assert_eq!(lines, ["1", "10", "1", "10", "2", "20", "2", "10"]);
+    }
+
+    #[test]
+    fn preserving_reload_retries_failed_nested_instantiation_after_maybe() {
+      let source = |body| format!(r#"@wire(inner {{{body}}})
+@wire(main {{Once({{0 >= n}}) Inc(n) Log Maybe({{Do(inner)}} Silent: true)}} Looped: true)
+@mesh(m) @schedule(m main) @run(m)"#);
+      let mut session = shards_lang::Session::<Mesh>::new();
+      preserve(&mut session, &source("10"));
+      let (_, lines) = shards_core::log::capture(|| {
+        session.tick();
+        preserve(&mut session, &source(r#"Probe("bad" "fail-instantiate") 10"#));
+        assert!(session.tick().is_empty());
+        assert!(session.tick().is_empty());
+        preserve(&mut session, &source("20"));
+        assert!(session.tick().is_empty());
+      });
+      assert_eq!(lines, ["1", "2", "3", "4"]);
+      assert_eq!(session.running(), 1);
+    }
+
+    #[test]
+    fn preserving_reload_keeps_old_call_sites_when_a_pinned_parent_body_changes() {
+      let source = |outer: &str, value| format!(r#"@wire(inner {{{value}}})
+@wire(outer {{{outer}}})
+@wire(main {{Do(outer) Log}} Looped: true)
+@mesh(m) @schedule(m main) @run(m)"#);
+      let mut session = shards_lang::Session::<Mesh>::new();
+      preserve(&mut session, &source("Pause() Do(inner)", 10));
+      let (_, lines) = shards_core::log::capture(|| {
+        session.tick();
+        preserve(&mut session, &source("Pause() 0 Do(inner)", 20));
+        session.tick(); // Old parent body pins its original descendant sites.
+        session.tick();
+        session.tick();
+      });
+      assert_eq!(lines, ["10", "20"]);
+    }
+
+    #[test]
+    fn preserving_reload_does_not_renumber_other_wires_temporaries() {
+      let source = |body| format!(r#"@wire(changed {{{body}}})
+@wire(ticker {{Once({{0 >= n}}) Inc(n) Add(0 | Add(1)) Log}} Looped: true)
+@mesh(m) @schedule(m changed) @schedule(m ticker) @run(m)"#);
+      let mut session = shards_lang::Session::<Mesh>::new();
+      preserve(&mut session, &source("1"));
+      let (_, lines) = shards_core::log::capture(|| {
+        session.tick();
+        preserve(&mut session, &source("1 Add(0 | Add(2))"));
+        session.tick();
+      });
+      assert_eq!(lines, ["2", "3"]);
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn preserving_reload_attempts_cleanup_once_when_boundary_cleanup_panics() {
+      use shards_core::shards::{take_probe_events, ProbeEventKind};
+      let source = |body| format!(r#"@wire(inner {{{body}}})
+@wire(main {{Probe("parent") Do(inner)}} Looped: true)
+@mesh(m) @schedule(m main) @run(m)"#);
+      take_probe_events();
+      let mut session = shards_lang::Session::<Mesh>::new();
+      preserve(&mut session, &source(r#"Probe("old" "panic-cleanup") 10"#));
+      session.tick();
+      take_probe_events();
+      preserve(&mut session, &source("20"));
+      let finished = session.tick();
+      assert!(matches!(finished[0].outcome, Outcome::Failed(_)));
+      let events = take_probe_events();
+      for tag in ["old", "parent"] {
+        assert_eq!(events.iter().filter(|e| e.tag == tag && e.kind == ProbeEventKind::Cleanup).count(), 1);
+      }
+      assert!(session.stop().is_empty());
+    }
+
+    #[test]
+    fn preserving_reload_prepares_retained_spawned_input_specializations() {
+      let source = |input, amount| format!(r#"@wire(inner {{Add({amount})}})
+@wire(child {{Do(inner) Log Pause()}} Looped: true)
+@wire(main {{{input} Spawn(child)}})
+@mesh(m) @schedule(m main) @run(m)"#);
+      let mut session = shards_lang::Session::<Mesh>::new();
+      preserve(&mut session, &source("1", 1));
+      let (_, lines) = shards_core::log::capture(|| {
+        session.tick(); // Spawn Int child.
+        session.tick(); // Child prints 2 and pauses.
+        preserve(&mut session, &source("1.0", 2));
+        session.tick(); // Old child completes iteration; new main spawns Float child.
+        session.tick(); // Both specializations must select the new inner.
+      });
+      assert_eq!(lines, ["2", "3", "3.0"]);
+    }
+
+    #[test]
+    fn preserving_reload_recovers_failed_entries_on_the_next_accepted_save() {
+      let source = |divisor| format!(r#"@wire(inner {{1 Div({divisor})}})
+@wire(main {{Do(inner)}})
+@mesh(m) @schedule(m main) @run(m)"#);
+      let mut session = shards_lang::Session::<Mesh>::new();
+      preserve(&mut session, &source(0));
+      assert!(matches!(session.tick()[0].outcome, Outcome::Failed(_)));
+      assert!(session.tick().is_empty());
+      preserve(&mut session, &source(1));
+      assert!(matches!(session.tick()[0].outcome, Outcome::Completed(Var::Int(1))));
+    }
+
+    #[test]
+    fn preserving_reload_removes_scheduled_callers_before_checking_their_interface() {
+      let source = |value, scheduled| format!(r#"@wire(inner {{{value}}})
+@wire(main {{Do(inner) Log Pause()}} Looped: true)
+@wire(other {{Pause()}} Looped: true)
+@mesh(m) @schedule(m {scheduled}) @run(m)"#);
+      let mut session = shards_lang::Session::<Mesh>::new();
+      preserve(&mut session, &source("10", "main"));
+      session.tick();
+      let finished = preserve(&mut session, &source(r#""new type""#, "other"));
+      assert_eq!(finished.len(), 1);
+      assert_eq!(finished[0].wire, "main");
+      assert!(matches!(finished[0].outcome, Outcome::Cancelled));
+      assert!(session.tick().is_empty());
+    }
+
+    #[test]
+    fn preserving_reload_instantiates_restarted_roots_unchanged_children_once() {
+      use shards_core::shards::{take_probe_events, ProbeEventKind};
+      let source = |value| format!(r#"@wire(inner {{Probe("child")}})
+@wire(main {{{value} Do(inner)}} Looped: true)
+@mesh(m) @schedule(m main) @run(m)"#);
+      take_probe_events();
+      let mut session = shards_lang::Session::<Mesh>::new();
+      preserve(&mut session, &source(1));
+      session.tick();
+      preserve(&mut session, &source(2));
+      take_probe_events();
+      session.tick();
+      let events = take_probe_events();
+      assert_eq!(events.iter().filter(|e| e.kind == ProbeEventKind::Instantiate).count(), 1);
+      assert_eq!(events.iter().filter(|e| e.kind == ProbeEventKind::Cleanup).count(), 0);
+    }
+
+    #[test]
+    fn preserving_reload_does_not_repeat_unchanged_completed_effects() {
+      let mut session = shards_lang::Session::<Mesh>::new();
+      let source = r#"@wire(setup {"setup" Log})
+@wire(ticker {Pause()} Looped: true)
+@mesh(m) @schedule(m setup) @schedule(m ticker) @run(m)"#;
+      preserve(&mut session, source);
+      let (_, lines) = shards_core::log::capture(|| {
+        session.tick();
+        preserve(&mut session, &format!("// only a comment\n{source}"));
+        session.tick();
+      });
+      assert_eq!(lines, ["setup"]);
+    }
+
     #[test]
     fn reload_rejects_bad_edits_without_resetting_the_running_program() {
       let mut session = shards_lang::Session::<Mesh>::new();

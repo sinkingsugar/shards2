@@ -19,19 +19,22 @@ Sources: [shard contract](prototype-shard-contract.md), [core design](shards-2-c
 
 ## Implemented
 
-- **Hot reload:** `shards_lang::Session` provides host-driven ticking and
-  whole-program replacement on both schedulers. Candidate scripts pass full
-  compose before old entries and spawned children are cancelled; rejected
-  edits preserve execution. Host-owned services survive while script locals
-  and continuations restart. `shards2 watch` polls and debounces file contents,
-  handles invalid edits, and supports graceful shutdown. The contract and
-  offline host example are in [embedding.md](embedding.md#5-warm-sessions-and-hot-reload).
-  Each revision owns its compose cache; state migration and asynchronous
-  compilation remain deferred. Local checks passed on 2026-10-05: workspace
+- **Hot reload:** `shards_lang::Session` supports full restart (`reload`) and
+  preserving reload (`reload_preserving`) on both schedulers. Preserving
+  reload retains unchanged callers and their locals/Once/continuations;
+  edited nested `Do` bodies are selected at safe call boundaries. In-flight
+  calls finish on their pinned code. Input/output or local-binding changes
+  reject the candidate before commit. Host-declared mesh values survive;
+  changed roots restart and removed schedules cancel. `shards2 watch` uses
+  preserving reload, with `r` for a full restart and explicit failed-wire
+  status. Details and limitations live in [embedding.md §5](embedding.md#5-warm-sessions-and-hot-reload).
+  General state migration, changing mesh-variable schemas during reload,
+  and asynchronous compilation remain deferred. Offline parity tests cover
+  retained counters, nested calls, mesh values, cleanup, input specializations
+  and warm host operations. Local checks passed on 2026-10-05: workspace
   check/test/clippy, formatting (including ESP32), docs-off tests, release
-  nesting tests, TLS clippy, and WASI lint/acceptance/metadata/frontend tests.
-  Host-service reuse and pending-operation cancellation are verified with a
-  fake service on both native schedulers; no live-host integration is claimed.
+  nesting tests, TLS clippy, and WASI lint plus executed core/metadata/frontend
+  tests. No live-host integration or physical-board execution is claimed.
 
 - **ESP32 build integration:** a separate ESP-IDF firmware example embeds the
   core and frontend using the stackless mesh, with CI release-link jobs for

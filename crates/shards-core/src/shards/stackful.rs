@@ -319,41 +319,82 @@ impl Shard for Repeat {
 /// inside it ends only the sub-wire.
 pub struct Do;
 
+pub struct DoState {
+  call: Arc<crate::reload::InlineCall<Stackful>>,
+  state: Option<FlowState>,
+  active: bool,
+}
+
 impl Shard for Do {
-  type Compiled = CompiledFlow<Stackful>;
-  type State = FlowState;
+  type Compiled = Arc<crate::reload::InlineCall<Stackful>>;
+  type State = DoState;
   const NAME: &'static str = DO_DESC.name;
   const VERSION: u32 = DO_DESC.version;
 
-  fn compose(
-    args: &Args,
-    ctx: &mut ComposeCtx<'_, Stackful>,
-  ) -> Result<Composed<CompiledFlow<Stackful>>> {
+  fn compose(args: &Args, ctx: &mut ComposeCtx<'_, Stackful>) -> Result<Composed<Self::Compiled>> {
     compose_do(args, ctx)
   }
 
-  fn instantiate(flow: &CompiledFlow<Stackful>, ctx: &mut InstanceCtx) -> Result<FlowState> {
-    flow.instantiate(ctx)
+  fn instantiate(call: &Self::Compiled, ctx: &mut InstanceCtx) -> Result<DoState> {
+    Ok(DoState {
+      call: call.clone(),
+      state: Some(call.flow.instantiate(ctx)?),
+      active: false,
+    })
   }
 
   fn activate(
-    flow: &CompiledFlow<Stackful>,
-    state: &mut FlowState,
+    _: &Self::Compiled,
+    state: &mut DoState,
     ctx: &mut ActivationCtx<'_>,
     input: &Var,
   ) -> Result<Flow> {
-    match flow.activate(state, ctx, input)? {
+    if !state.active {
+      if let Some(next) = ctx.inline_call(&state.call.key)
+        && next.signature == state.call.signature
+        && next.deps != state.call.deps
+      {
+        // Take before cleanup: if cleanup panics, terminal cleanup must not
+        // attempt this state a second time.
+        if let Some(mut old) = state.state.take() {
+          state.call.flow.cleanup(
+            &mut old,
+            &mut CleanupCtx {
+              instance: ctx.instance(),
+            },
+          );
+        }
+        state.call = next;
+      }
+      if state.state.is_none() {
+        state.state = Some(state.call.flow.instantiate(&mut InstanceCtx {
+          instance: ctx.instance(),
+        })?);
+      }
+      state.active = true;
+    }
+    let result = state
+      .call
+      .flow
+      .activate(state.state.as_mut().expect("Do state"), ctx, input);
+    state.active = false;
+    match result? {
       Flow::Return(value) => Ok(Flow::Next(value)),
       other => Ok(other),
     }
   }
 
-  fn cleanup(flow: &CompiledFlow<Stackful>, state: &mut FlowState, ctx: &mut CleanupCtx) {
-    flow.cleanup(state, ctx);
+  fn cleanup(_: &Self::Compiled, state: &mut DoState, ctx: &mut CleanupCtx) {
+    if let Some(mut flow_state) = state.state.take() {
+      state.call.flow.cleanup(&mut flow_state, ctx);
+    }
   }
 
-  fn nested_state_size(flow: &CompiledFlow<Stackful>, state: &FlowState) -> usize {
-    flow.state_size(state)
+  fn nested_state_size(_: &Self::Compiled, state: &DoState) -> usize {
+    state
+      .state
+      .as_ref()
+      .map_or(0, |s| state.call.flow.state_size(s))
   }
 }
 

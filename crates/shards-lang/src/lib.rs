@@ -19,5 +19,5 @@ pub mod source;
 pub use parser::parse;
 pub use problem::{Problem, render};
 pub use program::{CheckReport, Host, Program, RunReport, check};
-pub use session::{Finished, Session, SessionHost};
+pub use session::{Finished, ReloadHost, Session, SessionHost};
 pub use source::{Source, Span};

@@ -3,7 +3,7 @@
 //! and the instance's state holds the resume points. Same API and contract as
 //! the stackful [`crate::Mesh`].
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::mem::size_of;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
@@ -36,11 +36,13 @@ struct Instance {
 }
 
 pub struct Mesh {
+  inline_calls: crate::reload::InlineRegistry<Stackless>,
   layout: FrameLayout,
   frame: Vec<Var>,
   spawn_queue: Vec<(Arc<CompiledWire<Stackless>>, Var)>,
   wires: HashMap<String, WireDef>,
   cache: ComposeCache<Stackless>,
+  prepared_calls: crate::reload::InlineRegistry<Stackless>,
   instances: Vec<Instance>,
   next_id: InstanceId,
   wake_mode: WakeMode,
@@ -59,11 +61,13 @@ impl Mesh {
 
   pub fn with_cache(cache: ComposeCache<Stackless>) -> Mesh {
     Mesh {
+      inline_calls: HashMap::new(),
       layout: FrameLayout::default(),
       frame: Vec::new(),
       spawn_queue: Vec::new(),
       wires: HashMap::new(),
       cache,
+      prepared_calls: HashMap::new(),
       instances: Vec::new(),
       next_id: 0,
       wake_mode: WakeMode::default(),
@@ -115,9 +119,93 @@ impl Mesh {
       mesh_layout: &self.layout,
       wires: &self.wires,
     };
-    self
+    let wire = self
       .cache
-      .get_or_compose(&def, input, &env, &mut Vec::new(), 0)
+      .get_or_compose(&def, input, &env, &mut Vec::new(), 0)?;
+    self.prepared_calls.extend(
+      wire
+        .inline_calls
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone())),
+    );
+    Ok(wire)
+  }
+
+  /// A fresh compilation candidate retaining the mesh-variable schema and
+  /// values, without instances or a compose cache.
+  pub fn revision(&self) -> Self {
+    let mut next = Self::new();
+    next.layout = self.layout.clone();
+    next.frame = self.frame.clone();
+    next.wake_mode = self.wake_mode;
+    next
+  }
+
+  pub fn can_retain(&self, wire: &CompiledWire<Stackless>) -> bool {
+    crate::reload::reusable(
+      wire,
+      &ComposeEnv {
+        mesh_layout: &self.layout,
+        wires: &self.wires,
+      },
+    )
+  }
+
+  /// Checks all live callers before committing a preserving reload.
+  pub fn validate_reload(&self, next: &mut Self, removed: &HashSet<InstanceId>) -> Result<()> {
+    if self.layout != next.layout {
+      return Err(Error::Compose(
+        "preserving reload requires the same mesh-variable layout".into(),
+      ));
+    }
+    // Detached children may have input specializations not reached by the
+    // new entry graph. Prepare those too before selecting their next Do call.
+    for instance in &self.instances {
+      if !removed.contains(&instance.id)
+        && instance.outcome.is_none()
+        && next.can_retain(&instance.wire)
+      {
+        next.compile(&instance.wire.name, instance.wire.input)?;
+      }
+    }
+    let env = ComposeEnv {
+      mesh_layout: &next.layout,
+      wires: &next.wires,
+    };
+    for instance in &self.instances {
+      if !removed.contains(&instance.id) && instance.outcome.is_none() {
+        crate::reload::validate(
+          &instance.wire,
+          &env,
+          &self.inline_calls,
+          &next.prepared_calls,
+        )?;
+      }
+    }
+    Ok(())
+  }
+
+  /// Installs a validated, unstarted candidate from `revision`. Compatible
+  /// instances and mesh values remain; changed/removed instances are cancelled.
+  pub fn install_revision(&mut self, mut next: Self, removed: &HashSet<InstanceId>) {
+    self
+      .validate_reload(&mut next, removed)
+      .expect("revision validated before commit");
+    assert!(next.instances.is_empty(), "revision already has instances");
+    for instance in &mut self.instances {
+      if instance.outcome.is_none()
+        && (removed.contains(&instance.id) || !next.can_retain(&instance.wire))
+      {
+        finish(instance, Outcome::Cancelled);
+      }
+    }
+    let mut calls = std::mem::take(&mut next.prepared_calls);
+    crate::reload::reuse_unchanged(&self.prepared_calls, &mut calls);
+    crate::reload::reuse_unchanged(&self.inline_calls, &mut calls);
+    self.inline_calls = calls;
+    self.prepared_calls = self.inline_calls.clone();
+    self.wires = std::mem::take(&mut next.wires);
+    self.cache = std::mem::take(&mut next.cache);
   }
 
   pub fn cache_stats(&self) -> CacheStats {
@@ -178,6 +266,7 @@ impl Mesh {
       instances,
       frame,
       spawn_queue,
+      inline_calls,
       ..
     } = self;
     for instance in instances.iter_mut() {
@@ -190,7 +279,7 @@ impl Mesh {
         continue;
       }
       instance.waiting = false;
-      step(instance, frame, spawn_queue);
+      step(instance, frame, spawn_queue, inline_calls);
     }
     for (wire, input) in std::mem::take(&mut self.spawn_queue) {
       self.start(wire, input);
@@ -301,6 +390,7 @@ fn step(
   instance: &mut Instance,
   frame: &mut Vec<Var>,
   spawn_queue: &mut Vec<(Arc<CompiledWire<Stackless>>, Var)>,
+  inline_calls: &crate::reload::InlineRegistry<Stackless>,
 ) {
   if !instance.started {
     instance.started = true;
@@ -352,6 +442,7 @@ fn step(
       let mut ctx = ActivationCtx {
         instance: *id,
         locals,
+        inline_calls,
         mesh_frame: frame,
         spawn_queue,
         waiting,

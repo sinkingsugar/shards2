@@ -28,7 +28,7 @@ Host shards should not need the backend-specific control-flow traits.
 
 Declare parameters as `ParamDecl`s: name, help, accepted forms (`Forms::LITERAL`, `VARIABLE`, `FLOW`, ...), literal types and requirement (`Required`, `Optional`, `Default(...)`, `Variadic`). The decoder enforces all of that before compose runs.
 
-For a value that can be a literal or a variable (a `Target: pid` the script sets at runtime), use `Operand::compose_arg` in compose. It resolves the variable and reports unknown or possibly-uninitialized ones as located errors. Then call `Operand::get(ctx)` at activation. Check the returned type in compose.
+For a value that can be a literal or a variable (a `Target: pid` the script sets at runtime), use `Operand::compose_arg` in compose. It resolves the variable and reports unknown or possibly-uninitialized ones as located errors. Then call `Operand::get(ctx)` at activation. Check the returned type in compose. For a parameter declared `Requirement::Optional`, use `Operand::compose_optional_arg`, which returns `None` when the script did not give it; `compose_arg` is for required and defaulted parameters.
 
 ### Compose
 

@@ -213,10 +213,26 @@ pub enum Operand {
 }
 
 impl Operand {
+  /// Like [`Operand::compose_arg`], for a parameter declared
+  /// `Requirement::Optional`: `None` when the script did not give it.
+  pub fn compose_optional_arg<B: Backend>(
+    args: &Args,
+    name: &str,
+    shard: &str,
+    ctx: &mut ComposeCtx<'_, B>,
+  ) -> Result<Option<(Operand, Type)>> {
+    match args.get(name) {
+      None => Ok(None),
+      Some(_) => Operand::compose_arg(args, name, shard, ctx).map(Some),
+    }
+  }
+
   /// Composes a declared literal-or-variable parameter (already decoded):
   /// the literal, or the variable's binding (an unknown or possibly
   /// uninitialized variable is a structured error naming `shard` and the
   /// parameter). Returns the operand and its type, for the shard to check.
+  /// The parameter must be required or have a default; for an optional one
+  /// use [`Operand::compose_optional_arg`].
   pub fn compose_arg<B: Backend>(
     args: &Args,
     name: &str,

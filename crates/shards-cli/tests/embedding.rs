@@ -21,13 +21,28 @@ use shards_lang::{Program, Source};
 
 // --- A leaf shard: a fixed record from a literal-or-variable parameter ---
 
-static READING_PARAMS: &[ParamDecl] = &[ParamDecl {
-  name: "Sensor",
-  help: "Which sensor to read: a literal, or an Int variable read at activation.",
-  forms: Forms::LITERAL.or(Forms::VARIABLE),
-  types: &[TypeName::Int],
-  requirement: Requirement::Default(DefaultValue::Int(0)),
-}];
+static READING_PARAMS: &[ParamDecl] = &[
+  ParamDecl {
+    name: "Sensor",
+    help: "Which sensor to read: a literal, or an Int variable read at activation.",
+    forms: Forms::LITERAL.or(Forms::VARIABLE),
+    types: &[TypeName::Int],
+    requirement: Requirement::Default(DefaultValue::Int(0)),
+  },
+  ParamDecl {
+    name: "Unit",
+    help: "Override the unit (optional): a literal or a String variable.",
+    forms: Forms::LITERAL.or(Forms::VARIABLE),
+    types: &[TypeName::String],
+    requirement: Requirement::Optional,
+  },
+];
+
+/// Compiled Host.Reading: the sensor, and the unit override if given.
+struct ReadingCompiled {
+  sensor: Operand,
+  unit: Option<Operand>,
+}
 
 const READING_DESC: ShardDesc = ShardDesc {
   name: "Host.Reading",
@@ -44,11 +59,14 @@ const READING_DESC: ShardDesc = ShardDesc {
 struct Reading;
 
 impl LeafShard for Reading {
-  type Compiled = Operand;
+  type Compiled = ReadingCompiled;
   type State = ();
   const DESC: ShardDesc = READING_DESC;
 
-  fn compose<B: Backend>(args: &Args, ctx: &mut ComposeCtx<'_, B>) -> Result<Composed<Operand>> {
+  fn compose<B: Backend>(
+    args: &Args,
+    ctx: &mut ComposeCtx<'_, B>,
+  ) -> Result<Composed<ReadingCompiled>> {
     // Compose reads only its arguments and declared context: never the host.
     let (sensor, ty) = Operand::compose_arg(args, "Sensor", READING_DESC.name, ctx)?;
     if ty != Type::int() {
@@ -63,8 +81,11 @@ impl LeafShard for Reading {
         .param("Sensor", Some(0)),
       )));
     }
+    // An optional parameter: None when the script did not give it.
+    let unit =
+      Operand::compose_optional_arg(args, "Unit", READING_DESC.name, ctx)?.map(|(op, _)| op);
     Ok(Composed {
-      compiled: sensor,
+      compiled: ReadingCompiled { sensor, unit },
       // A fixed record: `r.value` composes to `Float | None`, `r.typo` fails.
       output: Type::fixed_table([
         ("id", Type::int()),
@@ -74,12 +95,12 @@ impl LeafShard for Reading {
     })
   }
 
-  fn instantiate(_: &Operand, _: &mut InstanceCtx) -> Result<()> {
+  fn instantiate(_: &ReadingCompiled, _: &mut InstanceCtx) -> Result<()> {
     Ok(())
   }
 
-  fn activate(sensor: &Operand, _: &mut (), ctx: &mut impl LeafCtx, _: &Var) -> Result<Flow> {
-    let Var::Int(id) = sensor.get(ctx) else {
+  fn activate(c: &ReadingCompiled, _: &mut (), ctx: &mut impl LeafCtx, _: &Var) -> Result<Flow> {
+    let Var::Int(id) = c.sensor.get(ctx) else {
       return Err(Error::Activation(
         "Host.Reading: Sensor is not an Int".into(),
       ));
@@ -93,7 +114,12 @@ impl LeafShard for Reading {
     Ok(Flow::Next(Var::table([
       ("id", Var::Int(id)),
       ("value", value),
-      ("unit", Var::string("C")),
+      (
+        "unit",
+        c.unit
+          .as_ref()
+          .map_or_else(|| Var::string("C"), |u| u.get(ctx)),
+      ),
     ])))
   }
 }

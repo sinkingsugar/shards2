@@ -56,7 +56,8 @@ SHS
 }
 
 echo "== resume cost vs depth (instances=1000, ticks=1000)"
-for depth in 1 4 16 64; do
+# Match bench_depth's current depths (within 2.0's compose nesting limit).
+for depth in 1 4 16 32; do
   f=$(gen_depth $depth)
   for r in $(seq 1 "$RUNS"); do
     line=$("$SHARDS" "$f" 2>&1 | bench_line)

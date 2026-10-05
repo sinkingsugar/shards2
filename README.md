@@ -30,7 +30,7 @@ C++ libraries are still used, but called from Rust; in 1.x, C++ is the host.
 
 Matched prototype benchmarks against 1.x (instance creation, memory per instance, steady state, resume depth, HTTP concurrency) are in `docs/stackless-experiment.md` and `docs/shards-2-compose-split.md` §5, with their limits. They support the instance-sharing design; they are not full-application performance claims.
 
-The [VM execution benchmark](docs/vm-execution-benchmarks.md) separately measures hot shard chains. It finds a substantial cheap-shard throughput gap against 1.x, while collection assignment can benefit from 2.0 sharing. The current value-forwarding and dispatch paths remain optimization work.
+The [runtime performance overview](docs/runtime-performance-overview.md) covers the latest release measurements and optimization headroom. Compose-selected builtin execution brings hot arithmetic chains near 1.x parity; some collection operations remain roughly 3–4× slower. Stackless performs well at large instance counts, with a remaining cost for deeply nested suspended flows. The [VM execution report](docs/vm-execution-benchmarks.md) retains the full before/after measurements.
 
 ```sh
 cargo test --workspace                                                        # acceptance tests, both schedulers

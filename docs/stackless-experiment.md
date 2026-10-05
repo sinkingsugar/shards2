@@ -2,6 +2,10 @@
 
 **Status:** Experiment complete (2026-10-04), including matched comparisons with 1.x (C++).
 
+**Latest measurements:** the [2026-10-05 runtime overview](runtime-performance-overview.md)
+refreshes steady-state, resume depth, async and HTTP results after VM optimization.
+The tables below retain the original experiment's evidence.
+
 **Decision (2026-10-04, maintainer; reviewed by Astra):** the stackless scheduler is the default, and both schedulers are maintained. Each mesh uses one backend; there is no cross-backend `Do`. A workload dominated by deep, frequent resumes can run its mesh on the stackful backend. Leaf and async shards have one shared implementation; only shards that suspend or run nested flows have two. Runtime tracing (§6) now informs optimization and deployment choices; it no longer gates the decision. Targets without the stackful backend (wasm, and ESP-IDF since 2026-10-05, see [esp32.md](esp32.md)) run stackless only.
 **Question:** Can a stackless scheduler preserve the prototype's semantics with an acceptable shard API? (Design doc §3.4; contract §6-§7 left the suspension representation open.) The 4 KB per instance it might save is secondary.
 **Scope kept:** same compiled/state model, same compose, same acceptance suite. The stackful scheduler stays as the reference.

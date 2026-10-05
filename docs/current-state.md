@@ -35,6 +35,11 @@ Sources: [shard contract](prototype-shard-contract.md), [core design](shards-2-c
   collection costs; the 2× target is not achieved across every workload.
   Aliasing/snapshot regressions cover both schedulers, and the pointer
   executor passes Miri. This is not a whole-application speed claim.
+  The [runtime overview](runtime-performance-overview.md) adds a fresh scheduler,
+  resume-depth, async and HTTP refresh at `f3f46e0`, plus an assessment of future
+  optimization boundaries. Fixed-shape table storage, mixed-flow ownership and
+  direct stackless continuations remain follow-up experiments, not implemented
+  features.
 
 - **Hot reload:** `shards_lang::Session` supports full restart (`reload`) and
   preserving reload (`reload_preserving`) on both schedulers. Preserving

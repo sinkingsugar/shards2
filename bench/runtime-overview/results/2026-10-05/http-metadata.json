@@ -1,0 +1,18 @@
+{
+  "head": "bbabad14b23ae66889047e6c33ceeeab53790db6",
+  "command": "bash bench/http-concurrency/run.sh ../shards/build/Release/shards 3",
+  "latency_ms": 50,
+  "counts": [
+    1,
+    32,
+    100,
+    1000
+  ],
+  "cpu_affinity": "unpinned; server and clients use normal affinity",
+  "validation": "36/36 runs: ok == server_completed == instances; failed == 0 where reported",
+  "binaries_sha256": {
+    "../shards/build/Release/shards": "da6c08e9c4b457565d0ff56ddf782baa723f8a5b20f265b6bb9d035ed07b5bca",
+    "target/release/examples/bench_http": "f91885c771d1bf973720171a398c5f6720ba1ce712eaf3f1d808f9027e3a7b90",
+    "target/release/examples/latency_server": "38a3c62c95ce8d4d54381fa4e6ec76b50d4d5e705876617bbc60863df8b5e59f"
+  }
+}

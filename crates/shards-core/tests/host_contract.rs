@@ -49,6 +49,71 @@ impl LeafShard for Drifted {
 
 static DRIFTED: ShardType = leaf_type::<Drifted>();
 
+/// Takes a record with `addr` and `guid` (a full input type), and passes
+/// it through.
+struct Record;
+
+fn record_type() -> Type {
+  Type::fixed_table([("addr", Type::int()), ("guid", Type::seq(Type::int()))])
+}
+
+const RECORD_DESC: ShardDesc = ShardDesc {
+  name: "Host.Record",
+  version: 1,
+  summary: "",
+  help: "",
+  params: Params::Declared(&[]),
+  input: InputDesc::Typed(record_type),
+  output: OutputDesc::Passthrough,
+  targets: Targets::All,
+  aliases: &[],
+};
+
+impl LeafShard for Record {
+  type Compiled = ();
+  type State = ();
+  const DESC: ShardDesc = RECORD_DESC;
+
+  fn compose<B: Backend>(_: &Args, ctx: &mut ComposeCtx<'_, B>) -> Result<Composed<()>> {
+    // No shape check here: core enforced the declared input.
+    Ok(Composed {
+      compiled: (),
+      output: ctx.input(),
+    })
+  }
+
+  fn instantiate(_: &(), _: &mut InstanceCtx) -> Result<()> {
+    Ok(())
+  }
+
+  fn activate(_: &(), _: &mut (), _: &mut impl LeafCtx, input: &Var) -> Result<Flow> {
+    Ok(Flow::Next(input.clone()))
+  }
+}
+
+static RECORD: ShardType = leaf_type::<Record>();
+
+fn record_wire(input: Var) -> WireDef {
+  WireDef {
+    name: "r".into(),
+    looped: false,
+    flow: vec![
+      shards_core::shards::defs::konst(input),
+      ShardDef::new(&RECORD, vec![]),
+    ],
+  }
+}
+
+#[test]
+fn the_catalog_documents_a_full_input_type() {
+  let catalog = shards_core::Catalog::new(&[&[&RECORD]]).unwrap();
+  let json = catalog.describe_json("Host.Record").unwrap();
+  assert!(
+    json.contains("\"input\":{\"kind\":\"type\",\"type\":\"{addr: Int guid: [Int]}\"}"),
+    "{json}"
+  );
+}
+
 fn wire(input: Var) -> WireDef {
   WireDef {
     name: "w".into(),
@@ -76,6 +141,33 @@ macro_rules! host_contract_tests {
       assert_eq!(
         (d.code, d.shard.as_deref()),
         ("input-type-mismatch", Some("Host.Drifted"))
+      );
+    }
+
+    #[test]
+    fn a_full_input_type_checks_the_record_shape() {
+      let guid = || Var::Seq(std::sync::Arc::new(vec![Var::Int(1), Var::Int(2)]));
+      let mut mesh = <$mesh>::new();
+      mesh.add_wire(record_wire(Var::table([
+        ("addr", Var::Int(7)),
+        ("guid", guid()),
+      ])));
+      assert!(mesh.compile("r", Type::none()).is_ok());
+
+      // A record missing a key fails at compose, not at runtime.
+      let mut mesh = <$mesh>::new();
+      mesh.add_wire(record_wire(Var::table([("addr", Var::Int(7))])));
+      let err = mesh
+        .compile("r", Type::none())
+        .err()
+        .expect("a compose error");
+      let d = err.diagnostic().expect("structured");
+      assert_eq!(d.code, "input-type-mismatch");
+      assert!(
+        d.message
+          .contains("Host.Record needs {addr: Int guid: [Int]} input, got {addr: Int}"),
+        "{}",
+        d.message
       );
     }
 

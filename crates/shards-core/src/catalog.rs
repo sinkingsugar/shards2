@@ -152,6 +152,10 @@ fn describe_json(s: &ShardType) -> String {
     InputDesc::Any => "{\"kind\":\"any\"}".to_string(),
     InputDesc::Ignored => "{\"kind\":\"ignored\"}".to_string(),
     InputDesc::Types(types) => format!("{{\"kind\":\"types\",\"types\":{}}}", types_json(types)),
+    InputDesc::Typed(ty) => format!(
+      "{{\"kind\":\"type\",\"type\":{}}}",
+      json_str(&ty().to_string())
+    ),
   };
   let output = match d.output {
     OutputDesc::Fixed(t) => format!("{{\"kind\":\"fixed\",\"type\":{}}}", type_json(t)),

@@ -284,6 +284,10 @@ pub enum InputDesc {
   /// The input is not used.
   Ignored,
   Types(&'static [TypeName]),
+  /// A full type, when a `TypeName` list cannot say it (a table with given
+  /// keys, `[Int]`, a union), like `ParamDecl::typed`. A function, so
+  /// descriptions stay `const`.
+  Typed(fn() -> Type),
 }
 
 /// A shard's output. Outputs that depend on compose are not presented as

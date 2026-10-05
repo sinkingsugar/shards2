@@ -412,21 +412,36 @@ impl<B: Backend> ComposeCtx<'_, B> {
   }
 }
 
-/// Enforces a shard's declared input types (`InputDesc::Types`) before its
-/// compose runs, so no shard repeats the check. `Any` and `Ignored` inputs
-/// are left to the shard.
+/// Enforces a shard's declared input (`InputDesc::Types` or
+/// `InputDesc::Typed`) before its compose runs, so no shard repeats the
+/// check. `Any` and `Ignored` inputs are left to the shard.
 fn check_input(ty: &ShardType, input: Type) -> Result<()> {
-  let crate::describe::InputDesc::Types(types) = ty.desc.input else {
-    return Ok(());
-  };
-  if types.iter().any(|t| t.matches(input)) {
-    return Ok(());
-  }
-  // "Int, Float or Float3".
-  let names: Vec<&str> = types.iter().map(|t| t.name()).collect();
-  let expected = match names.split_last() {
-    Some((last, rest)) if !rest.is_empty() => format!("{} or {last}", rest.join(", ")),
-    _ => names.join(""),
+  use crate::describe::InputDesc;
+  use crate::diagnostic::TypeRef;
+  let (expected, refs) = match ty.desc.input {
+    InputDesc::Types(types) => {
+      if types.iter().any(|t| t.matches(input)) {
+        return Ok(());
+      }
+      // "Int, Float or Float3".
+      let names: Vec<&str> = types.iter().map(|t| t.name()).collect();
+      let expected = match names.split_last() {
+        Some((last, rest)) if !rest.is_empty() => format!("{} or {last}", rest.join(", ")),
+        _ => names.join(""),
+      };
+      (
+        expected,
+        types.iter().copied().map(TypeRef::named).collect(),
+      )
+    }
+    InputDesc::Typed(full) => {
+      let full = full();
+      if full.accepts(input) {
+        return Ok(());
+      }
+      (full.to_string(), vec![TypeRef::of(full)])
+    }
+    InputDesc::Any | InputDesc::Ignored => return Ok(()),
   };
   Err(crate::Error::Diagnostic(Box::new(
     crate::diagnostic::Diagnostic::new(
@@ -436,14 +451,7 @@ fn check_input(ty: &ShardType, input: Type) -> Result<()> {
       format!("{} needs {expected} input, got {input}", ty.name()),
     )
     .shard(ty.name())
-    .types(
-      Some(crate::diagnostic::TypeRef::of(input)),
-      types
-        .iter()
-        .copied()
-        .map(crate::diagnostic::TypeRef::named)
-        .collect(),
-    ),
+    .types(Some(TypeRef::of(input)), refs),
   )))
 }
 

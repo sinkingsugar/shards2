@@ -72,7 +72,8 @@ impl Var {
 }
 
 impl Var {
-  /// Human text, as 1.x prints values (`Log`, `ToString`, `String.Format`):
+  /// Human text (`Log`, `ToString`, `String.Format`), like 1.x's except
+  /// that floats keep every digit:
   /// strings as they are (also inside sequences and tables), whole floats
   /// without `.0` (`3`, `[1 2.5]`), very large or small ones in exponent
   /// form. Not round-trippable: `Display` gives source syntax.
@@ -83,6 +84,11 @@ impl Var {
   }
 }
 
+/// A float as human text: the shortest form that reads back as the same
+/// value (`3.14159265358`, `6416.2715`, `0.1`), whole numbers without `.0`
+/// (`3`, `-0`), exponent form only when very large or small (`1e20`).
+/// 1.x rounded to six significant digits (`6416.27`); 2.0 keeps the exact
+/// value, a listed deviation.
 fn float_text(f: f64, out: &mut String) {
   use std::fmt::Write;
   let _ = if f.is_finite() && f.fract() == 0.0 && f.abs() < 1e16 {
@@ -228,13 +234,19 @@ mod tests {
   use super::*;
 
   #[test]
-  fn text_prints_values_as_1x_does() {
+  fn text_prints_values_for_people() {
     let seq = |v: Vec<Var>| Var::Seq(Arc::new(v));
-    // Checked against the 1.x Release binary's Log output.
+    // Whole floats, strings and nesting as 1.x printed them; digits exact.
     assert_eq!(Var::Float(3.0).text(), "3");
     assert_eq!(Var::Float(0.1).text(), "0.1");
     assert_eq!(Var::Float(-0.0).text(), "-0");
     assert_eq!(Var::Float(1e20).text(), "1e20");
+    // Exact, not 1.x's six significant digits (a listed deviation).
+    assert_eq!(Var::Float(1234.56789012).text(), "1234.56789012");
+    assert_eq!(
+      Var::Float4([6416.2715, 514.1416, 8.651538, 4.5194016]).text(),
+      "@f4(6416.2715 514.1416 8.651538 4.5194016)"
+    );
     assert_eq!(
       seq(vec![Var::Float(1.0), Var::Float(2.5)]).text(),
       "[1 2.5]"

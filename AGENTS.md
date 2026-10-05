@@ -4,7 +4,7 @@ Shared working instructions for coding agents in this repository.
 
 ## What this is
 
-Shards 2.0: a new Rust implementation of the Shards runtime. The 1.x implementation (C++ core with Rust modules) lives at `fragcolor-xyz/shards`, usually checked out at `../shards`. Use it as reference for semantics, tests and reusable Rust code, but do not copy its runtime architecture.
+Shards 2.0: a new Rust implementation of the Shards runtime. The 1.x implementation (C++ core with Rust modules) lives at `fragcolor-xyz/shards`, usually checked out at `../shards`. Use it to learn what a feature is for, and for tests and reusable Rust code, but do not copy its runtime architecture. Its author's view: the intent was good, the execution often was not. Do not treat 1.x behavior as correct by default: when "1.x does X", decide whether X is good, choose the better design, and list the difference under "Deviations from 1.x" in `docs/current-state.md`.
 
 Status: the core prototype is done and validates the design. Two schedulers (stackful and stackless) pass the same acceptance suite; **stackless is the default, and both are maintained**, one backend per mesh.
 

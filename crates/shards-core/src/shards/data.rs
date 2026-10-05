@@ -529,7 +529,7 @@ pub const STRING_FORMAT_DESC: ShardDesc = ShardDesc {
   version: 1,
   summary: crate::shard_doc!("Joins a sequence's elements into one string."),
   help: crate::shard_doc!(
-    "Elements print as in 1.x: strings as they are, whole floats without `.0` (`12`, `2.5`, `[1 2]`, `{a: 1}`, `none`). f-strings lower to Seq.Make followed by String.Format."
+    "Elements print as text: strings as they are, whole floats without `.0`, other floats exact (`12`, `2.5`, `[1 2]`, `{a: 1}`, `none`). f-strings lower to Seq.Make followed by String.Format."
   ),
   params: Params::Declared(&[]),
   input: InputDesc::Types(&[TypeName::Seq]),

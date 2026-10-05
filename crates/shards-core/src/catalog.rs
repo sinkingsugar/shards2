@@ -180,7 +180,19 @@ fn describe_json(s: &ShardType) -> String {
             format!("\"index\":{index}"),
             format!("\"help\":{}", json_str(p.help)),
             format!("\"forms\":{}", strings_json(&p.forms.names())),
-            format!("\"types\":{}", types_json(p.types)),
+            // A typed parameter without a type list documents the type
+            // code derived from its full type.
+            match (p.types, p.ty) {
+              ([], Some(ty)) => {
+                let t = crate::diagnostic::TypeRef::of(ty());
+                format!(
+                  "\"types\":[{{\"name\":{},\"basic_type\":{}}}]",
+                  json_str(&t.name),
+                  t.basic_type
+                )
+              }
+              _ => format!("\"types\":{}", types_json(p.types)),
+            },
             format!("\"required\":{}", p.requirement == Requirement::Required),
           ];
           if p.requirement == Requirement::Variadic {

@@ -235,7 +235,27 @@ impl ParamDecl {
     }
   }
 
-  /// Sets the full type literals and variables are checked against.
+  /// A declaration with a full type and no `TypeName` list: the catalog
+  /// derives the 1.x type code from the full type.
+  pub const fn new_typed(
+    name: &'static str,
+    help: &'static str,
+    forms: Forms,
+    requirement: Requirement,
+    ty: fn() -> Type,
+  ) -> ParamDecl {
+    ParamDecl {
+      name,
+      help,
+      forms,
+      types: &[],
+      requirement,
+      ty: Some(ty),
+    }
+  }
+
+  /// Sets the full type literals and variables are checked against. The
+  /// `TypeName` list is then not used for checks; it can stay empty.
   pub const fn typed(self, ty: fn() -> Type) -> ParamDecl {
     ParamDecl {
       ty: Some(ty),

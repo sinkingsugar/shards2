@@ -27,7 +27,7 @@ Sources: [shard contract](prototype-shard-contract.md), [core design](shards-2-c
   - compose enforces `InputDesc::Types` and full input types (`InputDesc::Typed`);
   - a parameter can declare a full type (`ParamDecl::typed`), and the decoder and `Operand::compose_arg` check literals and variables against it (or against the type list);
   - leaf and async shards' values are checked against their compose output type in debug builds (feature `output-checks` in release);
-  - `Log`, `ToString` and `String.Format` print values as 1.x does;
+  - `Log`, `ToString` and `String.Format` print values like 1.x (whole floats without `.0`, raw strings in sequences) but with exact floats;
   - `log::capture` follows work onto `shards_io` threads.
 
   The embedding example shrank accordingly: no hand-written input or variable checks.
@@ -89,7 +89,7 @@ Table storage and runtime sets were discussed; they are open decisions in [value
 
 Deliberate differences a ported script can hit:
 - **Syntax:** `;` comments and `null` are rejected. `And`/`Or` are rejected, with the `All`/`Any` rewrite given. `Sub` is `Math.Subtract`; the run-a-flow shard is `SubFlow` (1.x `_SubFlow`).
-- **Numbers:** Int and Float mix in arithmetic and comparisons. Int division truncates.
+- **Numbers:** Int and Float mix in arithmetic and comparisons. Int division truncates. Printed floats keep every digit (`6416.2715`); 1.x rounded to six significant digits (`6416.27`), so logs differ when diffed.
 - **Tables:** keys are strings, and iteration is in sorted key order.
 - **`Push` with `Clear`** starts the sequence over on the declaring `Push`'s first run in each loop iteration, so later pushes in the same iteration grow it. In 1.x the declaring `Push` clears on each of its runs, so when it is inside a loop body only the pushes after its last run remain; other `Push`es to the same variable append in both.
 - **`Match`** with no matching case passes the input through; 1.x raises an error.

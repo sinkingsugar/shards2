@@ -962,14 +962,14 @@ fn full_parameter_types_check_literals_and_are_documented() {
   use shards_core::describe::{Forms, ParamDecl, Requirement, ShardDesc};
   use shards_core::{Catalog, ShardType, Type};
   static PARAMS: &[ParamDecl] = &[
-    ParamDecl::new(
+    // No TypeName list: the full type is enough.
+    ParamDecl::new_typed(
       "Offsets",
       "",
       Forms::LITERAL.or(Forms::VARIABLE),
-      &[TypeName::Seq],
       Requirement::Optional,
-    )
-    .typed(|| Type::seq(Type::int())),
+      || Type::seq(Type::int()),
+    ),
     ParamDecl::new(
       "Ref",
       "",
@@ -1025,6 +1025,11 @@ fn full_parameter_types_check_literals_and_are_documented() {
   let catalog = Catalog::new(&[&[&TYPED]]).unwrap();
   let json = catalog.describe_json("Typed").unwrap();
   assert!(json.contains("\"type\":\"[Int]\""), "{json}");
+  // The 1.x type code is derived from the full type.
+  assert!(
+    json.contains("\"types\":[{\"name\":\"[Int]\",\"basic_type\":56}]"),
+    "{json}"
+  );
   assert!(
     json.contains("\"type\":\"{addr: Int guid: [Int]}\""),
     "{json}"

@@ -127,7 +127,7 @@ pub const LOG_DESC: ShardDesc = ShardDesc {
   version: 1,
   summary: crate::shard_doc!("Writes the input to the log and passes it through."),
   help: crate::shard_doc!(
-    "Values print as in 1.x: strings as they are, whole floats without `.0`. With a Prefix the line is `prefix: value`."
+    "Values print as text: strings as they are, whole floats without `.0`, other floats exact. With a Prefix the line is `prefix: value`."
   ),
   params: Params::Declared(LOG_PARAMS),
   input: InputDesc::Any,
@@ -709,7 +709,7 @@ impl PureOp for ToStringOp {
     "ToString",
     crate::shard_doc!("Converts the input to a string."),
     crate::shard_doc!(
-      "A string stays as it is; other values as 1.x prints them (whole floats without `.0`, strings inside sequences as they are)."
+      "A string stays as it is; other values as text (whole floats without `.0`, other floats exact, strings inside sequences as they are)."
     ),
     InputDesc::Any,
     OutputDesc::Fixed(TypeName::String),

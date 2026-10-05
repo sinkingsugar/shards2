@@ -392,7 +392,12 @@ impl fmt::Display for Type {
           if !first {
             write!(f, " ")?;
           }
-          write!(f, "...: {}", Nested(rest))?;
+          // An open table of anything reads `{a: Int ...}`.
+          if rest == Type::any() {
+            write!(f, "...")?;
+          } else {
+            write!(f, "...: {}", Nested(rest))?;
+          }
         }
         write!(f, "}}")
       }
@@ -448,7 +453,15 @@ mod tests {
     let b = Type::fixed_table([("a", Type::string()), ("b", Type::int())]);
     assert_eq!(a, b);
     assert_eq!(a.to_string(), "{a: String b: Int}");
-    assert_eq!(Type::any_table().to_string(), "{...: Any}");
+    assert_eq!(Type::any_table().to_string(), "{...}");
+    assert_eq!(
+      Type::table([("a", Type::int())], Some(Type::any())).to_string(),
+      "{a: Int ...}"
+    );
+    assert_eq!(
+      Type::table([("a", Type::int())], Some(Type::float())).to_string(),
+      "{a: Int ...: Float}"
+    );
     let t = a.as_table().unwrap();
     assert_eq!(t.get("b"), Some(Type::int()));
     assert_eq!(t.get("c"), None);

@@ -1,0 +1,237 @@
+diff --git a/crates/shards-core/src/inline.rs b/crates/shards-core/src/inline.rs
+index 9a39373..87138e3 100644
+--- a/crates/shards-core/src/inline.rs
++++ b/crates/shards-core/src/inline.rs
+@@ -21,20 +21,23 @@ use crate::var::Var;
+ #[doc(hidden)]
+ pub struct InlineOp(pub(crate) Op);
+ 
++// Explicit tags keep dispatch a direct byte load rather than decoding niches.
+ pub(crate) enum Op {
+   Fallback,
+   Const(Var),
+-  Get(Binding),
++  GetLocal(SlotOffset),
++  GetMesh(SlotOffset),
+   Set(Binding),
+   Inc(Binding),
+   ConstDrop(Var),
+-  GetDrop(Binding),
++  GetLocalDrop(SlotOffset),
++  GetMeshDrop(SlotOffset),
+   SetDrop(Binding),
+   IncDrop(Binding),
+   Take(Operand),
+   Push(Binding),
+   SeqMake(Vec<Operand>),
+-  TableMake(Vec<(std::sync::Arc<str>, Operand)>, Type),
++  TableMake(Type, Vec<(std::sync::Arc<str>, Operand)>),
+   AddIntConst(i64),
+   AddIntBound(Binding),
+   AddFloatConst(f64),
+@@ -43,6 +46,30 @@ pub(crate) enum Op {
+   AddFloat4Bound(Binding),
+ }
+ 
++/// Byte offset constructed only from a Var slot index. Its alignment is thus
++/// guaranteed independently of the frame chosen by an instance.
++#[derive(Clone, Copy)]
++pub(crate) struct SlotOffset(usize);
++
++impl SlotOffset {
++  fn new(index: usize) -> Self {
++    Self(
++      index
++        .checked_mul(size_of::<Var>())
++        .expect("inline slot offset overflow"),
++    )
++  }
++}
++
++impl Op {
++  fn get(binding: Binding) -> Self {
++    match binding {
++      Binding::Local(index) => Self::GetLocal(SlotOffset::new(index)),
++      Binding::Mesh(index) => Self::GetMesh(SlotOffset::new(index)),
++    }
++  }
++}
++
+ pub(crate) struct Instruction {
+   pub op: Op,
+   #[cfg(any(debug_assertions, feature = "output-checks"))]
+@@ -71,17 +98,22 @@ pub(crate) fn lower_scratch_releases(code: &mut [Instruction]) {
+   let mut may_own = true;
+   for instruction in code {
+     match &mut instruction.op {
+-      Op::Const(_) | Op::Get(_) | Op::Set(_) | Op::Inc(_) if may_own => {
++      Op::Const(_) | Op::GetLocal(_) | Op::GetMesh(_) | Op::Set(_) | Op::Inc(_) if may_own => {
+         instruction.op = match std::mem::replace(&mut instruction.op, Op::Fallback) {
+           Op::Const(v) => Op::ConstDrop(v),
+-          Op::Get(b) => Op::GetDrop(b),
++          Op::GetLocal(offset) => Op::GetLocalDrop(offset),
++          Op::GetMesh(offset) => Op::GetMeshDrop(offset),
+           Op::Set(b) => Op::SetDrop(b),
+           Op::Inc(b) => Op::IncDrop(b),
+           _ => unreachable!(),
+         };
+         may_own = false;
+       }
+-      Op::ConstDrop(_) | Op::GetDrop(_) | Op::SetDrop(_) | Op::IncDrop(_) => may_own = false,
++      Op::ConstDrop(_)
++      | Op::GetLocalDrop(_)
++      | Op::GetMeshDrop(_)
++      | Op::SetDrop(_)
++      | Op::IncDrop(_) => may_own = false,
+       Op::Fallback
+       | Op::SeqMake(_)
+       | Op::TableMake(..)
+@@ -90,7 +122,8 @@ pub(crate) fn lower_scratch_releases(code: &mut [Instruction]) {
+       | Op::AddFloat4Const(_)
+       | Op::AddFloat4Bound(_) => may_own = true,
+       Op::Const(_)
+-      | Op::Get(_)
++      | Op::GetLocal(_)
++      | Op::GetMesh(_)
+       | Op::Set(_)
+       | Op::Inc(_)
+       | Op::AddIntConst(_)
+@@ -110,7 +143,7 @@ pub(crate) fn leaf<L: LeafShard>(c: &L::Compiled, output: Type) -> Option<Inline
+   let op = if id == TypeId::of::<leaf::Const>() {
+     Op::Const(c.downcast_ref::<Var>()?.clone())
+   } else if id == TypeId::of::<leaf::Get>() {
+-    Op::Get(*c.downcast_ref::<Binding>()?)
++    Op::get(*c.downcast_ref::<Binding>()?)
+   } else if id == TypeId::of::<leaf::Set>()
+     || id == TypeId::of::<leaf::Ref>()
+     || id == TypeId::of::<leaf::Update>()
+@@ -127,7 +160,7 @@ pub(crate) fn leaf<L: LeafShard>(c: &L::Compiled, output: Type) -> Option<Inline
+       .downcast_ref::<Vec<(std::sync::Arc<str>, Operand)>>()?
+       .clone();
+     entries.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+-    Op::TableMake(entries, output)
++    Op::TableMake(output, entries)
+   } else if id == TypeId::of::<data::Push>() {
+     let c = c.downcast_ref::<data::PushCompiled>()?;
+     if c.clear {
+@@ -167,11 +200,28 @@ fn overflow() -> Error {
+ struct Frames {
+   locals: *mut Var,
+   locals_len: usize,
++  locals_bytes: usize,
+   mesh: *mut Var,
+   mesh_len: usize,
++  mesh_bytes: usize,
+ }
+ 
+ impl Frames {
++  #[inline(always)]
++  fn slot_offset<const MESH: bool>(&self, offset: SlotOffset) -> *mut Var {
++    let (base, bytes) = if MESH {
++      (self.mesh, self.mesh_bytes)
++    } else {
++      (self.locals, self.locals_bytes)
++    };
++    assert!(offset.0 < bytes, "inline binding outside its frame");
++    // SAFETY: SlotOffset is an aligned whole-Var offset constructed with
++    // checked multiplication. Frame byte lengths are multiples of Var size,
++    // so offset < bytes also proves the entire Var fits. Bases come from the
++    // original exclusive borrows; no new mutable reference is constructed.
++    unsafe { base.cast::<u8>().add(offset.0).cast::<Var>() }
++  }
++
+   #[inline(always)]
+   fn slot(&self, b: Binding) -> *mut Var {
+     let (base, len, index) = match b {
+@@ -198,8 +248,10 @@ pub(crate) fn run(
+   let frames = Frames {
+     locals: locals.as_mut_ptr(),
+     locals_len: locals.len(),
++    locals_bytes: std::mem::size_of_val(locals),
+     mesh: mesh.as_mut_ptr(),
+     mesh_len: mesh.len(),
++    mesh_bytes: std::mem::size_of_val(mesh),
+   };
+   // Own the incoming output so replacing it releases captured values before
+   // later frame mutations. Compose-selected Drop variants release it when
+@@ -225,9 +277,8 @@ pub(crate) fn run(
+         Op::Const(v) => {
+           value = v;
+         }
+-        Op::Get(b) => {
+-          value = frames.slot(*b);
+-        }
++        Op::GetLocal(offset) => value = frames.slot_offset::<false>(*offset),
++        Op::GetMesh(offset) => value = frames.slot_offset::<true>(*offset),
+         Op::Set(b) => {
+           let target = frames.slot(*b);
+           if !std::ptr::eq(value, target) {
+@@ -250,8 +301,12 @@ pub(crate) fn run(
+           value = v;
+           scratch = Var::None;
+         }
+-        Op::GetDrop(b) => {
+-          value = frames.slot(*b);
++        Op::GetLocalDrop(offset) => {
++          value = frames.slot_offset::<false>(*offset);
++          scratch = Var::None;
++        }
++        Op::GetMeshDrop(offset) => {
++          value = frames.slot_offset::<true>(*offset);
+           scratch = Var::None;
+         }
+         Op::SetDrop(b) => {
+@@ -425,7 +480,7 @@ pub(crate) fn construct(
+         };
+         let mut table_shape = None;
+         while let Some(instruction) = code.get(index) {
+-          let Op::TableMake(entries, shape) = &instruction.op else {
++          let Op::TableMake(shape, entries) = &instruction.op else {
+             break;
+           };
+           if table_shape == Some(*shape) || output.keys().eq(entries.iter().map(|(key, _)| key)) {
+@@ -504,7 +559,7 @@ mod tests {
+   fn obsolete_input_and_take_scratch_are_released_before_push() {
+     use std::sync::Arc;
+     for through_take in [false, true] {
+-      for replacement in [Op::Const(Var::Int(1)), Op::Get(Binding::Local(1))] {
++      for replacement in [Op::Const(Var::Int(1)), Op::get(Binding::Local(1))] {
+         let mut locals = vec![Var::Seq(Arc::new(vec![Var::Int(7)])), Var::Int(1)];
+         let Var::Seq(items) = &locals[0] else {
+           unreachable!()
+@@ -607,7 +662,7 @@ mod tests {
+           }
+           1 => {
+             expected = frame[index].clone();
+-            Op::Get(binding)
++            Op::get(binding)
+           }
+           2 => {
+             frame[index] = expected.clone();
+@@ -645,7 +700,7 @@ mod tests {
+   fn snapshots_survive_frame_and_code_replacement() {
+     let mut locals = vec![Var::string("original")];
+     let code = instructions([
+-      Op::Get(Binding::Local(0)),
++      Op::get(Binding::Local(0)),
+       Op::Set(Binding::Local(0)),
+       Op::Fallback,
+     ]);
+@@ -662,7 +717,7 @@ mod tests {
+     let old = Var::Seq(Arc::new(vec![Var::string("element")]));
+     let mut locals = vec![old.clone()];
+     let code = instructions([
+-      Op::Get(Binding::Local(0)),
++      Op::get(Binding::Local(0)),
+       Op::Take(Operand::Const(Var::Int(0))),
+       Op::Set(Binding::Local(0)),
+     ]);
+@@ -671,7 +726,7 @@ mod tests {
+     assert_eq!(locals[0], output);
+     locals[0] = old.clone();
+     let code = instructions([
+-      Op::Get(Binding::Local(0)),
++      Op::get(Binding::Local(0)),
+       Op::Push(Binding::Local(0)),
+       Op::Push(Binding::Local(0)),
+     ]);

@@ -540,3 +540,50 @@ owner after the previous segment had cleared scratch; the shared constructor
 regression now also enters its constructor after a non-owning segment. All
 lifetime and snapshot regressions remain passing. No scheduler/HTTP rerun is
 claimed for this change.
+
+## Explicit opcode tags and specialized Get addressing
+
+A four-way experiment on the runtime based on `4b52472` tested the existing
+representation, explicit opcode tags alone, specialized Get offsets alone,
+and both. [Method, matrix and assembly analysis](vm-assembly-comparison.md#implemented-follow-up-explicit-tags-and-specialized-get-offsets)
+show gains from both changes, with 32-byte instruction stride preserved on the
+measured x86-64 release build. Both are retained. Public Var, snapshot semantics,
+integer overflow behavior and per-instance state representation are unchanged.
+
+The complete final suite passed: 25 workloads, four widths, nine retained
+samples per engine/cell, all outputs/counts verified. Selected width-256 medians
+(ns per chain):
+
+| Workload | 1.x | 2.0 stackful | 2.0 stackless | Stackless / 1.x |
+|---|---:|---:|---:|---:|
+| const-int | 125.3 | 129.1 | 127.8 | 1.02× |
+| get-int | 128.7 | 149.0 | 145.9 | 1.13× |
+| add-int | 297.3 | 178.6 | 179.3 | 0.60× |
+| add-float | 373.1 | 365.9 | 362.1 | 0.97× |
+| add-float4 | 372.4 | 411.2 | 379.4 | 1.02× |
+| assign-int | 453.1 | 557.6 | 558.1 | 1.23× |
+| take-seq | 1,578.9 | 626.1 | 628.3 | 0.40× |
+
+21/25 stackless workloads meet ≤2× at width 256. The remaining cases are
+sequence/table construction, shared-sequence Push, and table Take (3.08–3.59×).
+This is a substantial improvement in cheap-operation throughput, not universal
+parity or a whole-application claim. Short widths, both backends and dispersion
+are retained in the data; the stackful Float4 median is 1.10× in this full run,
+whereas the separate alternating matrix has it closer to parity. Frequency
+remains unlocked; compare the paired data rather than treating threshold
+crossings or every timing difference as a stable property.
+
+[Raw full-suite results, matrix samples, variant patches and final assembly](../bench/vm-execution/results/2026-10-05-explicit-opcodes/).
+Matrix patches are relative to `4b52472`; the full-suite metadata and source
+hashes identify the final working tree. Tests and a comment were added after
+building the matrix candidates, so their hashes and final binary are recorded
+separately rather than presented as identical artifacts.
+
+Validation: the full local check set passed, including native/WASI shared
+suites, both clippy variants, docs-off tests and release nesting limits.
+Release core tests with output checks and all nine inline Miri tests passed.
+The new `specialized_get_checks_the_selected_frame` checks that an oversized
+other frame cannot validate a bad offset, and that offset multiplication cannot
+wrap. Existing tests cover both frame kinds, scratch ownership, snapshots and
+self-push. No bounds checks were removed. Scheduler/HTTP timings were not
+refreshed for this internal representation change.

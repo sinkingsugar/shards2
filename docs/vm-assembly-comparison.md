@@ -188,3 +188,72 @@ bindings with precomputed offsets; then fusion that retains source/error and
 ownership boundaries. Arithmetic already has packed SIMD where relevant.
 Removing overflow semantics or trusting arbitrary host output without checking
 would be a separate contract decision, not a free compiler optimization.
+
+## Implemented follow-up: explicit tags and specialized Get offsets
+
+The next implementation replaces the default `Op` encoding with `#[repr(u8)]`
+and selects Local/Mesh Get opcodes containing a checked, compose-computed byte
+offset. Release/non-release Get variants retain the preceding ownership fix.
+The table-constructor variant places its small Type field before its Vec so the
+explicit tag does not inflate the measured x86-64 instruction stride: it stays
+32 bytes. Public Var remains 24 bytes; there are no new per-instance fields.
+
+A four-way comparison separates the changes: baseline, explicit tag only,
+specialized offsets only, and both. Each cell uses the same script and iteration
+count with sequential, rotating/reversing binary order on CPU 2. There are three
+process rounds, each with two warmups and three retained batches. Both schedulers
+are measured at widths 8 and 256, alongside 1.x; every output and count is checked.
+Nine workload families include Const/Get, assignment, arithmetic and sequence
+Take. Frequency is unlocked, so these are empirical results on this machine,
+not guarantees of a specific percentage on another CPU.
+
+Width-256 stackless medians, ns per chain:
+
+| Workload | Before | Explicit tag | Offsets only | Both | 1.x |
+|---|---:|---:|---:|---:|---:|
+| Const(Int) | 180.3 | 141.6 | 173.3 | 127.3 | 124.8 |
+| Const(Seq) | 184.2 | 142.8 | 177.7 | 129.8 | 194.3 |
+| Get(Int) | 254.9 | 210.1 | 194.3 | 145.5 | 130.7 |
+| Get(Seq) | 256.4 | 212.4 | 196.1 | 149.3 | 205.6 |
+| Assign(Int) | 680.1 | 599.4 | 591.4 | 555.9 | 449.8 |
+| Add(Int) | 223.2 | 177.7 | 228.2 | 178.5 | 295.7 |
+| Add(Float) | 365.6 | 358.5 | 363.8 | 361.9 | 372.2 |
+| Add(Float4) | 380.9 | 372.8 | 379.3 | 374.7 | 370.4 |
+| Take(Seq) | 759.2 | 668.6 | 672.9 | 626.4 | 1,586.3 |
+
+Changing opcode variants also changes whole-function code generation: even
+Const changes with Get specialization. These effects are not independently
+additive, and the matrix is more informative than subtracting assembly counts.
+
+The combined candidate's dispatch loads a byte tag directly before the jump
+table. The high-bit decode is gone. Local Get is now:
+
+```asm
+mov r14, [r13+8]          ; precomputed byte offset
+cmp r14, [rsp+0x128]      ; local frame byte length, computed once at entry
+jae bounds_failure
+add r14, rbp             ; local frame base
+jmp next_instruction
+```
+
+Mesh Get has its own handler. There is no per-Get frame-kind selection or
+index multiplication. Bounds checks remain: SlotOffset construction checks
+multiplication overflow and guarantees whole-Var alignment; offset < frame byte
+length therefore proves the entire Var fits. Raw bases still derive from the
+original exclusive frame borrows. The analysis/safety model does not rely on
+unchecked offsets or instance pointers stored in shared compiled data.
+
+The measured inline function grows from 7,553 to 7,642 bytes; its explicit stack
+reservation grows from 376 to 392 bytes on this x86-64 build. Instruction storage
+and persistent per-instance state do not grow. This is a small code/stack cost
+for the measured throughput gain, not a claim that representation is free.
+
+Empirical conclusion: the existing ownership model and compiled/state split
+support these optimizations, while the compiler-default instruction encoding
+was demonstrably suboptimal for these workloads. Correctness evidence includes
+the shared acceptance suite, retained lifetime/alias tests, new wrong-frame
+bounds checks, WASI execution, and nine inline Miri tests. These checks cover the
+implementation's contracts; they do not prove an optimal representation for all
+future shards or workloads. See the [full-suite follow-up](vm-execution-benchmarks.md#explicit-opcode-tags-and-specialized-get-addressing)
+for broader performance coverage, raw matrix samples, reproducible variant
+patches and final-binary assembly.

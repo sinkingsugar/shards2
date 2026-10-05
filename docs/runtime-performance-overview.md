@@ -17,6 +17,13 @@ removes redundant scratch checks. Its full VM rerun and the
 opcode decoding and frame binding costs. The historical tables below retain
 their original snapshot.
 
+**Latest internal layout:** [explicit opcode tags and specialized Get offsets](vm-execution-benchmarks.md#explicit-opcode-tags-and-specialized-get-addressing)
+were adopted after an alternating four-way experiment and full VM rerun.
+Const(Int) is now 1.02× and Get(Int) 1.13× 1.x at width 256. The
+[assembly follow-up](vm-assembly-comparison.md#implemented-follow-up-explicit-tags-and-specialized-get-offsets)
+records correctness evidence, memory/code costs and limits. Historical tables
+below are unchanged; no later scheduler/HTTP rerun is implied.
+
 ## Results
 
 The [complete VM suite](vm-execution-benchmarks.md#constructor-retention-review-follow-up)

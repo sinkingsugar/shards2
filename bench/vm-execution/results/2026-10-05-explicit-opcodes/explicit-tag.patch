@@ -1,0 +1,40 @@
+diff --git a/crates/shards-core/src/inline.rs b/crates/shards-core/src/inline.rs
+index 9a39373..56c4866 100644
+--- a/crates/shards-core/src/inline.rs
++++ b/crates/shards-core/src/inline.rs
+@@ -21,6 +21,8 @@ use crate::var::Var;
+ #[doc(hidden)]
+ pub struct InlineOp(pub(crate) Op);
+ 
++// Explicit tags keep dispatch a direct byte load rather than decoding niches.
++#[repr(u8)]
+ pub(crate) enum Op {
+   Fallback,
+   Const(Var),
+@@ -34,7 +36,7 @@ pub(crate) enum Op {
+   Take(Operand),
+   Push(Binding),
+   SeqMake(Vec<Operand>),
+-  TableMake(Vec<(std::sync::Arc<str>, Operand)>, Type),
++  TableMake(Type, Vec<(std::sync::Arc<str>, Operand)>),
+   AddIntConst(i64),
+   AddIntBound(Binding),
+   AddFloatConst(f64),
+@@ -127,7 +129,7 @@ pub(crate) fn leaf<L: LeafShard>(c: &L::Compiled, output: Type) -> Option<Inline
+       .downcast_ref::<Vec<(std::sync::Arc<str>, Operand)>>()?
+       .clone();
+     entries.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+-    Op::TableMake(entries, output)
++    Op::TableMake(output, entries)
+   } else if id == TypeId::of::<data::Push>() {
+     let c = c.downcast_ref::<data::PushCompiled>()?;
+     if c.clear {
+@@ -425,7 +427,7 @@ pub(crate) fn construct(
+         };
+         let mut table_shape = None;
+         while let Some(instruction) = code.get(index) {
+-          let Op::TableMake(entries, shape) = &instruction.op else {
++          let Op::TableMake(shape, entries) = &instruction.op else {
+             break;
+           };
+           if table_shape == Some(*shape) || output.keys().eq(entries.iter().map(|(key, _)| key)) {

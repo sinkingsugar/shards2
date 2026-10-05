@@ -33,7 +33,11 @@ Sources: [shard contract](prototype-shard-contract.md), [core design](shards-2-c
   Cleanup selection now happens at compose: separate release/non-release
   opcodes remove redundant checks from Const/Get/Set/Inc chains. Ownership
   analysis resets at generic/constructor boundaries and conservatively tracks
-  operations that can recreate owned scratch.
+  operations that can recreate owned scratch. Explicit opcode tags now avoid
+  compiler-generated niche decoding, and Local/Mesh Get opcodes carry
+  compose-computed byte offsets with runtime frame bounds checks. The
+  [assembly comparison](vm-assembly-comparison.md) records a four-way experiment
+  supporting these choices; measured x86-64 instruction stride stays 32 bytes.
   Constructors now consume uniquely owned input buffers and reuse them only
   across consecutive constructor instructions, without retaining outputs in
   shard state. Generic host

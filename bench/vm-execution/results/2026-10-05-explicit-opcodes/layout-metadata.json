@@ -1,0 +1,32 @@
+{
+  "note": "Matrix patches are relative to 4b524723e659f3e45075c1c363bc94bb4cd793ca. Matrix candidates preceded a regression-test/comment-only addition; final full suite uses final sources. Both candidate and final inline::run are 7642 bytes at 0x24a230 with the same hot dispatch/Get instructions. Distinct binary hashes retained.",
+  "base": "4b524723e659f3e45075c1c363bc94bb4cd793ca",
+  "final_binary_sha256": "69b7aa542cac5b287aaaa88be7a654b85200deaf3cb2e3dadfe845276ed3803b",
+  "function_bytes": {
+    "old": 7553,
+    "explicit-tag": 7521,
+    "offsets-only": 7674,
+    "tag-and-offsets": 7642,
+    "final": 7642
+  },
+  "instruction_stride_bytes": {
+    "old": 32,
+    "explicit-tag": 32,
+    "offsets-only": 32,
+    "tag-and-offsets": 32,
+    "final": 32
+  },
+  "stack_reservation_bytes": {
+    "old": 376,
+    "final": 392
+  },
+  "command": [
+    "objdump",
+    "-d",
+    "-Mintel",
+    "--no-show-raw-insn",
+    "--start-address=0x24a230",
+    "--stop-address=0x24c00a",
+    "target/release/shards2"
+  ]
+}

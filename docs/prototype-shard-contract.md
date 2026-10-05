@@ -142,7 +142,11 @@ of Const/Get/Set/Inc. Generic/constructor boundaries reset this analysis;
 Take/Push and generic vector arithmetic can introduce owned scratch again.
 Once released, later reanchoring instructions have no scratch-cleanup check
 until another operation may create an owner. The pass preserves node indices
-for lifecycle and diagnostics; both schedulers enter only at segment boundaries. Its raw pointers cannot escape the
+for lifecycle and diagnostics; both schedulers enter only at segment boundaries.
+The opcode enum has an explicit u8 discriminant. Get is further specialized to
+Local/Mesh opcodes with compose-computed byte offsets. Offset construction checks
+multiplication; activation checks against the selected frame's byte length.
+No instance pointer is stored in shared code and frame bounds are still checked. Its raw pointers cannot escape the
 call: frames are exclusively borrowed, cannot resize, and no callbacks or
 suspension occur inside a segment. Every write consumes its input before
 replacement and reanchors the accumulator. Segment exit produces an owned

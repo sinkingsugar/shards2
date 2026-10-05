@@ -32,7 +32,7 @@ This repository should be usable without previous chat history or private agent 
 - `crates/shards-core`: compose (generic over a scheduler `Backend`), the stackful scheduler (`runtime/`), the stackless scheduler (`stackless/`), shared lifecycle helpers (`lifecycle.rs`), and the prototype shards (`shards/`).
 - `crates/shards-io`: I/O shards (`Http.Get`) on a shared Tokio runtime, following 1.x's HTTP module. Native only.
 - `crates/shards-lang`: the language frontend: hand-written lexer and parser with spans, lowering to `WireDef`/`ShardDef` with a source map, and `check`/`run` on either scheduler (`docs/surface-syntax-review.md`).
-- `crates/shards-cli`: the `shards2` command (`check [--json]`, `run`, `describe`, `search`, `catalog`; `--stackful` selects the other scheduler).
+- `crates/shards-cli`: the `shards2` command (`check [--json]`, `run`, `watch`, `describe`, `search`, `catalog`; `--stackful` selects the other scheduler).
 - `bench/`: benchmarks matched with 1.x (`shards-1x/`, `http-concurrency/`).
 - `examples/esp32`: ESP-IDF firmware embedding the core and frontend on the stackless scheduler; a separate workspace with its own lockfile (`docs/esp32.md`).
 

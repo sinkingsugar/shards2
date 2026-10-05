@@ -136,7 +136,7 @@ impl Program {
   }
 
   /// A compose error as a located diagnostic.
-  fn diagnostic(&self, wire: &str, err: Error) -> Diagnostic {
+  pub(crate) fn diagnostic(&self, wire: &str, err: Error) -> Diagnostic {
     let mut d = match err {
       Error::Diagnostic(d) => *d,
       other => Diagnostic::new(
@@ -203,7 +203,7 @@ impl Program {
   /// scheduled, with no input, so `check` composes them that way. One root
   /// per group: a wire reachable from an earlier unreachable root is
   /// composed through it (an unreachable cycle reports its recursion once).
-  fn unreachable_roots(&self) -> Vec<String> {
+  pub(crate) fn unreachable_roots(&self) -> Vec<String> {
     let refs = self.references();
     let mut seen: Vec<String> = Vec::new();
     let visit = |start: &str, seen: &mut Vec<String>| {

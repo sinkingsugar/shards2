@@ -19,6 +19,27 @@ Sources: [shard contract](prototype-shard-contract.md), [core design](shards-2-c
 
 ## Implemented
 
+- **Hot reload:** `shards_lang::Session` supports full restart (`reload`) and
+  preserving reload (`reload_preserving`) on both schedulers. Preserving
+  reload retains unchanged callers and their locals/Once/continuations;
+  edited nested `Do` bodies are selected at safe call boundaries. In-flight
+  calls finish on their pinned code. Input/output or local-binding changes
+  reject the candidate before commit. Host-declared mesh values survive;
+  changed roots restart and removed schedules cancel. `shards2 watch` uses
+  preserving reload, with `r` for a full restart and explicit failed-wire
+  status. Rejections identify the changed type/binding and locate added or
+  changed local declarations, with an explicit full-restart hint. The public
+  `FileWatcher` shares save stability and pacing with embedding hosts, with
+  tick/reload callbacks and either a blocking loop or a non-sleeping poll API.
+  Appended callee locals remain deferred because caller frame bindings must
+  stay stable. Details and limitations live in [embedding.md §5](embedding.md#5-warm-sessions-and-hot-reload).
+  General state migration, changing mesh-variable schemas during reload,
+  and asynchronous compilation remain deferred. Offline parity tests cover
+  retained counters, nested calls, mesh values, cleanup, input specializations
+  and warm host operations. A Do checks the mesh's revision registry once
+  per accepted reload, so calls cost the same before and after a reload.
+  No live-host integration is claimed.
+
 - **ESP32 build integration:** a separate ESP-IDF firmware example embeds the
   core and frontend using the stackless mesh. CI links it for ESP32,
   ESP32-S3 and ESP32-C3 and runs each in Espressif's QEMU, requiring the

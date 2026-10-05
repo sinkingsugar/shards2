@@ -39,6 +39,55 @@ macro_rules! acceptance_tests {
     }
 
     #[test]
+    fn do_checks_reload_registry_once_per_revision() {
+      use std::collections::HashSet;
+      let wires = |body: &str| {
+        vec![
+          wire("f", false, vec![inc(body)]),
+          wire("main", true, vec![repeat(vec![do_("f")], val(Var::Int(100)))]),
+        ]
+      };
+      let mut mesh = Mesh::new();
+      mesh.declare_var("a", Var::Int(0), true);
+      mesh.declare_var("b", Var::Int(0), true);
+      for def in wires("a") {
+        mesh.add_wire(def);
+      }
+      let main = mesh.compile("main", Type::none()).unwrap();
+      mesh.spawn(&main, Var::None).unwrap();
+      mesh.tick();
+      // No reload installed yet: Do never consults the registry.
+      assert_eq!(mesh.reload_lookups(), 0);
+      assert_eq!(mesh.get_var("a"), Some(Var::Int(100)));
+
+      let reload = |mesh: &mut Mesh, body: &str| {
+        let mut next = mesh.revision();
+        for def in wires(body) {
+          next.add_wire(def);
+        }
+        next.compile("main", Type::none()).unwrap();
+        mesh.validate_reload(&mut next, &HashSet::new()).unwrap();
+        mesh.install_revision(next, &HashSet::new());
+      };
+      // An unchanged reload: one lookup for the call site, then plain calls.
+      reload(&mut mesh, "a");
+      for _ in 0..3 {
+        mesh.tick();
+      }
+      assert_eq!(mesh.reload_lookups(), 1);
+      assert_eq!(mesh.get_var("a"), Some(Var::Int(400)));
+
+      // An edited body is still selected at the next call after the reload.
+      reload(&mut mesh, "b");
+      for _ in 0..3 {
+        mesh.tick();
+      }
+      assert_eq!(mesh.reload_lookups(), 2);
+      assert_eq!(mesh.get_var("a"), Some(Var::Int(400)));
+      assert_eq!(mesh.get_var("b"), Some(Var::Int(300)));
+    }
+
+    #[test]
     fn spawned_instances_share_one_compose() {
       let mut mesh = bench_mesh(100);
       let spawner = mesh.compile("spawner", Type::none()).unwrap();

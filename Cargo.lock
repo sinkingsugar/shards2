@@ -942,6 +942,7 @@ dependencies = [
  "shards-core",
  "shards-io",
  "shards-lang",
+ "tokio",
 ]
 
 [[package]]

@@ -1132,13 +1132,13 @@ fn wire_ref_error(e: Error, args: &Args, shard: &str) -> Error {
 pub(crate) fn compose_do<B: Backend>(
   args: &Args,
   ctx: &mut ComposeCtx<'_, B>,
-) -> Result<Composed<CompiledFlow<B>>> {
+) -> Result<Composed<Arc<crate::reload::InlineCall<B>>>> {
   let name = args.wire("Wire").expect("decoded Wire");
   let input = ctx.input();
   let flow = ctx
-    .compose_inline(name, input)
+    .compose_reloadable_inline(name, input)
     .map_err(|e| wire_ref_error(e, args, "Do"))?;
-  let output = flow.output;
+  let output = flow.flow.output;
   Ok(Composed {
     compiled: flow,
     output,

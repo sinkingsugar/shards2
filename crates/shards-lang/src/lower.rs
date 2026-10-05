@@ -142,6 +142,7 @@ pub fn lower(
       ));
     } else {
       l.wire = ROOT_WIRE.to_string();
+      l.temps = 0;
       let span = statement_span(first).to(statement_span(loose[loose.len() - 1]));
       l.map.wires.insert(ROOT_WIRE.into(), span);
       let flow = l.statements(loose.iter().copied(), &[]);
@@ -359,6 +360,9 @@ impl Lowerer<'_> {
       return;
     }
     self.wire = name.clone();
+    // Temporary identities must be stable when an unrelated wire is edited.
+    // Compose gives each temporary Ref occurrence a fresh slot on inlining.
+    self.temps = 0;
     self.map.wires.insert(name.clone(), block.span);
     let flow = match positional.get(1).map(|p| &p.blocks[..]) {
       Some([b]) => match &b.kind {

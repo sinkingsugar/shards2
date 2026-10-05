@@ -19,6 +19,7 @@ pub mod flow;
 pub mod instance;
 mod lifecycle;
 pub mod log;
+pub mod reload;
 pub mod runtime;
 pub mod shard;
 pub mod shards;

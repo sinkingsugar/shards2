@@ -2,7 +2,7 @@
 //! available on wasm, which has no native stack switching.
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::mem::size_of;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::rc::Rc;
@@ -44,8 +44,8 @@ pub(crate) struct Signals {
 
 struct Instance {
   id: InstanceId,
-  /// The wire it runs, by name (for reports).
-  wire: String,
+  /// Immutable root code, retained for reload compatibility and reports.
+  wire: Arc<CompiledWire<Stackful>>,
   coroutine: Option<InstanceCoroutine>,
   signals: Rc<Signals>,
   outcome: Option<Outcome>,
@@ -55,6 +55,7 @@ pub struct Mesh {
   shared: Rc<RefCell<MeshShared>>,
   wires: HashMap<String, WireDef>,
   cache: ComposeCache<Stackful>,
+  prepared_calls: crate::reload::InlineRegistry<Stackful>,
   instances: Vec<Instance>,
   next_id: InstanceId,
   stack_size: usize,
@@ -75,12 +76,14 @@ impl Mesh {
   pub fn with_cache(cache: ComposeCache<Stackful>) -> Mesh {
     Mesh {
       shared: Rc::new(RefCell::new(MeshShared {
+        inline_calls: Default::default(),
         layout: FrameLayout::default(),
         frame: Vec::new(),
         spawn_queue: Vec::new(),
       })),
       wires: HashMap::new(),
       cache,
+      prepared_calls: HashMap::new(),
       instances: Vec::new(),
       next_id: 0,
       stack_size: DEFAULT_STACK_SIZE,
@@ -138,9 +141,107 @@ impl Mesh {
       mesh_layout: &shared.layout,
       wires: &self.wires,
     };
-    self
+    let wire = self
       .cache
-      .get_or_compose(&def, input, &env, &mut Vec::new(), 0)
+      .get_or_compose(&def, input, &env, &mut Vec::new(), 0)?;
+    self.prepared_calls.extend(
+      wire
+        .inline_calls
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone())),
+    );
+    Ok(wire)
+  }
+
+  /// A fresh compilation candidate with the same mesh-variable layout and
+  /// values. No running instance or compiled cache is copied.
+  pub fn revision(&self) -> Self {
+    let mut next = Self::new();
+    let shared = self.shared.borrow();
+    next.shared.borrow_mut().layout = shared.layout.clone();
+    next.shared.borrow_mut().frame = shared.frame.clone();
+    next.wake_mode = self.wake_mode;
+    next.stack_size = self.stack_size;
+    next
+  }
+
+  /// Whether this candidate can keep an existing instance's root code.
+  pub fn can_retain(&self, wire: &CompiledWire<Stackful>) -> bool {
+    let shared = self.shared.borrow();
+    crate::reload::reusable(
+      wire,
+      &ComposeEnv {
+        mesh_layout: &shared.layout,
+        wires: &self.wires,
+      },
+    )
+  }
+
+  /// Checks every live caller before any cancellation or definition change.
+  pub fn validate_reload(&self, next: &mut Self, removed: &HashSet<InstanceId>) -> Result<()> {
+    // Detached children may have input specializations not reached by the
+    // new entry graph. Prepare those too before selecting their next Do call.
+    for instance in &self.instances {
+      if !removed.contains(&instance.id)
+        && instance.outcome.is_none()
+        && next.can_retain(&instance.wire)
+      {
+        next.compile(&instance.wire.name, instance.wire.input)?;
+      }
+    }
+    let shared = self.shared.borrow();
+    let new_shared = next.shared.borrow();
+    let env = ComposeEnv {
+      mesh_layout: &new_shared.layout,
+      wires: &next.wires,
+    };
+    if shared.layout != new_shared.layout {
+      return Err(Error::Compose(
+        "preserving reload requires the same mesh-variable layout".into(),
+      ));
+    }
+    for instance in &self.instances {
+      if !removed.contains(&instance.id) && instance.outcome.is_none() {
+        crate::reload::validate(
+          &instance.wire,
+          &env,
+          &shared.inline_calls.calls,
+          &next.prepared_calls,
+        )?;
+      }
+    }
+    Ok(())
+  }
+
+  /// Installs a validated candidate. Retains compatible instances, cancels
+  /// changed roots and explicitly removed entries, and preserves mesh values.
+  /// The candidate must have no instances and must come from `revision`.
+  pub fn install_revision(&mut self, mut next: Self, removed: &HashSet<InstanceId>) {
+    self
+      .validate_reload(&mut next, removed)
+      .expect("revision validated before commit");
+    assert!(next.instances.is_empty(), "revision already has instances");
+    for instance in &mut self.instances {
+      if removed.contains(&instance.id) || !next.can_retain(&instance.wire) {
+        cancel(instance);
+      }
+    }
+    let mut calls = std::mem::take(&mut next.prepared_calls);
+    crate::reload::reuse_unchanged(&self.prepared_calls, &mut calls);
+    {
+      let mut shared = self.shared.borrow_mut();
+      crate::reload::reuse_unchanged(&shared.inline_calls.calls, &mut calls);
+      self.prepared_calls = calls.clone();
+      shared.inline_calls.install(calls);
+    }
+    self.wires = std::mem::take(&mut next.wires);
+    self.cache = std::mem::take(&mut next.cache);
+  }
+
+  /// How many times Do calls consulted the reload registry. A call site
+  /// checks it once per accepted preserving reload, not on every call.
+  pub fn reload_lookups(&self) -> u64 {
+    self.shared.borrow().inline_calls.lookups.get()
   }
 
   pub fn cache_stats(&self) -> CacheStats {
@@ -188,7 +289,7 @@ impl Mesh {
       waker: Waker::from(wake.clone()),
       wake,
     });
-    let wire_name = wire.name.clone();
+    let instance_wire = wire.clone();
     let stack = DefaultStack::new(self.stack_size).expect("failed to allocate coroutine stack");
     let coroutine = {
       let shared = self.shared.clone();
@@ -200,7 +301,7 @@ impl Mesh {
     };
     self.instances.push(Instance {
       id,
-      wire: wire_name,
+      wire: instance_wire,
       coroutine: Some(coroutine),
       signals,
       outcome: None,
@@ -235,6 +336,14 @@ impl Mesh {
   /// state is cleaned up exactly once. Further ticks never resume it.
   pub fn cancel(&mut self, id: InstanceId) {
     if let Some(instance) = self.instances.iter_mut().find(|i| i.id == id) {
+      cancel(instance);
+    }
+  }
+
+  /// Cancels all running instances, including spawned children, in one pass.
+  /// Outcomes (including cleanup failures) remain available to `take_finished`.
+  pub fn cancel_all(&mut self) {
+    for instance in &mut self.instances {
       cancel(instance);
     }
   }
@@ -276,7 +385,7 @@ impl Mesh {
       let Some(outcome) = i.outcome.take() else {
         return true;
       };
-      finished.push((i.id, std::mem::take(&mut i.wire), outcome));
+      finished.push((i.id, i.wire.name.clone(), outcome));
       false
     });
     finished
@@ -288,7 +397,7 @@ impl Mesh {
       .instances
       .iter()
       .find(|i| i.id == id)
-      .map(|i| i.wire.as_str())
+      .map(|i| i.wire.name.as_str())
   }
 
   pub fn instance_ids(&self) -> Vec<InstanceId> {
@@ -317,9 +426,7 @@ impl Drop for Mesh {
   fn drop(&mut self) {
     // Cancel what is still running, so every instance is cleaned up exactly
     // once even when the mesh goes away first.
-    for instance in &mut self.instances {
-      cancel(instance);
-    }
+    self.cancel_all();
   }
 }
 

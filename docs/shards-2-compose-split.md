@@ -122,7 +122,14 @@ Hashes index cache entries; structural equality must resolve collisions before r
 
 - 100 `Spawn`s of one template → one compose, 100 `instantiate` calls.
 - Identical sub-wires used in different places share one compiled artifact.
-- Hot reload recompiles only shards whose keys changed.
+- Hot reload can reuse shards whose keys and dependencies are unchanged.
+  Frontend sessions scope a fresh compose cache to each revision. Preserving
+  reload retains compatible running instances and selects nested `Do` revisions
+  through a mesh-local registry at call boundaries; compiled artifacts remain
+  immutable. An in-flight call retains its selected body, and unchanged bodies
+  keep their state. Interface/binding changes reject the candidate. See
+  [embedding.md §5](embedding.md#5-warm-sessions-and-hot-reload) for the contract,
+  full-restart alternative, explicit mesh values and current limitations.
 - Loading the same script twice can reuse compose output when dependencies match; parsing, admission checks, and instantiation may still cost work.
 
 The 1.x XXH3/XXH128 hashing and `TypeCache` interning carry over as the implementation.

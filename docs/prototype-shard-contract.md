@@ -95,6 +95,27 @@ This avoids the trap of needing the full key before lookup, which would mean com
 
 **Commitment:** this lifecycle and these termination rules. The cancel-and-cleanup-exactly-once acceptance test (design doc §5) is written against them.
 
+### Preserving reload and nested call lifetimes
+
+`Session::reload_preserving` keeps compatible running instances. `Do` selects
+an immutable body from a mesh-local registry at the start of each call and
+pins it until the call exits, including across suspension. Registry keys are
+structural, so each Do consults the registry only when the mesh's reload
+revision has changed since its last check, once per accepted reload. A changed body is
+cleaned up and instantiated at the next call boundary; unchanged bodies keep
+their state. Cleanup uses the body's retained compiled handle, never a newer
+revision's node list. A failed instantiation remains retryable if caught.
+
+Compose records both the full dependencies (for cache correctness) and the
+dependencies outside reloadable `Do` boundaries (for retaining the caller).
+A candidate checks call-site input/output, frame layout and definite
+initialization before commit. Structural site identities include ancestor
+body definitions, preventing an old in-flight body from selecting rearranged
+new descendant sites. Compatible mesh frames remain in place. Definitions,
+revision selection and caches belong to the mesh, never to shared mutable
+compiled data. [The embedding guide](embedding.md#5-warm-sessions-and-hot-reload)
+records the API, restart behavior and limitations.
+
 ## 6. Activation and flow control
 
 | 1.x | Proposal |

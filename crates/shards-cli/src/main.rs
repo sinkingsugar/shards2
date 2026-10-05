@@ -3,6 +3,7 @@
 //! ```text
 //! shards2 check [--json] [--stackful] <file> [key:value ...]
 //! shards2 run [--stackful] <file> [key:value ...]
+//! shards2 watch [--stackful] <file> [key:value ...]
 //! shards2 describe <shard>
 //! shards2 search <text>
 //! shards2 catalog
@@ -19,9 +20,12 @@ use std::process::ExitCode;
 use shards_core::{Catalog, Outcome};
 use shards_lang::{CheckReport, Host, Program, Source, render};
 
+mod watch;
+
 const USAGE: &str = "usage:
   shards2 check [--json] [--stackful] <file> [key:value ...]
   shards2 run [--stackful] <file> [key:value ...]
+  shards2 watch [--stackful] <file> [key:value ...]
   shards2 describe <shard>
   shards2 search <text>
   shards2 catalog";
@@ -166,6 +170,16 @@ fn main() -> ExitCode {
   let result = match args.first().map(String::as_str) {
     Some("check") => options(&args[1..]).and_then(|o| check(&o)),
     Some("run") => options(&args[1..]).and_then(|o| run(&o)),
+    Some("watch") => options(&args[1..]).and_then(|o| {
+      if o.json {
+        return Err("watch does not support --json".into());
+      }
+      if o.stackful {
+        watch::watch::<shards_core::StackfulMesh>(&o)
+      } else {
+        watch::watch::<shards_core::Mesh>(&o)
+      }
+    }),
     Some("describe") if args.len() == 2 => match catalog().describe_json(&args[1]) {
       Some(json) => {
         println!("{json}");

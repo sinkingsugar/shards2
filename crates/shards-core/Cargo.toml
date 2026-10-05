@@ -18,6 +18,7 @@ docs = []
 # output type in release builds too (always on in debug builds).
 output-checks = []
 
+# The stackful mesh; `build.rs` sets `cfg(stackful)` on the same targets.
 [target.'cfg(not(any(target_family = "wasm", target_os = "espidf")))'.dependencies]
 corosensei = "0.3.4"
 

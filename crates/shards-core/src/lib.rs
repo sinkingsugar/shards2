@@ -33,7 +33,7 @@ pub use describe::ShardDesc;
 pub use diagnostic::Diagnostic;
 pub use error::{Error, Result};
 pub use instance::{InstanceId, InstanceMemory, Outcome, WakeMode};
-#[cfg(not(any(target_family = "wasm", target_os = "espidf")))]
+#[cfg(stackful)]
 pub use runtime::Mesh as StackfulMesh;
 pub use shard::{Composed, Flow, ParamValue, Shard, ShardDef, ShardType, Stackful, shard_type};
 pub use stackless::Mesh;

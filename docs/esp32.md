@@ -12,7 +12,8 @@ on the stackless scheduler, checks its result and suspension, and prints
 | ESP32-C3 | `riscv32imc-esp-espidf` | `nightly-2026-10-03` |
 
 This uses Rust `std` on ESP-IDF, not bare-metal `no_std`. The coroutine mesh
-and its `corosensei` dependency are excluded on ESP-IDF, as on WASI. The
+and its `corosensei` dependency are excluded on ESP-IDF, as on WASI: the
+crates' `build.rs` sets `cfg(stackful)` only where it exists. The
 desktop backends remain unchanged. `shards-io`, the desktop CLI, networking,
 GPIO and other peripheral shards are outside this initial build target.
 
@@ -45,6 +46,10 @@ cd examples/esp32
 MCU=esp32c3 cargo +nightly-2026-10-03 build --locked --release --target riscv32imc-esp-espidf
 ```
 
+When `shards-core` or `shards-lang` gain or change a dependency, refresh the
+example's lockfile with `cargo update -w` in `examples/esp32`: the firmware
+builds with `--locked`, and root workspace builds do not touch that lockfile.
+
 Run Cargo **from `examples/esp32`** so it reads the local `.cargo/config.toml`.
 The example is a separate workspace with a committed lockfile; desktop
 commands at the repository root do not build or install ESP-IDF. Explicit
@@ -76,8 +81,10 @@ disabled through both dependency paths; parameter contracts are retained.
 ## CI and validation limits
 
 [ESP32 CI](../.github/workflows/esp32.yml) links release firmware for all three
-chips on pull requests, pushes to `main`, and manual dispatch. Each matrix
-job uploads its ELF and configuration. A successful build checks compilation
+chips on pull requests and pushes to `main` that touch the core, the frontend,
+the example or the root manifest, and on manual dispatch. Each matrix job uploads
+its ELF and the SDK configuration of that build; the ESP32-C3 job also lints the
+example with clippy. A successful build checks compilation
 and linking, not execution, flashing or peripheral behavior. Physical-board
 execution is a separate manual check; no hardware result is claimed here.
 The existing native and WASI jobs continue to test runtime semantics.

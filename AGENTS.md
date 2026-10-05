@@ -34,6 +34,7 @@ This repository should be usable without previous chat history or private agent 
 - `crates/shards-lang`: the language frontend: hand-written lexer and parser with spans, lowering to `WireDef`/`ShardDef` with a source map, and `check`/`run` on either scheduler (`docs/surface-syntax-review.md`).
 - `crates/shards-cli`: the `shards2` command (`check [--json]`, `run`, `describe`, `search`, `catalog`; `--stackful` selects the other scheduler).
 - `bench/`: benchmarks matched with 1.x (`shards-1x/`, `http-concurrency/`).
+- `examples/esp32`: ESP-IDF firmware embedding the core and frontend on the stackless scheduler; a separate workspace with its own lockfile (`docs/esp32.md`).
 
 ## Core rules
 
@@ -61,15 +62,16 @@ The prototype milestone is complete. Next is porting the language front end and 
 
 - `cargo check --workspace`
 - `cargo test --workspace`
-- `cargo fmt --all` before committing (2-space indent, see `rustfmt.toml`)
+- `cargo fmt --all` and `cargo fmt --manifest-path examples/esp32/Cargo.toml --all` before committing (2-space indent, see `rustfmt.toml`)
 - `cargo clippy --workspace --all-targets -- -D warnings`
-- docs off: `cargo test -p shards-core -p shards-io --no-default-features --test metadata --test catalog`
+- docs off: `cargo test -p shards-core -p shards-io --no-default-features --test metadata --test catalog` and `cargo test -p shards-lang --no-default-features`
 - release stacks: `cargo test --release -p shards-lang --test lang nesting_up_to_the_limit`
 - TLS: `cargo clippy -p shards-io --all-targets --features rustls-ring -- -D warnings`
 - wasm lint: `cargo clippy -p shards-core -p shards-lang --target wasm32-wasip1 --lib --tests -- -D warnings`
+- the stackful mesh exists only where `build.rs` sets `cfg(stackful)` (not wasm, not ESP-IDF); gate stackful code and test modules on that cfg.
 - wasm tests: `cargo test -p shards-core --test prototype --test metadata --target wasm32-wasip1 --no-run` and `cargo test -p shards-lang --test lang --target wasm32-wasip1 --no-run`, then run each emitted test `.wasm` with `node scripts/run-wasi.mjs <path>`. Install the target with `rustup target add wasm32-wasip1` if needed. Benchmark examples are native-only; do not use `--all-targets` for wasm.
 
-The toolchain is pinned in `rust-toolchain.toml`. CI runs fmt, clippy and tests on Linux and macOS, clippy for the `rustls-ring` build, and the stackless suite on wasm (Node WASI).
+The toolchain is pinned in `rust-toolchain.toml`. CI runs fmt, clippy and tests on Linux and macOS, clippy for the `rustls-ring` build, and the stackless suite on wasm (Node WASI). A separate workflow links the ESP32 firmware for three chips when the core, frontend or example change; it needs no local run, but when `shards-core` or `shards-lang` gain or change a dependency, refresh `examples/esp32/Cargo.lock` (`cargo update -w` in `examples/esp32`), since the firmware builds with `--locked`.
 
 
 ## Git

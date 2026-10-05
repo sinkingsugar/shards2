@@ -1295,7 +1295,7 @@ macro_rules! acceptance_tests {
   };
 }
 
-#[cfg(not(any(target_family = "wasm", target_os = "espidf")))]
+#[cfg(stackful)]
 mod stackful {
   acceptance_tests!(shards_core::StackfulMesh);
 }

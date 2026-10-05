@@ -1,9 +1,18 @@
 name: ESP32
 
+# The firmware builds only the core and frontend crates (and reads the root
+# manifest for workspace package fields).
 on:
   push:
     branches: [main]
+    paths: &firmware-paths
+      - Cargo.toml
+      - crates/shards-core/**
+      - crates/shards-lang/**
+      - examples/esp32/**
+      - .github/workflows/esp32.yml
   pull_request:
+    paths: *firmware-paths
   workflow_dispatch:
 
 permissions:
@@ -51,19 +60,29 @@ jobs:
       - name: Install RISC-V Rust
         if: matrix.chip == 'esp32c3'
         run: |
-          rustup toolchain install nightly-2026-10-03 --profile minimal --component rust-src
+          rustup toolchain install nightly-2026-10-03 --profile minimal --component rust-src,clippy
           cargo +nightly-2026-10-03 install ldproxy --version 0.3.4 --locked
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: examples/esp32 -> target
           key: esp32-${{ matrix.chip }}-${{ matrix.toolchain }}-idf5.5.5
       - name: Link release firmware
-        run: cargo +${{ matrix.toolchain }} build --locked --release --target ${{ matrix.target }}
+        run: >
+          cargo +${{ matrix.toolchain }} build --locked --release --target ${{ matrix.target }}
+          --message-format=json-render-diagnostics > "$RUNNER_TEMP/build.json"
+      # The example's code is chip-independent; lint it once.
+      - name: Lint firmware
+        if: matrix.chip == 'esp32c3'
+        run: cargo +${{ matrix.toolchain }} clippy --locked --release --target ${{ matrix.target }} -- -D warnings
       - name: Collect generated SDK configuration
         run: |
           mkdir -p artifact
           cp target/${{ matrix.target }}/release/shards-esp32 artifact/
-          find target/${{ matrix.target }}/release/build -path '*/out/sdkconfig' -exec cp {} artifact/sdkconfig \;
+          # Take the configuration from this build's esp-idf-sys output
+          # directory: the restored cache can hold stale ones.
+          out_dir=$(jq -r 'select(.reason == "build-script-executed" and (.package_id | test("esp-idf-sys[@#]"))) | .out_dir' "$RUNNER_TEMP/build.json")
+          test "$(printf '%s\n' "$out_dir" | wc -l)" = 1
+          cp "$out_dir/sdkconfig" artifact/sdkconfig
           test -s artifact/sdkconfig
           cp sdkconfig.defaults Cargo.lock artifact/
       - name: Upload firmware ELF and build configuration

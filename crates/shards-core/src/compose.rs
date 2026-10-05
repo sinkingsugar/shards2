@@ -88,6 +88,10 @@ impl FrameLayout {
     slot
   }
 
+  pub(crate) fn slots(&self) -> &[(String, Slot)] {
+    &self.slots
+  }
+
   pub fn len(&self) -> usize {
     self.slots.len()
   }
@@ -163,6 +167,10 @@ pub struct ComposeCtx<'a, B: Backend> {
   inline_calls: InlineRegistry<B>,
   site: InlineKey,
   next_flow: usize,
+  // Structural declaration origins for reload diagnostics, never source spans.
+  diagnostic_path: Vec<PathStep>,
+  local_paths: Vec<Vec<PathStep>>,
+  current_args: Option<Arc<Args>>,
   /// Definite initialization of each local slot at the current compose point.
   initialized: Vec<bool>,
   /// The child flow or wire the last error came out of.
@@ -246,6 +254,7 @@ impl<B: Backend> ComposeCtx<'_, B> {
   pub fn declare_local(&mut self, name: &str, ty: Type, mutable: bool) -> VarInfo {
     let slot = self.locals.declare(name, ty, mutable);
     self.initialized.push(true);
+    self.local_paths.push(self.diagnostic_path.clone());
     VarInfo {
       binding: Binding::Local(slot.index),
       ty,
@@ -304,6 +313,17 @@ impl<B: Backend> ComposeCtx<'_, B> {
         ),
       )));
     }
+    let path_len = self.diagnostic_path.len();
+    if let Some((param, item)) = self
+      .current_args
+      .as_ref()
+      .and_then(|args| args.param_of(&Child::Flow(flow.as_ptr())))
+    {
+      self.diagnostic_path.push(PathStep::Param(param.into()));
+      if let Some(item) = item {
+        self.diagnostic_path.push(PathStep::Item(item));
+      }
+    }
     self.depth += 1;
     let child = self.next_flow;
     self.next_flow = 0;
@@ -312,6 +332,7 @@ impl<B: Backend> ComposeCtx<'_, B> {
     self.site.path.pop();
     self.next_flow = child + 1;
     self.depth -= 1;
+    self.diagnostic_path.truncate(path_len);
     result
   }
 
@@ -337,9 +358,15 @@ impl<B: Backend> ComposeCtx<'_, B> {
       self.site.path.push(SiteStep::Node(index));
       let saved_next = self.next_flow;
       self.next_flow = 0;
+      self.diagnostic_path.push(PathStep::Shard {
+        index,
+        name: def.ty.name().into(),
+      });
       let composed = decode(&def.ty.desc, &def.args).and_then(|args| {
         check_input(def.ty, self.input)?;
-        B::compose_shard(def.ty, &args, self).map_err(|err| {
+        let args = Arc::new(args);
+        let parent_args = self.current_args.replace(args.clone());
+        let result = B::compose_shard(def.ty, &args, self).map_err(|err| {
           // An error from a nested flow or wire: name the parameter
           // holding it.
           match self.failed_child.take().and_then(|c| args.param_of(&c)) {
@@ -352,8 +379,11 @@ impl<B: Backend> ComposeCtx<'_, B> {
             }
             None => err,
           }
-        })
+        });
+        self.current_args = parent_args;
+        result
       });
+      self.diagnostic_path.pop();
       self.site.path.pop();
       self.next_flow = saved_next;
       let composed = match composed {
@@ -402,11 +432,16 @@ impl<B: Backend> ComposeCtx<'_, B> {
       ));
     }
     self.composing.push(name.to_string());
+    let parent_path =
+      std::mem::replace(&mut self.diagnostic_path, vec![PathStep::Wire(name.into())]);
+    let parent_args = self.current_args.take();
     let flow = self.compose_flow(&def.flow, input).map_err(|err| {
       self.failed_child = Some(Child::Wire(name.to_string()));
       err.prefix_path(PathStep::Wire(name.to_string()))
     });
     self.composing.pop();
+    self.diagnostic_path = parent_path;
+    self.current_args = parent_args;
     flow
   }
 
@@ -443,6 +478,7 @@ impl<B: Backend> ComposeCtx<'_, B> {
         output: flow.output,
       },
       deps,
+      local_paths: self.local_paths.clone(),
       flow,
     });
     self.inline_calls.insert(key, call.clone());
@@ -658,6 +694,9 @@ impl<B: Backend> ComposeCache<B> {
           path: Vec::new(),
         },
         next_flow: 0,
+        diagnostic_path: vec![PathStep::Wire(def.name.clone())],
+        local_paths: Vec::new(),
+        current_args: None,
         initialized: Vec::new(),
         failed_child: None,
         depth,

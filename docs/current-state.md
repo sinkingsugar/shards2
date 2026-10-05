@@ -27,7 +27,12 @@ Sources: [shard contract](prototype-shard-contract.md), [core design](shards-2-c
   reject the candidate before commit. Host-declared mesh values survive;
   changed roots restart and removed schedules cancel. `shards2 watch` uses
   preserving reload, with `r` for a full restart and explicit failed-wire
-  status. Details and limitations live in [embedding.md §5](embedding.md#5-warm-sessions-and-hot-reload).
+  status. Rejections identify the changed type/binding and locate added or
+  changed local declarations, with an explicit full-restart hint. The public
+  `FileWatcher` shares save stability and pacing with embedding hosts, with
+  tick/reload callbacks and either a blocking loop or a non-sleeping poll API.
+  Appended callee locals remain deferred because caller frame bindings must
+  stay stable. Details and limitations live in [embedding.md §5](embedding.md#5-warm-sessions-and-hot-reload).
   General state migration, changing mesh-variable schemas during reload,
   and asynchronous compilation remain deferred. Offline parity tests cover
   retained counters, nested calls, mesh values, cleanup, input specializations

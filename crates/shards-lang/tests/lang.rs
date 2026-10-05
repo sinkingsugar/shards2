@@ -143,6 +143,92 @@ Do(outer)"#);
     }
 
     #[test]
+    fn preserving_reload_explains_and_locates_binding_changes() {
+      let source = |body| format!("@wire(step {{\n{body}\n}})\n@wire(outer {{ Do(step) }})\n@wire(main {{ Do(outer) }} Looped: true)\n@mesh(m) @schedule(m main) @run(m)");
+      for (old, new, reason, line) in [
+        ("10", "Once({\n  1 >= extra\n}) 10", "new local `extra`", 3),
+        ("1 >= extra 10", "10", "local `extra` was removed", 1),
+        ("1 >= extra 10", "1.5 >= extra 10", "local `extra` changed type from Int to Float", 2),
+        ("1 = extra 10", "1 >= extra 10", "local `extra` changed mutability", 2),
+        ("1 >= extra 10", "When(true {1 >= extra}) 10", "local `extra` changed definite initialization", 2),
+        ("10", "\"hello\"", "output type changed from Int to String", 1),
+      ] {
+        let mut session = shards_lang::Session::<Mesh>::new();
+        preserve(&mut session, &source(old));
+        session.tick();
+        let (source, diagnostics) = session.reload_preserving(
+          Source::new("edit.shs", source(new)), &catalog(), &no_defines()
+        ).unwrap_err();
+        let d = &diagnostics[0];
+        assert_eq!(d.code, "reload-incompatible");
+        assert!(d.message.contains(reason), "{}", d.message);
+        assert!(d.message.contains("press r in watch"));
+        // Outer interfaces can also change; binding errors still point into
+        // the actual declaring wire, including declarations inside Once.
+        if !reason.starts_with("output") && !reason.contains("removed") {
+          assert_eq!(d.line, Some(line), "{}", shards_lang::render(d, &source));
+          assert!(source.text.lines().nth(line as usize - 1).unwrap().contains("extra"));
+        }
+      }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn file_watcher_callbacks_preserve_reject_restart_and_stop() {
+      use shards_lang::{FileWatcher, WatchControl, WatchEvent};
+      use std::cell::Cell;
+      use std::time::{Duration, Instant};
+      let path = std::env::temp_dir().join(format!("shards-watch-{}-{}.shs", std::process::id(), module_path!().replace("::", "-")));
+      struct Remove(std::path::PathBuf);
+      impl Drop for Remove { fn drop(&mut self) { let _ = std::fs::remove_file(&self.0); } }
+      let _remove = Remove(path.clone());
+      let source = |value| format!("@wire(step {{{value} Log}})\n@wire(main {{Once({{0 >= n}}) Inc(n) Log Do(step)}} Looped: true)\n@mesh(m) @schedule(m main) @run(m FPS: 0.1)");
+      std::fs::write(&path, source(10)).unwrap();
+      let command = Cell::new(WatchControl::Continue);
+      let mut revisions = 0;
+      let mut rejected = 0;
+      let mut ticks = 0;
+      let mut stopped = false;
+      let start = Instant::now();
+      let mut session = shards_lang::Session::<Mesh>::new();
+      let (_, lines) = shards_core::log::capture(|| FileWatcher::new(&path).run(
+        &mut session, &catalog(), &no_defines(),
+        || {
+          assert!(start.elapsed() < Duration::from_secs(5), "watcher did not exit");
+          command.replace(WatchControl::Continue)
+        },
+        |event| match event {
+          WatchEvent::Reloaded { restarted, .. } => {
+            revisions += 1;
+            match revisions {
+              1 => { assert!(!restarted); std::fs::write(&path, "Missing.Shard").unwrap(); }
+              2 => { assert!(!restarted); command.set(WatchControl::Restart); }
+              3 => { assert!(restarted); command.set(WatchControl::Stop); }
+              _ => panic!("unexpected reload"),
+            }
+          }
+          WatchEvent::Rejected { source: rejected_source, diagnostics } => {
+            rejected += 1;
+            assert_eq!(rejected_source.text, "Missing.Shard");
+            assert!(!diagnostics.is_empty());
+            // Atomic saves exercise content comparison independent of mtime.
+            let replacement = path.with_extension("new");
+            std::fs::write(&replacement, source(20)).unwrap();
+            std::fs::rename(replacement, &path).unwrap();
+          }
+          WatchEvent::Tick(_) => ticks += 1,
+          WatchEvent::Stopped(finished) => { stopped = true; assert!(!finished.is_empty()); }
+          WatchEvent::ReadError(error) => panic!("{error}"),
+        }
+      ));
+      assert_eq!(revisions, 3);
+      assert_eq!(rejected, 1);
+      assert!(ticks >= 3);
+      assert!(stopped);
+      assert_eq!(lines, ["1", "10", "2", "20", "1", "20"]);
+    }
+
+    #[test]
     fn preserving_reload_keeps_unchanged_do_once_state_and_other_sessions() {
       let source = |value| format!(r#"@wire(stable {{Once({{0 >= n}}) Inc(n) Log}})
 @wire(changed {{{value} Log}})

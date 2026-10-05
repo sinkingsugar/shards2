@@ -127,10 +127,20 @@ Replacement must preserve a retained call site's input/output types, local
 slot layout, and definite-initialization contract. Type or binding changes,
 including new locals inside the changed callee, reject the edit with
 `reload-incompatible`. This is checked before any running instance changes.
+Diagnostics name the specific incompatible change. Added or changed locals point
+to their declaration, including declarations inside nested flows; removed locals
+fall back to the affected wire because their declaration is absent. The message
+also explains that `r` in watch performs a full restart.
 There is no arbitrary local-state migration or in-place coroutine rewriting.
 Use a full restart for incompatible edits. Changing the caller's own body
 restarts that caller and its locals, so stable initialization and counters
 should live in an unchanged caller above the editable `Do` body.
+
+Allowing appended locals in an edited callee is a follow-up. `Do` currently
+shares its caller's frame: a new callee slot can shift slots used later by the
+caller, so merely accepting a larger layout is insufficient. Supporting this
+needs stable existing bindings, safe growth of retained instance frames and
+initialization rules while old calls remain in flight.
 
 Other lifetime rules:
 
@@ -240,6 +250,48 @@ Enter `r` to validate the current file and explicitly restart all script
 execution in the same process. Enter `q`, send Ctrl-C, or close stdin to
 cancel the execution and exit cleanly. Successful shutdown does not mean
 every revision ran successfully.
+
+Embedding hosts can reuse the same watcher through `shards_lang::FileWatcher`.
+It owns content comparison, the two-sample save check, rejected-revision
+suppression, preserving reload and tick pacing. It installs no keyboard,
+signal, logging or async-runtime handlers. For a blocking host loop:
+
+```rust
+use shards_core::{Catalog, Mesh};
+use shards_lang::{FileWatcher, Session, WatchControl, WatchEvent};
+use std::collections::HashMap;
+use std::sync::mpsc;
+
+let catalog = Catalog::new(&[shards_core::shards::CATALOG]).unwrap();
+let mut session = Session::<Mesh>::new(); // or Session::with_mesh(...)
+let (commands, input) = mpsc::channel::<WatchControl>();
+// Hand `commands` to your UI/input thread. Send Restart or Stop as needed.
+FileWatcher::new("live.shs").run(
+    &mut session, &catalog, &HashMap::new(),
+    || input.try_recv().unwrap_or(WatchControl::Continue),
+    |event| match event {
+        WatchEvent::Rejected { source, diagnostics } => {
+            for d in diagnostics { eprint!("{}", shards_lang::render(&d, &source)); }
+        }
+        WatchEvent::ReadError(error) => eprintln!("{error}"),
+        WatchEvent::Reloaded { finished, .. }
+        | WatchEvent::Tick(finished)
+        | WatchEvent::Stopped(finished) => {
+            for f in finished { println!("{}: {:?}", f.wire, f.outcome); }
+        }
+    },
+);
+```
+
+`Tick` fires after every session tick, even with no outcomes. `Reloaded` fires
+after successful installation, before that revision's first tick. `Rejected`
+carries the rejected source for diagnostics; `ReadError` leaves the session
+running. `Restart` validates even unchanged/rejected file contents immediately,
+bypassing save stability. `Stop` cancels the session and emits `Stopped`.
+For a host that already owns an event loop, call `FileWatcher::poll` instead:
+it performs due reads/reloads/ticks without sleeping and returns the suggested
+delay. That host calls `Session::stop` on shutdown. Both APIs run file reads,
+compilation and callbacks synchronously on the driving thread.
 
 This watches one source file. Dependency watching, asynchronous compilation,
 general state migration, cross-revision cache reuse and a network serving

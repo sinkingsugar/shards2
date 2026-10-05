@@ -59,13 +59,16 @@ jobs:
           key: esp32-${{ matrix.chip }}-${{ matrix.toolchain }}-idf5.5.5
       - name: Link release firmware
         run: cargo +${{ matrix.toolchain }} build --locked --release --target ${{ matrix.target }}
+      - name: Collect generated SDK configuration
+        run: |
+          mkdir -p artifact
+          cp target/${{ matrix.target }}/release/shards-esp32 artifact/
+          find target/${{ matrix.target }}/release/build -path '*/out/sdkconfig' -exec cp {} artifact/sdkconfig \;
+          test -s artifact/sdkconfig
+          cp sdkconfig.defaults Cargo.lock artifact/
       - name: Upload firmware ELF and build configuration
         uses: actions/upload-artifact@v4
         with:
           name: shards-${{ matrix.chip }}
           if-no-files-found: error
-          path: |
-            examples/esp32/target/${{ matrix.target }}/release/shards-esp32
-            examples/esp32/sdkconfig
-            examples/esp32/sdkconfig.defaults
-            examples/esp32/Cargo.lock
+          path: examples/esp32/artifact/

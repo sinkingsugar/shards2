@@ -49,8 +49,8 @@ Run Cargo **from `examples/esp32`** so it reads the local `.cargo/config.toml`.
 The example is a separate workspace with a committed lockfile; desktop
 commands at the repository root do not build or install ESP-IDF. Explicit
 `+toolchain` selectors override the repository's desktop toolchain pin.
-When changing chips in the same directory, remove generated `sdkconfig`
-before rebuilding; ESP-IDF configuration is chip-specific.
+Generated SDK configuration lives under the target's build directory. Keep
+any optional user-supplied `sdkconfig` specific to the chip being built.
 
 ## Flash and verify
 

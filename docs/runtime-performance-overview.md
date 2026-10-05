@@ -24,6 +24,64 @@ Const(Int) is now 1.02× and Get(Int) 1.13× 1.x at width 256. The
 records correctness evidence, memory/code costs and limits. Historical tables
 below are unchanged; no later scheduler/HTTP rerun is implied.
 
+## Lessons from the VM optimization work
+
+Conclusions at `12ef2f0`, after the assembly comparison, controlled layout
+experiment and full VM rerun:
+
+1. **1.x's small activations were deliberate engineering.** The inspected
+   Const and Get handlers reduce to producing an address or loading a resolved
+   pointer. Early resolution, compact dispatch and careful value forwarding
+   matter when useful work is only an assignment or addition. A language choice
+   or an optimizing compiler alone does not guarantee that execution shape.
+   These are principles to retain without copying 1.x's instance architecture.
+2. **Representation matters, but the evidence distinguishes which part.**
+   Explicit opcode tags removed niche decoding; compose-selected Local/Mesh Get
+   offsets removed repeated binding selection and index multiplication. The
+   four-way experiment supports both changes. Public `Var` stayed unchanged,
+   measured instruction size stayed 32 bytes, and persistent instance state did
+   not grow. This supports the current foundation, not a claim that every
+   representation choice is optimal. Function code and stack use did grow
+   slightly; the [assembly report](vm-assembly-comparison.md#implemented-follow-up-explicit-tags-and-specialized-get-offsets)
+   records those costs.
+3. **Move decisions to compose when their inputs are known there.** Cleanup
+   variants now encode whether scratch may own a value. Runtime still enforces
+   frame bounds and integer overflow semantics. Shared compiled instructions
+   contain offsets rather than pointers into a particular instance. The
+   compiled/state split therefore supports specialization and instance sharing
+   together.
+4. **Ownership lifetime is part of performance correctness.** Two optimizations
+   preserved output values but retained extra collection references, turning
+   linear accumulation into quadratic copying. Constructor state now retains no
+   output, and segments consume and release obsolete input. Regression tests
+   check owner counts and allocation identity as well as output snapshots.
+   Reuse must follow ownership becoming available, not prolong ownership just
+   to retain an allocation.
+5. **Optimize the measured operation.** Float4 already emits packed SIMD.
+   Dispatch improvements helped cheap activations; collection construction,
+   shared mutation and table access need different work. The existing
+   passthrough-retention case (`acc | ExpectSeq` followed by Push) remains an
+   investigation item, distinct from the two fixed regressions. Short mixed
+   flows also need attention: long-chain wins do not imply every short case
+   improves.
+
+Keep the VM foundation and pursue collection ownership/access and short mixed
+flows next. The latest results and remaining misses belong in the
+[VM report](vm-execution-benchmarks.md#explicit-opcode-tags-and-specialized-get-addressing),
+not a universal runtime speed ratio. Deeper stackless resume remains a separate
+control-flow project. Future fusion must preserve lifecycle, source/error,
+mutation and reload boundaries; the current one-instruction-per-node mapping
+is not yet a general optimizing IR.
+
+The [final independent review](../.agent-handoffs/reviews/2026-10-05-12ef2f0-claude-bc7c33.md)
+found no issues within scratch lifetime, Get offset safety and benchmark-evidence
+scope. It ran targeted native debug/release tests and Miri, checked source hashes
+and recomputed reported tables from retained data. It did not rerun benchmarks,
+the full check set, WASI or CI, or independently inspect the 1.x assembly side.
+Earlier constructor/input-lifetime fixes have separate verification records.
+This is bounded evidence for the design, not a whole-runtime safety or optimality
+certificate.
+
 ## Results
 
 The [complete VM suite](vm-execution-benchmarks.md#constructor-retention-review-follow-up)

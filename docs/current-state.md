@@ -1,6 +1,6 @@
 # Current state and next work
 
-Checkpoint: 2026-10-05, implementation through the handoff-record reviews of 2026-10-05 (after `40e67d5`). Check git history and the working tree for later changes. The public repository starts from a squashed snapshot of 2026-10-05; commit hashes cited in the docs and handoff records before it refer to the private archive of the earlier history. This file is the short handoff for a fresh session; detailed contracts live in the linked documents.
+Checkpoint: 2026-10-05, VM implementation and scoped independent review through `12ef2f0`. Check git history and the working tree for later changes. The public repository starts from a squashed snapshot of 2026-10-05; commit hashes cited in the docs and handoff records before it refer to the private archive of the earlier history. This file is the short handoff for a fresh session; detailed contracts live in the linked documents.
 
 ## Settled decisions
 
@@ -103,7 +103,25 @@ Benchmarks are matched prototype results, not full-runtime performance guarantee
 
 ## Review checkpoint
 
-The [Codex handoff verification](../.agent-handoffs/verifications/2026-10-05-d395707-codex-8c9d.md) at `d395707` verifies the Push/Once, post-Stop typing and unused-cycle fixes. F4 remains partially open: draining now visits records once, but linear membership checks against retained entry IDs can still make retirement quadratic when many entries finish while another keeps running. Required local checks passed; see the record for evidence and scope.
+The [final VM review](../.agent-handoffs/reviews/2026-10-05-12ef2f0-claude-bc7c33.md)
+reports no findings for `4cbfb0e..12ef2f0` within scratch lifetime, Get offset
+safety and benchmark-evidence scope. It independently ran targeted native tests
+and Miri and checked retained measurements; it did not rerun benchmarks, WASI,
+the full check set or CI. The earlier
+[constructor retention](../.agent-handoffs/verifications/2026-10-05-a003cb7-claude-29a12b.md)
+and [segment input retention](../.agent-handoffs/verifications/2026-10-05-4cbfb0e-claude-ac5c2c.md)
+fixes have separate independent verifications. All numbered handoff findings
+have verification records for their fixed snapshots. The pre-existing generic
+passthrough-retention case remains open as a review note. Design lessons,
+evidence limits and next optimization priorities are collected in the
+[runtime overview](runtime-performance-overview.md#lessons-from-the-vm-optimization-work).
+
+The [earlier verification](../.agent-handoffs/verifications/2026-10-05-d395707-codex-8c9d.md)
+verified the Push/Once, post-Stop typing and unused-cycle fixes but left retirement
+complexity F4 open. The [subsequent verification](../.agent-handoffs/verifications/2026-10-05-3c4712f-codex-7e30.md)
+closes F4 at `3c4712f`: finished records are removed in one pass, with entry
+outcomes stored by the runner and hashed entry membership. It also verifies the
+handoff tracking, nesting-limit regression and Push documentation follow-ups.
 
 The metadata implementation and catalog expansion were reviewed through `765ced1`. Findings about structured variable errors, declaration defaults, sequence type codes, overflowing Pause durations, and child-diagnostic ownership through Do/Spawn are fixed, with regression coverage committed. CI was reported passing on Linux, macOS and wasm.
 

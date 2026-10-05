@@ -76,7 +76,7 @@ impl Mesh {
   pub fn with_cache(cache: ComposeCache<Stackful>) -> Mesh {
     Mesh {
       shared: Rc::new(RefCell::new(MeshShared {
-        inline_calls: HashMap::new(),
+        inline_calls: Default::default(),
         layout: FrameLayout::default(),
         frame: Vec::new(),
         spawn_queue: Vec::new(),
@@ -205,7 +205,7 @@ impl Mesh {
         crate::reload::validate(
           &instance.wire,
           &env,
-          &shared.inline_calls,
+          &shared.inline_calls.calls,
           &next.prepared_calls,
         )?;
       }
@@ -230,12 +230,18 @@ impl Mesh {
     crate::reload::reuse_unchanged(&self.prepared_calls, &mut calls);
     {
       let mut shared = self.shared.borrow_mut();
-      crate::reload::reuse_unchanged(&shared.inline_calls, &mut calls);
-      shared.inline_calls = calls;
+      crate::reload::reuse_unchanged(&shared.inline_calls.calls, &mut calls);
+      self.prepared_calls = calls.clone();
+      shared.inline_calls.install(calls);
     }
-    self.prepared_calls = self.shared.borrow().inline_calls.clone();
     self.wires = std::mem::take(&mut next.wires);
     self.cache = std::mem::take(&mut next.cache);
+  }
+
+  /// How many times Do calls consulted the reload registry. A call site
+  /// checks it once per accepted preserving reload, not on every call.
+  pub fn reload_lookups(&self) -> u64 {
+    self.shared.borrow().inline_calls.lookups.get()
   }
 
   pub fn cache_stats(&self) -> CacheStats {

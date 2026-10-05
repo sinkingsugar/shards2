@@ -3,6 +3,7 @@
 //! A Do call pins its selected flow until it returns. Selection is scoped to
 //! a mesh; shared compiled artifacts are never mutated by a reload.
 
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -46,6 +47,39 @@ pub struct InlineCall<B: Backend> {
 }
 
 pub(crate) type InlineRegistry<B> = HashMap<InlineKey, Arc<InlineCall<B>>>;
+
+/// A mesh's installed Do revisions. Keys are structural (they hash whole wire
+/// definitions), so a Do consults the registry once per accepted reload, when
+/// `revision` changes, rather than on every call.
+pub(crate) struct Revisions<B: Backend> {
+  pub calls: InlineRegistry<B>,
+  /// Accepted preserving reloads; 0 means the registry was never installed.
+  pub revision: u64,
+  /// Registry lookups made by Do calls, for tests and diagnostics.
+  pub lookups: Cell<u64>,
+}
+
+impl<B: Backend> Default for Revisions<B> {
+  fn default() -> Self {
+    Self {
+      calls: HashMap::new(),
+      revision: 0,
+      lookups: Cell::new(0),
+    }
+  }
+}
+
+impl<B: Backend> Revisions<B> {
+  pub fn select(&self, key: &InlineKey) -> Option<Arc<InlineCall<B>>> {
+    self.lookups.set(self.lookups.get() + 1);
+    self.calls.get(key).cloned()
+  }
+
+  pub fn install(&mut self, calls: InlineRegistry<B>) {
+    self.calls = calls;
+    self.revision += 1;
+  }
+}
 
 pub(crate) fn reusable<B: Backend>(wire: &CompiledWire<B>, env: &ComposeEnv<'_>) -> bool {
   env.wires.get(&wire.name) == Some(wire.definition.as_ref())

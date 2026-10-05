@@ -99,7 +99,9 @@ This avoids the trap of needing the full key before lookup, which would mean com
 
 `Session::reload_preserving` keeps compatible running instances. `Do` selects
 an immutable body from a mesh-local registry at the start of each call and
-pins it until the call exits, including across suspension. A changed body is
+pins it until the call exits, including across suspension. Registry keys are
+structural, so each Do consults the registry only when the mesh's reload
+revision has changed since its last check, once per accepted reload. A changed body is
 cleaned up and instantiated at the next call boundary; unchanged bodies keep
 their state. Cleanup uses the body's retained compiled handle, never a newer
 revision's node list. A failed instantiation remains retryable if caught.

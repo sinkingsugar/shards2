@@ -36,7 +36,7 @@ struct Instance {
 }
 
 pub struct Mesh {
-  inline_calls: crate::reload::InlineRegistry<Stackless>,
+  inline_calls: crate::reload::Revisions<Stackless>,
   layout: FrameLayout,
   frame: Vec<Var>,
   spawn_queue: Vec<(Arc<CompiledWire<Stackless>>, Var)>,
@@ -61,7 +61,7 @@ impl Mesh {
 
   pub fn with_cache(cache: ComposeCache<Stackless>) -> Mesh {
     Mesh {
-      inline_calls: HashMap::new(),
+      inline_calls: Default::default(),
       layout: FrameLayout::default(),
       frame: Vec::new(),
       spawn_queue: Vec::new(),
@@ -177,7 +177,7 @@ impl Mesh {
         crate::reload::validate(
           &instance.wire,
           &env,
-          &self.inline_calls,
+          &self.inline_calls.calls,
           &next.prepared_calls,
         )?;
       }
@@ -201,11 +201,17 @@ impl Mesh {
     }
     let mut calls = std::mem::take(&mut next.prepared_calls);
     crate::reload::reuse_unchanged(&self.prepared_calls, &mut calls);
-    crate::reload::reuse_unchanged(&self.inline_calls, &mut calls);
-    self.inline_calls = calls;
-    self.prepared_calls = self.inline_calls.clone();
+    crate::reload::reuse_unchanged(&self.inline_calls.calls, &mut calls);
+    self.prepared_calls = calls.clone();
+    self.inline_calls.install(calls);
     self.wires = std::mem::take(&mut next.wires);
     self.cache = std::mem::take(&mut next.cache);
+  }
+
+  /// How many times Do calls consulted the reload registry. A call site
+  /// checks it once per accepted preserving reload, not on every call.
+  pub fn reload_lookups(&self) -> u64 {
+    self.inline_calls.lookups.get()
   }
 
   pub fn cache_stats(&self) -> CacheStats {
@@ -390,7 +396,7 @@ fn step(
   instance: &mut Instance,
   frame: &mut Vec<Var>,
   spawn_queue: &mut Vec<(Arc<CompiledWire<Stackless>>, Var)>,
-  inline_calls: &crate::reload::InlineRegistry<Stackless>,
+  inline_calls: &crate::reload::Revisions<Stackless>,
 ) {
   if !instance.started {
     instance.started = true;

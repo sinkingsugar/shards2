@@ -71,7 +71,7 @@ pub enum Step {
 pub struct ActivationCtx<'a> {
   pub(crate) instance: InstanceId,
   pub(crate) locals: &'a mut Vec<Var>,
-  pub(crate) inline_calls: &'a crate::reload::InlineRegistry<Stackless>,
+  pub(crate) inline_calls: &'a crate::reload::Revisions<Stackless>,
   pub(crate) mesh_frame: &'a mut Vec<Var>,
   pub(crate) spawn_queue: &'a mut Vec<(Arc<CompiledWire<Stackless>>, Var)>,
   pub(crate) waiting: &'a mut bool,
@@ -85,7 +85,11 @@ impl ActivationCtx<'_> {
     &self,
     key: &crate::reload::InlineKey,
   ) -> Option<Arc<crate::reload::InlineCall<Stackless>>> {
-    self.inline_calls.get(key).cloned()
+    self.inline_calls.select(key)
+  }
+
+  pub(crate) fn reload_revision(&self) -> u64 {
+    self.inline_calls.revision
   }
 
   pub fn instance(&self) -> InstanceId {

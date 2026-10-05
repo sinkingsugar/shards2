@@ -26,7 +26,7 @@ pub use mesh::{DEFAULT_STACK_SIZE, Mesh};
 // Only the stackful mesh, which wasm and ESP-IDF builds lack, reads every field.
 #[cfg_attr(not(stackful), allow(dead_code))]
 pub(crate) struct MeshShared {
-  pub(crate) inline_calls: crate::reload::InlineRegistry<Stackful>,
+  pub(crate) inline_calls: crate::reload::Revisions<Stackful>,
   pub(crate) layout: FrameLayout,
   pub(crate) frame: Vec<Var>,
   pub(crate) spawn_queue: Vec<(Arc<CompiledWire<Stackful>>, Var)>,
@@ -52,7 +52,11 @@ impl ActivationCtx<'_> {
     &self,
     key: &crate::reload::InlineKey,
   ) -> Option<Arc<crate::reload::InlineCall<Stackful>>> {
-    self.mesh.borrow().inline_calls.get(key).cloned()
+    self.mesh.borrow().inline_calls.select(key)
+  }
+
+  pub(crate) fn reload_revision(&self) -> u64 {
+    self.mesh.borrow().inline_calls.revision
   }
 
   pub fn instance(&self) -> InstanceId {

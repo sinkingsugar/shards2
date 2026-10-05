@@ -36,10 +36,9 @@ Sources: [shard contract](prototype-shard-contract.md), [core design](shards-2-c
   General state migration, changing mesh-variable schemas during reload,
   and asynchronous compilation remain deferred. Offline parity tests cover
   retained counters, nested calls, mesh values, cleanup, input specializations
-  and warm host operations. Local checks passed on 2026-10-05: workspace
-  check/test/clippy, formatting (including ESP32), docs-off tests, release
-  nesting tests, TLS clippy, and WASI lint plus executed core/metadata/frontend
-  tests. No live-host integration or physical-board execution is claimed.
+  and warm host operations. A Do checks the mesh's revision registry once
+  per accepted reload, so calls cost the same before and after a reload.
+  No live-host integration is claimed.
 
 - **ESP32 build integration:** a separate ESP-IDF firmware example embeds the
   core and frontend using the stackless mesh. CI links it for ESP32,

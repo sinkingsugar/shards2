@@ -126,6 +126,8 @@ pub struct DoState {
   call: Arc<crate::reload::InlineCall<Stackless>>,
   state: Option<FlowState>,
   active: bool,
+  /// The mesh reload revision this call site last checked for a new body.
+  revision: u64,
 }
 
 impl Shard for Do {
@@ -143,6 +145,7 @@ impl Shard for Do {
       call: call.clone(),
       state: Some(call.flow.instantiate(ctx)?),
       active: false,
+      revision: 0,
     })
   }
 
@@ -152,23 +155,29 @@ impl Shard for Do {
     ctx: &mut ActivationCtx<'_>,
     input: &Var,
   ) -> Result<Step> {
-    if !state.active {
+    // The registry changes only when a reload is installed: check it once
+    // per revision, not on every call (its keys hash whole definitions).
+    if !state.active && state.revision != ctx.reload_revision() {
+      state.revision = ctx.reload_revision();
       if let Some(next) = ctx.inline_call(&state.call.key)
         && next.signature == state.call.signature
         && next.deps != state.call.deps
       {
-        // Take before cleanup: if cleanup panics, terminal cleanup must not
-        // attempt this state a second time.
+        // Switch, then take the old state before its cleanup: if cleanup
+        // panics, terminal cleanup must not attempt it a second time, and
+        // the next call instantiates the new body.
+        let old_call = std::mem::replace(&mut state.call, next);
         if let Some(mut old) = state.state.take() {
-          state.call.flow.cleanup(
+          old_call.flow.cleanup(
             &mut old,
             &mut CleanupCtx {
               instance: ctx.instance(),
             },
           );
         }
-        state.call = next;
       }
+    }
+    if !state.active {
       if state.state.is_none() {
         state.state = Some(state.call.flow.instantiate(&mut InstanceCtx {
           instance: ctx.instance(),

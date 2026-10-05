@@ -72,8 +72,30 @@ where
   Fut: Future<Output = Result<Var, String>> + Send + 'static,
 {
   let cancel = CancellationToken::new();
-  let handle = runtime().spawn(work(cancel.clone()));
+  // Lines the task logs go where the spawning thread's go (a capture).
+  let sink = shards_core::log::current();
+  let task = work(cancel.clone());
+  let handle = runtime().spawn(WithSink {
+    sink,
+    task: Box::pin(task),
+  });
   IoTask { handle, cancel }
+}
+
+/// Polls a task with a log sink installed, on whichever runtime thread
+/// polls it. The task is boxed so polling it needs no pin projection.
+struct WithSink<F> {
+  sink: Option<shards_core::log::Sink>,
+  task: Pin<Box<F>>,
+}
+
+impl<F: Future> Future for WithSink<F> {
+  type Output = F::Output;
+
+  fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<F::Output> {
+    let sink = self.sink.clone();
+    shards_core::log::with_sink(sink, || self.task.as_mut().poll(cx))
+  }
 }
 
 /// Runs blocking work (a long scan, a call into a blocking library, paced
@@ -90,7 +112,9 @@ where
 {
   let cancel = CancellationToken::new();
   let token = cancel.clone();
-  let handle = runtime().spawn_blocking(move || work(token));
+  // Lines the work logs go where the spawning thread's go (a capture).
+  let sink = shards_core::log::current();
+  let handle = runtime().spawn_blocking(move || shards_core::log::with_sink(sink, || work(token)));
   IoTask { handle, cancel }
 }
 

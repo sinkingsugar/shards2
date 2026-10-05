@@ -187,6 +187,7 @@ pub static REQUEST_PARAMS: &[ParamDecl] = &[
     forms: Forms::LITERAL,
     types: &[TypeName::Int],
     requirement: Requirement::Required,
+    ty: None,
   },
   ParamDecl {
     name: "Fail",
@@ -194,6 +195,7 @@ pub static REQUEST_PARAMS: &[ParamDecl] = &[
     forms: Forms::LITERAL,
     types: &[TypeName::Bool],
     requirement: Requirement::Required,
+    ty: None,
   },
   ParamDecl {
     name: "Abortable",
@@ -203,6 +205,7 @@ pub static REQUEST_PARAMS: &[ParamDecl] = &[
     forms: Forms::LITERAL,
     types: &[TypeName::Bool],
     requirement: Requirement::Required,
+    ty: None,
   },
 ];
 

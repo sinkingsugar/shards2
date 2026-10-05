@@ -182,6 +182,7 @@ impl ShardType {
   ///   types: &[TypeName::Int],
   ///   // A String default for an Int-only parameter.
   ///   requirement: Requirement::Default(DefaultValue::Str("ten")),
+  ///   ty: None,
   /// }];
   /// static T: ShardType = ShardType::new(ShardDesc {
   ///   params: Params::Declared(BAD),

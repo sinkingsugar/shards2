@@ -26,9 +26,9 @@ Host shards should not need the backend-specific control-flow traits.
 
 ### Parameters
 
-Declare parameters as `ParamDecl`s: name, help, accepted forms (`Forms::LITERAL`, `VARIABLE`, `FLOW`, ...), literal types and requirement (`Required`, `Optional`, `Default(...)`, `Variadic`). The decoder enforces all of that before compose runs.
+Declare parameters with `ParamDecl::new(name, help, forms, types, requirement)`: accepted forms (`Forms::LITERAL`, `VARIABLE`, `FLOW`, ...), types (`TypeName`s) and requirement (`Required`, `Optional`, `Default(...)`, `Variadic`). When a `TypeName` list cannot say the type (`[Int]`, `Float4 | None`, a table with given keys), declare the full type instead: `ParamDecl::new_typed(name, help, forms, requirement, || Type::seq(Type::int()))`. It needs no `TypeName` list; the catalog derives the type code. The decoder enforces forms, requirements and literal types before compose runs.
 
-For a value that can be a literal or a variable (a `Target: pid` the script sets at runtime), use `Operand::compose_arg` in compose. It resolves the variable and reports unknown or possibly-uninitialized ones as located errors. Then call `Operand::get(ctx)` at activation. Check the returned type in compose. For a parameter declared `Requirement::Optional`, use `Operand::compose_optional_arg`, which returns `None` when the script did not give it; `compose_arg` is for required and defaulted parameters.
+For a value that can be a literal or a variable (a `Target: pid` the script sets at runtime), use `Operand::compose_arg` in compose. It resolves the variable, reports unknown or possibly-uninitialized ones, and checks the variable's type against the declaration (the full type, or the type list), all as located errors. Then call `Operand::get(ctx)` at activation. For a parameter declared `Requirement::Optional`, use `Operand::compose_optional_arg`, which returns `None` when the script did not give it; `compose_arg` is for required and defaulted parameters.
 
 ### Compose
 
@@ -36,7 +36,8 @@ Compose runs once per wire shape, and its result is shared by every instance. It
 
 - **Never touch the host in compose** (process memory, files, devices, the clock). Do that at activation.
 - **Return precise output types.** A fixed record is `Type::fixed_table([...])`, so `r.key` composes to that field's type and a typo is a compose error with suggestions. A value that may be unknown is `Type::union([T, Type::none()])`; at runtime it is an explicit `none`, never a guess. Every key of a fixed table is present at runtime.
-- **A shard that produces a value without using its input** declares `InputDesc::Ignored` and accepts any input type, so it can start a statement anywhere.
+- **Input types are enforced from the description.** `InputDesc::Types(&[...])` is checked before your compose runs, with a located `input-type-mismatch`; do not repeat it. When a type list cannot say the input (a record with given keys, `[Int]`), declare the full type with `InputDesc::Typed(record_type)`, a `fn() -> Type`, and a record missing a key fails `check` instead of failing at runtime. `InputDesc::Any` leaves the input to your compose. A shard that produces a value without using its input declares `InputDesc::Ignored` and accepts any input type, so it can start a statement anywhere.
+- **Produced values are checked against the compose output type** in debug builds (and in release with shards-core's `output-checks` feature): a leaf or async shard whose value drifts from the type it declared, for example a missing table key, fails the instance with a message naming the shard.
 - **Report problems as structured diagnostics** (`Error::Diagnostic(Diagnostic::new(Phase::Compose, kind, code, message).shard(..).param(..))`). The frontend adds file, line, column and the occurrence path.
 
 ### Activation
@@ -59,7 +60,7 @@ Add `shards_io::CATALOG` if scripts use `Http.Get`. Then:
 - **Check without running:** `shards_lang::check::<shards_core::Mesh>(Source::new(path, text), &catalog, &defines)`. It returns the 1.x `{ok, file, diagnostics}` JSON envelope (`to_json()`), and `shards_lang::render` prints a diagnostic for humans.
 - **Run:** `Program::load(source, &catalog, &defines)`, then `program.run::<shards_core::Mesh>()`. The default is the stackless scheduler; `StackfulMesh` is the other one. The report has each entry wire's outcome, plus failures of spawned instances.
 - **Script arguments:** `defines` maps `name` to a string, read as `@name` in scripts.
-- **Logging:** `Log` writes to standard output. `shards_core::log::capture` collects the lines a run logs on the current thread, which is useful in host tests.
+- **Logging:** `Log` writes to standard output; values print as text: whole floats without `.0`, other floats exact (1.x rounded to six digits). A host shard can log with `shards_core::log::emit`. `shards_core::log::capture` collects the lines a run logs, including lines logged by work it started through `shards_io` on other threads, which is useful in host tests.
 
 The language is the 1.x syntax with the changes in [surface-syntax-review.md](surface-syntax-review.md) and the deviations listed in [current-state.md](current-state.md). The ones scripts hit most:
 

@@ -217,7 +217,7 @@ fn a_host_checks_and_runs_a_script_with_its_own_shards() {
       }
     });
     let report = report.unwrap_or_else(|d| panic!("{d:?}"));
-    assert_eq!(lines, ["4: 6.0C"]);
+    assert_eq!(lines, ["4: 6C"]);
     assert!(matches!(
       &report.outcomes[0].1,
       Some(Outcome::Completed(Var::Int(1000)))

@@ -64,6 +64,8 @@ impl AsyncShard for Block {
       }
       None => {
         std::thread::sleep(Duration::from_millis(20));
+        // Logged on a blocking-pool thread.
+        shards_core::log::emit("scanned".into());
         Ok(Var::Int(42))
       }
     }))
@@ -94,16 +96,20 @@ macro_rules! blocking_tests {
       mesh.add_wire(wire(0));
       let w = mesh.compile("w", Type::none()).unwrap();
       let id = mesh.spawn(&w, Var::None).unwrap();
-      let start = Instant::now();
-      mesh.tick();
-      // The 20 ms sleep runs on the blocking pool, not in the tick.
-      assert!(start.elapsed() < Duration::from_millis(15), "tick blocked");
-      while mesh.outcome(id).is_none() {
-        assert!(start.elapsed() < Duration::from_secs(5), "timed out");
+      let ((), lines) = shards_core::log::capture(|| {
+        let start = Instant::now();
         mesh.tick();
-        std::thread::sleep(Duration::from_millis(1));
-      }
+        // The 20 ms sleep runs on the blocking pool, not in the tick.
+        assert!(start.elapsed() < Duration::from_millis(15), "tick blocked");
+        while mesh.outcome(id).is_none() {
+          assert!(start.elapsed() < Duration::from_secs(5), "timed out");
+          mesh.tick();
+          std::thread::sleep(Duration::from_millis(1));
+        }
+      });
       assert_eq!(mesh.outcome(id), Some(&Outcome::Completed(Var::Int(42))));
+      // The pool thread's line reached the capture of the ticking thread.
+      assert_eq!(lines, ["scanned"]);
     }
 
     #[test]

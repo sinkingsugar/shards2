@@ -127,7 +127,7 @@ pub const LOG_DESC: ShardDesc = ShardDesc {
   version: 1,
   summary: crate::shard_doc!("Writes the input to the log and passes it through."),
   help: crate::shard_doc!(
-    "A string is written as it is; other values in source syntax. With a Prefix the line is `prefix: value`."
+    "Values print as in 1.x: strings as they are, whole floats without `.0`. With a Prefix the line is `prefix: value`."
   ),
   params: Params::Declared(LOG_PARAMS),
   input: InputDesc::Any,
@@ -163,10 +163,7 @@ impl LeafShard for Log {
     _: &mut impl LeafCtx,
     input: &Var,
   ) -> Result<Flow> {
-    let value = match input {
-      Var::String(s) => s.to_string(),
-      other => other.to_string(),
-    };
+    let value = input.text();
     crate::log::emit(match prefix {
       Some(p) => format!("{p}: {value}"),
       None => value,
@@ -711,7 +708,9 @@ impl PureOp for ToStringOp {
   const DESC: ShardDesc = pure_desc(
     "ToString",
     crate::shard_doc!("Converts the input to a string."),
-    crate::shard_doc!("A string stays as it is; other values are written in source syntax."),
+    crate::shard_doc!(
+      "A string stays as it is; other values as 1.x prints them (whole floats without `.0`, strings inside sequences as they are)."
+    ),
     InputDesc::Any,
     OutputDesc::Fixed(TypeName::String),
   );
@@ -721,7 +720,7 @@ impl PureOp for ToStringOp {
   fn apply(input: &Var) -> Result<Var> {
     Ok(match input {
       Var::String(_) => input.clone(),
-      other => Var::string(&other.to_string()),
+      other => Var::string(&other.text()),
     })
   }
 }

@@ -247,11 +247,11 @@ Do(outer)"#);
       let (_, lines) = shards_core::log::capture(|| {
         session.tick(); // Spawn Int child.
         session.tick(); // Child prints 2 and pauses.
-        preserve(&mut session, &source("1.0", 2));
+        preserve(&mut session, &source("1.5", 2));
         session.tick(); // Old child completes iteration; new main spawns Float child.
         session.tick(); // Both specializations must select the new inner.
       });
-      assert_eq!(lines, ["2", "3", "3.0"]);
+      assert_eq!(lines, ["2", "3", "3.5"]);
     }
 
     #[test]

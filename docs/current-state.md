@@ -19,6 +19,16 @@ Sources: [shard contract](prototype-shard-contract.md), [core design](shards-2-c
 
 ## Implemented
 
+- **ESP32 build integration:** a separate ESP-IDF firmware example embeds the
+  core and frontend using the stackless mesh, with CI release-link jobs for
+  ESP32, ESP32-S3 and ESP32-C3. The coroutine mesh is excluded on ESP-IDF;
+  desktop backend coverage is unchanged. Build instructions and validation
+  limits are in [esp32.md](esp32.md). Local workspace check/test/clippy,
+  docs-off tests (including the frontend), release nesting tests, TLS clippy,
+  and WASI clippy/acceptance/metadata/frontend tests passed on 2026-10-05.
+  The firmware script is exercised in the shared frontend suite on both
+  native schedulers and WASI. No physical-board execution is claimed.
+
 - Shared compose cache, frame slots, definite-initialization checks, both schedulers, and shared lifecycle helpers for cleanup and rollback. Finished execution data is released; `take_outcome` retires completed instance records.
 - Shared leaf/async adapters, polling and notification wake modes, and native `Http.Get` through an external Tokio runtime. Local-server tests exercise pending-request cancellation and nonblocking mesh progress.
 - Every core catalog shard, including test instrumentation, and `Http.Get` has a `ShardDesc`. The explicit catalog exposes JSON index/detail/search; parameter declarations power decoding and documentation. Prose can be compiled out with the `docs` feature.

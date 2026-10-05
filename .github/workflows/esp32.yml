@@ -1,0 +1,71 @@
+name: ESP32
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  firmware:
+    name: Firmware (${{ matrix.chip }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - chip: esp32
+            target: xtensa-esp32-espidf
+            toolchain: esp
+          - chip: esp32s3
+            target: xtensa-esp32s3-espidf
+            toolchain: esp
+          - chip: esp32c3
+            target: riscv32imc-esp-espidf
+            toolchain: nightly-2026-10-03
+    defaults:
+      run:
+        working-directory: examples/esp32
+    env:
+      MCU: ${{ matrix.chip }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install ESP-IDF build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build cmake libudev-dev libusb-1.0-0-dev clang libclang-dev python3-venv
+      - name: Install Xtensa Rust
+        if: matrix.toolchain == 'esp'
+        uses: esp-rs/xtensa-toolchain@v1.6
+        with:
+          version: "1.97.0.0"
+          buildtargets: ${{ matrix.chip }}
+          ldproxy: true
+      - name: Install RISC-V Rust
+        if: matrix.chip == 'esp32c3'
+        run: |
+          rustup toolchain install nightly-2026-10-03 --profile minimal --component rust-src
+          cargo +nightly-2026-10-03 install ldproxy --version 0.3.4 --locked
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: examples/esp32 -> target
+          key: esp32-${{ matrix.chip }}-${{ matrix.toolchain }}-idf5.5.5
+      - name: Link release firmware
+        run: cargo +${{ matrix.toolchain }} build --locked --release --target ${{ matrix.target }}
+      - name: Upload firmware ELF and build configuration
+        uses: actions/upload-artifact@v4
+        with:
+          name: shards-${{ matrix.chip }}
+          if-no-files-found: error
+          path: |
+            examples/esp32/target/${{ matrix.target }}/release/shards-esp32
+            examples/esp32/sdkconfig
+            examples/esp32/sdkconfig.defaults
+            examples/esp32/Cargo.lock

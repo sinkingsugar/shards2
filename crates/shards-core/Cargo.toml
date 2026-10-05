@@ -15,6 +15,6 @@ default = ["docs"]
 # for small builds; the argument contract is kept either way.
 docs = []
 
-[target.'cfg(not(target_family = "wasm"))'.dependencies]
+[target.'cfg(not(any(target_family = "wasm", target_os = "espidf")))'.dependencies]
 corosensei = "0.3.4"
 

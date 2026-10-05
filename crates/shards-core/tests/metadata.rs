@@ -474,7 +474,7 @@ macro_rules! metadata_tests {
   };
 }
 
-#[cfg(not(target_family = "wasm"))]
+#[cfg(not(any(target_family = "wasm", target_os = "espidf")))]
 mod stackful {
   metadata_tests!(shards_core::StackfulMesh);
 

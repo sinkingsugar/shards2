@@ -18,13 +18,13 @@ pub use crate::instance::{
   CleanupCtx, Frames, InstanceCtx, InstanceId, InstanceMemory, LeafCtx, Outcome, WakeMode,
 };
 
-#[cfg(not(target_family = "wasm"))]
+#[cfg(not(any(target_family = "wasm", target_os = "espidf")))]
 mod mesh;
-#[cfg(not(target_family = "wasm"))]
+#[cfg(not(any(target_family = "wasm", target_os = "espidf")))]
 pub use mesh::{DEFAULT_STACK_SIZE, Mesh};
 
-// Only the stackful mesh, which wasm builds lack, reads every field.
-#[cfg_attr(target_family = "wasm", allow(dead_code))]
+// Only the stackful mesh, which wasm and ESP-IDF builds lack, reads every field.
+#[cfg_attr(any(target_family = "wasm", target_os = "espidf"), allow(dead_code))]
 pub(crate) struct MeshShared {
   pub(crate) layout: FrameLayout,
   pub(crate) frame: Vec<Var>,

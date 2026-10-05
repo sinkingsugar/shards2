@@ -48,6 +48,10 @@ bench/http-concurrency/run.sh path/to/1.x/shards                              # 
 
 ## Development
 
+ESP32, ESP32-S3 and ESP32-C3 firmware builds use ESP-IDF and the stackless
+runtime. See [the ESP32 build guide](docs/esp32.md) for the example, toolchains,
+CI artifacts and hardware-validation limits.
+
 ```sh
 cargo check --workspace
 cargo test --workspace

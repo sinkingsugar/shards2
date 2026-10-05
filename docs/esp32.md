@@ -1,0 +1,87 @@
+# ESP32 firmware builds
+
+The [firmware example](../examples/esp32/) embeds `shards-core` and
+`shards-lang` in an ESP-IDF application. It parses an included script, runs it
+on the stackless scheduler, checks its result and suspension, and prints
+`Shards ESP32 smoke test passed: 42` with the tick count to the serial console.
+
+| Chip | Rust target | Toolchain |
+|---|---|---|
+| ESP32 | `xtensa-esp32-espidf` | Espressif Rust `1.97.0.0` (`esp`) |
+| ESP32-S3 | `xtensa-esp32s3-espidf` | Espressif Rust `1.97.0.0` (`esp`) |
+| ESP32-C3 | `riscv32imc-esp-espidf` | `nightly-2026-10-03` |
+
+This uses Rust `std` on ESP-IDF, not bare-metal `no_std`. The coroutine mesh
+and its `corosensei` dependency are excluded on ESP-IDF, as on WASI. The
+desktop backends remain unchanged. `shards-io`, the desktop CLI, networking,
+GPIO and other peripheral shards are outside this initial build target.
+
+## Build
+
+Follow the [Rust on ESP toolchain guide](https://docs.espressif.com/projects/rust/book/getting-started/toolchain.html)
+and install the native ESP-IDF prerequisites (CMake, Ninja, Python with venv
+support, libclang, libudev and libusb development packages on Linux).
+The build downloads ESP-IDF `v5.5.5` and its C toolchain into `.embuild`.
+Allow several GB of disk space and network access for the first build.
+
+For ESP32 and ESP32-S3:
+
+```sh
+cargo install espup --version 0.17.1 --locked
+cargo install ldproxy --version 0.3.4 --locked
+espup install --toolchain-version 1.97.0.0 --targets esp32,esp32s3
+. "$HOME/export-esp.sh"
+cd examples/esp32
+MCU=esp32 cargo +esp build --locked --release --target xtensa-esp32-espidf
+```
+
+For ESP32-S3, use `MCU=esp32s3` and `--target xtensa-esp32s3-espidf`.
+For ESP32-C3:
+
+```sh
+rustup toolchain install nightly-2026-10-03 --profile minimal --component rust-src
+cargo +nightly-2026-10-03 install ldproxy --version 0.3.4 --locked
+cd examples/esp32
+MCU=esp32c3 cargo +nightly-2026-10-03 build --locked --release --target riscv32imc-esp-espidf
+```
+
+Run Cargo **from `examples/esp32`** so it reads the local `.cargo/config.toml`.
+The example is a separate workspace with a committed lockfile; desktop
+commands at the repository root do not build or install ESP-IDF. Explicit
+`+toolchain` selectors override the repository's desktop toolchain pin.
+When changing chips in the same directory, remove generated `sdkconfig`
+before rebuilding; ESP-IDF configuration is chip-specific.
+
+## Flash and verify
+
+Install [espflash](https://github.com/esp-rs/espflash), connect a board matching
+the target, and run from the example directory (ESP32 shown):
+
+```sh
+espflash flash --monitor target/xtensa-esp32-espidf/release/shards-esp32
+```
+
+The CI artifacts contain an ELF, the lockfile and SDK configuration. Flash the
+ELF with `espflash`, which supplies the bootloader and partition table; it is
+not a raw flash image. Confirm the success message on the serial console.
+
+The example reserves 64 KiB for the ESP-IDF main task stack because parsing
+and composing still use the native stack. This is a starting budget for the
+small script, not evidence that the desktop nesting limit fits on a device.
+Heap capacity and stack usage need measurement for each real workload.
+Firmware uses `panic = "abort"`: panics terminate the application and do not
+provide desktop per-instance panic isolation. Shard documentation prose is
+disabled through both dependency paths; parameter contracts are retained.
+
+## CI and validation limits
+
+[ESP32 CI](../.github/workflows/esp32.yml) links release firmware for all three
+chips on pull requests, pushes to `main`, and manual dispatch. Each matrix
+job uploads its ELF and configuration. A successful build checks compilation
+and linking, not execution, flashing or peripheral behavior. Physical-board
+execution is a separate manual check; no hardware result is claimed here.
+The existing native and WASI jobs continue to test runtime semantics.
+
+The build layout follows the official
+[ESP-IDF Rust template](https://github.com/esp-rs/esp-idf-template/tree/master/cargo)
+and Rust's [ESP-IDF target documentation](https://doc.rust-lang.org/rustc/platform-support/esp-idf.html).

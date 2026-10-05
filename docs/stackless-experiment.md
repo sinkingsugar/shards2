@@ -1,5 +1,10 @@
 # Stackless Scheduler Experiment
 
+**ESP-IDF build scope (2026-10-05):** ESP32 firmware uses the stackless mesh;
+the coroutine mesh and `corosensei` are excluded on `target_os = "espidf"`,
+as on WASI. Shared shard implementations and compose contracts are unchanged.
+See [esp32.md](esp32.md) for targets, builds and hardware-validation limits.
+
 **Status:** Experiment complete (2026-10-04), including matched comparisons with 1.x (C++).
 
 **Decision (2026-10-04, maintainer; reviewed by Astra):** the stackless scheduler is the default, and both schedulers are maintained. Each mesh uses one backend; there is no cross-backend `Do`. A workload dominated by deep, frequent resumes can run its mesh on the stackful backend. Leaf and async shards have one shared implementation; only shards that suspend or run nested flows have two. Runtime tracing (§6) now informs optimization and deployment choices; it no longer gates the decision.

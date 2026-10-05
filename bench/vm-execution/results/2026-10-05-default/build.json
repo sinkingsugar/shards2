@@ -1,0 +1,51 @@
+{
+  "build_commands": [
+    "cmake --build /home/sugar/devel/shards/build/Release --target shards -j 4",
+    "cargo build --release -p shards-cli"
+  ],
+  "cpp_compiler": "c++ (GCC) 16.2.1 20260810",
+  "cpp_core_flags": [
+    "-DNDEBUG",
+    "-DSHARDS_CORE_DLL=1",
+    "-DSHARDS_DEBUGGER=0",
+    "-DSHARDS_DESKTOP=1",
+    "-DSHARDS_GFX_SDL=1",
+    "-DSHARDS_INLINE_EVERYTHING=1",
+    "-DSHARDS_WITH_ENTT=1",
+    "-DSH_CUSTOM_FCONTEXT=1",
+    "-DSH_USE_UBSAN",
+    "-O3",
+    "-DNDEBUG",
+    "-std=gnu++20",
+    "-march=broadwell",
+    "-finline-functions-called-once",
+    "-finline-small-functions",
+    "-ffast-math",
+    "-fno-finite-math-only",
+    "-funroll-loops",
+    "-fno-rtti",
+    "-mavx",
+    "-mpopcnt",
+    "-mlzcnt",
+    "-mbmi",
+    "-mf16c",
+    "-mfma",
+    "-mfpmath=sse"
+  ],
+  "layout_bytes": {
+    "SHVar": 32,
+    "SHVar_alignment": 16,
+    "Var": 24,
+    "Var_alignment": 8,
+    "Flow": 32,
+    "Step": 32,
+    "Result_Flow_Error": 40,
+    "Result_Step_Error": 40
+  },
+  "layout_method": "C++ sizeof/alignof against shards.h; Rust size_of/align_of linked to the current release shards-core rlib.",
+  "assembly_observations": [
+    "CompiledFlow<Stackless>::activate uses an indirect activation call and moves results through stack slots.",
+    "Var::clone contains lock incq for Arc variants; flow replacement contains lock decq."
+  ],
+  "measurement_note": "All timed jobs ran serially on CPU 2, with workspace build/check jobs stopped. Governor and turbo were not changed."
+}

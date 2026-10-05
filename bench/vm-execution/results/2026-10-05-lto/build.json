@@ -1,0 +1,4 @@
+{
+  "command": "CARGO_TARGET_DIR=/tmp/shards-vm-lto CARGO_PROFILE_RELEASE_LTO=thin CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1 RUSTFLAGS='-C target-cpu=broadwell' cargo build --offline --release -p shards-cli",
+  "runtime_changes": "none; same 77dd307 runtime source as default build"
+}

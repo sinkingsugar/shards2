@@ -19,6 +19,16 @@ Sources: [shard contract](prototype-shard-contract.md), [core design](shards-2-c
 
 ## Implemented
 
+- **VM execution benchmark (2026-10-05):** a matched, non-suspending suite
+  measures precomposed hot shard chains on 1.x and both 2.0 backends, with
+  raw samples and result/counter checks. It exposes a substantial cheap-shard
+  throughput gap despite the earlier instance/scheduler wins; independent
+  collection assignment can favor 2.0's sharing. Value forwarding, activation
+  result movement and compose-selected builtin paths need optimization before
+  the execution contract is considered settled. No runtime implementation
+  changed. See [the report](vm-execution-benchmarks.md) for scope, compiler
+  sensitivity and validation; this is not a whole-application speed claim.
+
 - **Hot reload:** `shards_lang::Session` supports full restart (`reload`) and
   preserving reload (`reload_preserving`) on both schedulers. Preserving
   reload retains unchanged callers and their locals/Once/continuations;

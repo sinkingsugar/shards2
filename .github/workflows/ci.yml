@@ -21,6 +21,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
       - run: cargo fmt --manifest-path examples/esp32/Cargo.toml --all --check
+      - run: python3 -m unittest discover -s bench/vm-execution -v
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
       # Small builds: shard documentation prose compiled out, contract kept.

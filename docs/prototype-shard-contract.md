@@ -166,6 +166,15 @@ Prototype rules: one scheduler thread, and a mutable frame borrow is never held 
 **Prototype only:** a minimal `Var` enum (none, bool, int, float, float vectors, string, seq, table). Size and layout get measured against `SHVar`'s 32 bytes.
 **Commitment (later, not for the prototype):** the final `Var` layout. It affects performance everywhere and should be decided with measurements.
 
+**Measured follow-up (2026-10-05):** the [VM execution benchmark](vm-execution-benchmarks.md)
+finds a substantial gap against 1.x on hot cheap-shard chains, while independent
+collection assignment can benefit from sharing. On x86-64 the current `Var`
+is smaller than `SHVar`, but owned output transfer, reference counting and the
+activation result envelope still cost work. Keep value forwarding/output slots
+and compose-selected activation paths open alongside layout; the compiled/state
+split is not contingent on the current by-value output choice.
+
+
 ## 10. Dropped or deferred from `shards.h`
 
 | 1.x feature | Proposal |

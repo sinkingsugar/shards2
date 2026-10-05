@@ -84,7 +84,7 @@ A sequence literal with mixed element types now types as `[A | B]` instead of `[
 
 ### 3.5 Printing
 
-`Float2`, `Float4`; `[T]` for sequences; `{a: Int b: String}` for a fixed table (keys that are not plain names are quoted: `{"two words": Int}`, also when printing values), `{a: Int ...: Any}` with a rest type, `{...: Any}` for any table; `A | B` for sets, parenthesized inside a sequence element or table value when needed for clarity (`[(Int | None)]`).
+`Float2`, `Float4`; `[T]` for sequences; `{a: Int b: String}` for a fixed table (keys that are not plain names are quoted: `{"two words": Int}`, also when printing values), `{a: Int ...: Float}` with a rest type, `{a: Int ...}` when the rest is `Any`, `{...}` for any table; `A | B` for sets, parenthesized inside a sequence element or table value when needed for clarity (`[(Int | None)]`).
 
 ## 4. The type registry
 

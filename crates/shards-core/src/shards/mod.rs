@@ -177,6 +177,7 @@ const fn decl(
     forms,
     types,
     requirement,
+    ty: None,
   }
 }
 
@@ -245,6 +246,27 @@ impl Operand {
         let info = ctx
           .read_var(var, shard)
           .map_err(|e| e.with_param(name, args.param_index(name)))?;
+        // The variable's type is checked against the declaration (its full
+        // type, or its type list), so shards need not repeat it.
+        if let Some(decl) = args.decl(name)
+          && !decl.accepts(info.ty)
+        {
+          return Err(Error::Diagnostic(Box::new(
+            Diagnostic::new(
+              Phase::Compose,
+              "compose-error",
+              "wrong-variable-type",
+              format!(
+                "{name} must be {}, but {var} is {}",
+                decl.expected(),
+                info.ty
+              ),
+            )
+            .shard(shard)
+            .param(name, Some(args.param_index(name)))
+            .types(Some(TypeRef::of(info.ty)), crate::args::expected_refs(decl)),
+          )));
+        }
         Ok((Operand::Bound(info.binding), info.ty))
       }
       other => unreachable!("decoder accepted {other:?} for {shard}.{name}"),
@@ -594,6 +616,7 @@ pub static ADD_PARAMS: &[ParamDecl] = &[ParamDecl {
   forms: Forms::LITERAL.or(Forms::VARIABLE),
   types: NUMERIC,
   requirement: Requirement::Required,
+  ty: None,
 }];
 
 const NUMERIC: &[TypeName] = math::ARITHMETIC;
@@ -829,6 +852,7 @@ pub static WHEN_PARAMS: &[ParamDecl] = &[
     forms: Forms::FLOW,
     types: &[],
     requirement: Requirement::Required,
+    ty: None,
   },
   ParamDecl {
     name: "Action",
@@ -838,6 +862,7 @@ pub static WHEN_PARAMS: &[ParamDecl] = &[
     forms: Forms::FLOW,
     types: &[],
     requirement: Requirement::Required,
+    ty: None,
   },
 ];
 

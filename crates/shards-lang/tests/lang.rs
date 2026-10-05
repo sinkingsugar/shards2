@@ -770,7 +770,7 @@ Repeat({
     #[test]
     fn temporaries_are_scoped_per_inlined_occurrence() {
       let report = run("@wire(w {f\"{Add(1)}\"})\n1 | Do(w)\n1.0 | Do(w)", &no_defines());
-      assert_eq!(completed(&report, "root"), Var::string("2.0"));
+      assert_eq!(completed(&report, "root"), Var::string("2"));
     }
 
     #[test]

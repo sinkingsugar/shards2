@@ -71,6 +71,87 @@ impl Var {
   }
 }
 
+impl Var {
+  /// Human text (`Log`, `ToString`, `String.Format`), like 1.x's except
+  /// that floats keep every digit:
+  /// strings as they are (also inside sequences and tables), whole floats
+  /// without `.0` (`3`, `[1 2.5]`), very large or small ones in exponent
+  /// form. Not round-trippable: `Display` gives source syntax.
+  pub fn text(&self) -> String {
+    let mut out = String::new();
+    write_text(self, &mut out);
+    out
+  }
+}
+
+/// A float as human text: the shortest form that reads back as the same
+/// value (`3.14159265358`, `6416.2715`, `0.1`), whole numbers without `.0`
+/// (`3`, `-0`), exponent form only when very large or small (`1e20`).
+/// 1.x rounded to six significant digits (`6416.27`); 2.0 keeps the exact
+/// value, a listed deviation.
+fn float_text(f: f64, out: &mut String) {
+  use std::fmt::Write;
+  let _ = if f.is_finite() && f.fract() == 0.0 && f.abs() < 1e16 {
+    write!(out, "{f:.0}")
+  } else if f != 0.0 && (f.abs() >= 1e16 || f.abs() < 1e-5) {
+    write!(out, "{f:e}")
+  } else {
+    write!(out, "{f}")
+  };
+}
+
+fn write_text(v: &Var, out: &mut String) {
+  match v {
+    Var::None => out.push_str("none"),
+    Var::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
+    Var::Int(i) => out.push_str(&i.to_string()),
+    Var::Float(f) => float_text(*f, out),
+    Var::Float2(c) => vector(out, "@f2(", c.iter().copied()),
+    Var::Float3(c) => vector(out, "@f3(", c.iter().map(|x| shortest(*x))),
+    Var::Float4(c) => vector(out, "@f4(", c.iter().map(|x| shortest(*x))),
+    Var::String(s) => out.push_str(s),
+    Var::Seq(items) => {
+      out.push('[');
+      for (i, item) in items.iter().enumerate() {
+        if i > 0 {
+          out.push(' ');
+        }
+        write_text(item, out);
+      }
+      out.push(']');
+    }
+    Var::Table(entries) => {
+      out.push('{');
+      for (i, (k, item)) in entries.iter().enumerate() {
+        if i > 0 {
+          out.push(' ');
+        }
+        out.push_str(k);
+        out.push_str(": ");
+        write_text(item, out);
+      }
+      out.push('}');
+    }
+  }
+}
+
+fn vector(out: &mut String, open: &str, components: impl Iterator<Item = f64>) {
+  out.push_str(open);
+  for (i, x) in components.enumerate() {
+    if i > 0 {
+      out.push(' ');
+    }
+    float_text(x, out);
+  }
+  out.push(')');
+}
+
+/// An f32 as the f64 its shortest decimal form denotes, so 0.1f32 prints
+/// `0.1`, not `0.10000000149011612`.
+fn shortest(f: f32) -> f64 {
+  f.to_string().parse().unwrap_or(f64::from(f))
+}
+
 /// Source syntax: `none`, `true`, `42`, `1.5`, `"text"`, `[1 2]`,
 /// `{key: value}`, `@f3(1.0 2.0 3.0)`.
 impl fmt::Display for Var {
@@ -145,5 +226,42 @@ impl Hash for Var {
       Var::Seq(v) => v.hash(state),
       Var::Table(v) => v.hash(state),
     }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn text_prints_values_for_people() {
+    let seq = |v: Vec<Var>| Var::Seq(Arc::new(v));
+    // Whole floats, strings and nesting as 1.x printed them; digits exact.
+    assert_eq!(Var::Float(3.0).text(), "3");
+    assert_eq!(Var::Float(0.1).text(), "0.1");
+    assert_eq!(Var::Float(-0.0).text(), "-0");
+    assert_eq!(Var::Float(1e20).text(), "1e20");
+    // Exact, not 1.x's six significant digits (a listed deviation).
+    assert_eq!(Var::Float(1234.56789012).text(), "1234.56789012");
+    assert_eq!(
+      Var::Float4([6416.2715, 514.1416, 8.651538, 4.5194016]).text(),
+      "@f4(6416.2715 514.1416 8.651538 4.5194016)"
+    );
+    assert_eq!(
+      seq(vec![Var::Float(1.0), Var::Float(2.5)]).text(),
+      "[1 2.5]"
+    );
+    assert_eq!(
+      seq(vec![Var::string("a"), Var::string("b c")]).text(),
+      "[a b c]"
+    );
+    assert_eq!(
+      Var::table([("k", Var::string("v")), ("n", Var::Float(2.0))]).text(),
+      "{k: v n: 2}"
+    );
+    assert_eq!(Var::Float3([1.0, 2.5, 0.1]).text(), "@f3(1 2.5 0.1)");
+    // Display stays source syntax, round-trippable.
+    assert_eq!(Var::Float(3.0).to_string(), "3.0");
+    assert_eq!(Var::string("a").to_string(), "\"a\"");
   }
 }

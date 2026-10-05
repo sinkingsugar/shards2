@@ -208,6 +208,82 @@ pub struct ParamDecl {
   /// and flow parameters.
   pub types: &'static [TypeName],
   pub requirement: Requirement,
+  /// The full type, when `types` cannot say it (`[Int]`, `Float4 | None`,
+  /// a table with given keys). When set, it is what literals (in the
+  /// decoder) and variables (in `Operand::compose_arg`) are checked
+  /// against, and what the catalog documents; `types` then only gives the
+  /// 1.x type codes. A function, so declarations stay `const`.
+  pub ty: Option<fn() -> Type>,
+}
+
+impl ParamDecl {
+  /// A declaration without a full type; add one with [`ParamDecl::typed`].
+  pub const fn new(
+    name: &'static str,
+    help: &'static str,
+    forms: Forms,
+    types: &'static [TypeName],
+    requirement: Requirement,
+  ) -> ParamDecl {
+    ParamDecl {
+      name,
+      help,
+      forms,
+      types,
+      requirement,
+      ty: None,
+    }
+  }
+
+  /// A declaration with a full type and no `TypeName` list: the catalog
+  /// derives the 1.x type code from the full type.
+  pub const fn new_typed(
+    name: &'static str,
+    help: &'static str,
+    forms: Forms,
+    requirement: Requirement,
+    ty: fn() -> Type,
+  ) -> ParamDecl {
+    ParamDecl {
+      name,
+      help,
+      forms,
+      types: &[],
+      requirement,
+      ty: Some(ty),
+    }
+  }
+
+  /// Sets the full type literals and variables are checked against. The
+  /// `TypeName` list is then not used for checks; it can stay empty.
+  pub const fn typed(self, ty: fn() -> Type) -> ParamDecl {
+    ParamDecl {
+      ty: Some(ty),
+      ..self
+    }
+  }
+
+  /// Whether a value of type `actual` is acceptable: the full type when
+  /// declared, else one of `types` (any type when `types` is empty).
+  pub fn accepts(&self, actual: Type) -> bool {
+    match self.ty {
+      Some(ty) => ty().accepts(actual),
+      None => self.types.is_empty() || self.types.iter().any(|t| t.matches(actual)),
+    }
+  }
+
+  /// The accepted types, for messages: the full type, or `types`.
+  pub fn expected(&self) -> String {
+    match self.ty {
+      Some(ty) => ty().to_string(),
+      None => self
+        .types
+        .iter()
+        .map(|t| t.name())
+        .collect::<Vec<_>>()
+        .join(" or "),
+    }
+  }
 }
 
 /// A shard's parameters.
@@ -228,6 +304,10 @@ pub enum InputDesc {
   /// The input is not used.
   Ignored,
   Types(&'static [TypeName]),
+  /// A full type, when a `TypeName` list cannot say it (a table with given
+  /// keys, `[Int]`, a union), like `ParamDecl::typed`. A function, so
+  /// descriptions stay `const`.
+  Typed(fn() -> Type),
 }
 
 /// A shard's output. Outputs that depend on compose are not presented as

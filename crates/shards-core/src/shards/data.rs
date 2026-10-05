@@ -529,7 +529,7 @@ pub const STRING_FORMAT_DESC: ShardDesc = ShardDesc {
   version: 1,
   summary: crate::shard_doc!("Joins a sequence's elements into one string."),
   help: crate::shard_doc!(
-    "String elements are inserted as they are; other values in source syntax (`42`, `1.5`, `[1 2]`, `{a: 1}`, `none`). f-strings lower to Seq.Make followed by String.Format."
+    "Elements print as text: strings as they are, whole floats without `.0`, other floats exact (`12`, `2.5`, `[1 2]`, `{a: 1}`, `none`). f-strings lower to Seq.Make followed by String.Format."
   ),
   params: Params::Declared(&[]),
   input: InputDesc::Types(&[TypeName::Seq]),
@@ -580,10 +580,7 @@ impl LeafShard for StringFormat {
     };
     let mut out = String::new();
     for item in items.iter() {
-      match item {
-        Var::String(s) => out.push_str(s),
-        other => out.push_str(&other.to_string()),
-      }
+      out.push_str(&item.text());
     }
     Ok(Flow::Next(Var::String(Arc::from(out))))
   }

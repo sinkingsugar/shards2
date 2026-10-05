@@ -19,6 +19,7 @@ use std::marker::PhantomData;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
+use super::leaf::{Checked, check_output, checked};
 use super::*;
 use crate::describe::ShardDesc;
 use crate::instance::{CleanupCtx, InstanceCtx, LeafCtx};
@@ -74,32 +75,37 @@ fn ensure_started<A: AsyncShard>(
 }
 
 impl<A: AsyncShard> Shard for Async<A> {
-  type Compiled = A::Compiled;
+  type Compiled = Checked<A::Compiled>;
   type State = AsyncState<A::Op>;
   const NAME: &'static str = A::DESC.name;
   const VERSION: u32 = A::DESC.version;
 
-  fn compose(args: &Args, ctx: &mut ComposeCtx<'_, Stackful>) -> Result<Composed<A::Compiled>> {
-    A::compose(args, ctx)
+  fn compose(
+    args: &Args,
+    ctx: &mut ComposeCtx<'_, Stackful>,
+  ) -> Result<Composed<Checked<A::Compiled>>> {
+    A::compose(args, ctx).map(checked)
   }
 
-  fn instantiate(_: &A::Compiled, _: &mut InstanceCtx) -> Result<AsyncState<A::Op>> {
+  fn instantiate(_: &Checked<A::Compiled>, _: &mut InstanceCtx) -> Result<AsyncState<A::Op>> {
     Ok(AsyncState { op: None })
   }
 
   fn activate(
-    c: &A::Compiled,
+    c: &Checked<A::Compiled>,
     state: &mut AsyncState<A::Op>,
     ctx: &mut crate::runtime::ActivationCtx<'_>,
     input: &Var,
   ) -> Result<Flow> {
-    ensure_started::<A>(c, state, ctx, input)?;
+    ensure_started::<A>(&c.inner, state, ctx, input)?;
     loop {
       let op = state.op.as_mut().expect("operation started");
       let poll = op.as_mut().poll(&mut Context::from_waker(ctx.waker()));
       if let Poll::Ready(result) = poll {
         state.op = None;
-        return result.map(Flow::Next);
+        let value = result?;
+        check_output(A::DESC.name, c.output, &value)?;
+        return Ok(Flow::Next(value));
       }
       if let Err(err) = ctx.wait() {
         // Cancelled while pending: drop the future before anything else.
@@ -109,38 +115,43 @@ impl<A: AsyncShard> Shard for Async<A> {
     }
   }
 
-  fn cleanup(_: &A::Compiled, state: &mut AsyncState<A::Op>, _: &mut CleanupCtx) {
+  fn cleanup(_: &Checked<A::Compiled>, state: &mut AsyncState<A::Op>, _: &mut CleanupCtx) {
     state.op = None;
   }
 }
 
 impl<A: AsyncShard> stackless::Shard for Async<A> {
-  type Compiled = A::Compiled;
+  type Compiled = Checked<A::Compiled>;
   type State = AsyncState<A::Op>;
   const NAME: &'static str = A::DESC.name;
   const VERSION: u32 = A::DESC.version;
 
-  fn compose(args: &Args, ctx: &mut ComposeCtx<'_, Stackless>) -> Result<Composed<A::Compiled>> {
-    A::compose(args, ctx)
+  fn compose(
+    args: &Args,
+    ctx: &mut ComposeCtx<'_, Stackless>,
+  ) -> Result<Composed<Checked<A::Compiled>>> {
+    A::compose(args, ctx).map(checked)
   }
 
-  fn instantiate(_: &A::Compiled, _: &mut InstanceCtx) -> Result<AsyncState<A::Op>> {
+  fn instantiate(_: &Checked<A::Compiled>, _: &mut InstanceCtx) -> Result<AsyncState<A::Op>> {
     Ok(AsyncState { op: None })
   }
 
   /// The pending future is the resume point.
   fn activate(
-    c: &A::Compiled,
+    c: &Checked<A::Compiled>,
     state: &mut AsyncState<A::Op>,
     ctx: &mut stackless::ActivationCtx<'_>,
     input: &Var,
   ) -> Result<Step> {
-    ensure_started::<A>(c, state, ctx, input)?;
+    ensure_started::<A>(&c.inner, state, ctx, input)?;
     let op = state.op.as_mut().expect("operation started");
     match op.as_mut().poll(&mut Context::from_waker(ctx.waker())) {
       Poll::Ready(result) => {
         state.op = None;
-        result.map(Step::Next)
+        let value = result?;
+        check_output(A::DESC.name, c.output, &value)?;
+        Ok(Step::Next(value))
       }
       Poll::Pending => {
         ctx.set_waiting();
@@ -149,7 +160,7 @@ impl<A: AsyncShard> stackless::Shard for Async<A> {
     }
   }
 
-  fn cleanup(_: &A::Compiled, state: &mut AsyncState<A::Op>, _: &mut CleanupCtx) {
+  fn cleanup(_: &Checked<A::Compiled>, state: &mut AsyncState<A::Op>, _: &mut CleanupCtx) {
     state.op = None;
   }
 }

@@ -99,6 +99,7 @@ pub static GET_PARAMS: &[ParamDecl] = &[
     forms: Forms::LITERAL.or(Forms::VARIABLE),
     types: &[TypeName::String],
     requirement: Requirement::Required,
+    ty: None,
   },
   ParamDecl {
     name: "Timeout",
@@ -108,6 +109,7 @@ pub static GET_PARAMS: &[ParamDecl] = &[
     forms: Forms::LITERAL,
     types: &[TypeName::Int],
     requirement: Requirement::Default(DefaultValue::Int(10)),
+    ty: None,
   },
 ];
 

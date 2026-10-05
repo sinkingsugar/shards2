@@ -34,7 +34,7 @@ fn check_json_reports_located_diagnostics() {
   let (code, _, err) = shards2(&["check", "--stackful", &file]);
   assert_eq!(code, 1);
   assert!(
-    err.contains("bad.shs:2:7: compose error: cannot add Int to String"),
+    err.contains("bad.shs:2:7: compose error: Math.Add needs Int, Float, Float2, Float3 or Float4 input, got String"),
     "{err}"
   );
   assert!(err.contains("  2 | \"a\" | Add(2)\n    |       ^"), "{err}");

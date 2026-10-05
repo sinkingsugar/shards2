@@ -152,6 +152,10 @@ fn describe_json(s: &ShardType) -> String {
     InputDesc::Any => "{\"kind\":\"any\"}".to_string(),
     InputDesc::Ignored => "{\"kind\":\"ignored\"}".to_string(),
     InputDesc::Types(types) => format!("{{\"kind\":\"types\",\"types\":{}}}", types_json(types)),
+    InputDesc::Typed(ty) => format!(
+      "{{\"kind\":\"type\",\"type\":{}}}",
+      json_str(&ty().to_string())
+    ),
   };
   let output = match d.output {
     OutputDesc::Fixed(t) => format!("{{\"kind\":\"fixed\",\"type\":{}}}", type_json(t)),
@@ -176,11 +180,27 @@ fn describe_json(s: &ShardType) -> String {
             format!("\"index\":{index}"),
             format!("\"help\":{}", json_str(p.help)),
             format!("\"forms\":{}", strings_json(&p.forms.names())),
-            format!("\"types\":{}", types_json(p.types)),
+            // A typed parameter without a type list documents the type
+            // code derived from its full type.
+            match (p.types, p.ty) {
+              ([], Some(ty)) => {
+                let t = crate::diagnostic::TypeRef::of(ty());
+                format!(
+                  "\"types\":[{{\"name\":{},\"basic_type\":{}}}]",
+                  json_str(&t.name),
+                  t.basic_type
+                )
+              }
+              _ => format!("\"types\":{}", types_json(p.types)),
+            },
             format!("\"required\":{}", p.requirement == Requirement::Required),
           ];
           if p.requirement == Requirement::Variadic {
             fields.push("\"variadic\":true".to_string());
+          }
+          // The full type, when declared beyond the type list.
+          if let Some(ty) = p.ty {
+            fields.push(format!("\"type\":{}", json_str(&ty().to_string())));
           }
           if let Requirement::Default(default) = p.requirement {
             fields.push(format!("\"default\":{}", default_json(default)));

@@ -20,10 +20,12 @@ jobs:
       - run: rustup show
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
+      - run: cargo fmt --manifest-path examples/esp32/Cargo.toml --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
       # Small builds: shard documentation prose compiled out, contract kept.
       - run: cargo test -p shards-core -p shards-io --no-default-features --test metadata --test catalog
+      - run: cargo test -p shards-lang --no-default-features
       # Release coroutine stacks (128 KB, as 1.x) must hold flows nested to the compose limit.
       - run: cargo test --release -p shards-lang --test lang nesting_up_to_the_limit
       # As in 1.x, TLS is an explicit feature; make sure the rustls-ring build works.

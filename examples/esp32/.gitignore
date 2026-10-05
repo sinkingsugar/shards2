@@ -1,0 +1,6 @@
+/target/
+/artifact/
+/.embuild/
+/sdkconfig
+/sdkconfig.*
+!/sdkconfig.defaults

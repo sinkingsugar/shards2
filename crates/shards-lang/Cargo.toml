@@ -9,5 +9,9 @@ repository.workspace = true
 [lints]
 workspace = true
 
+[features]
+default = ["docs"]
+docs = ["shards-core/docs"]
+
 [dependencies]
-shards-core = { path = "../shards-core" }
+shards-core = { path = "../shards-core", default-features = false }

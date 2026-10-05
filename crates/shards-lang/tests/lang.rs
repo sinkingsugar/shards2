@@ -56,6 +56,18 @@ macro_rules! lang_tests {
     }
 
     #[test]
+    fn esp32_firmware_script_completes_after_suspending() {
+      let report = run(
+        include_str!("../../../examples/esp32/smoke.shs"),
+        &no_defines(),
+      );
+      assert_eq!(report.outcomes.len(), 1);
+      assert_eq!(completed(&report, "root"), Var::Int(42));
+      assert!(report.spawned_failures.is_empty());
+      assert!(report.ticks >= 2);
+    }
+
+    #[test]
     fn loose_code_runs_as_the_root_wire() {
       let report = run(
         "// word forms and operators
@@ -664,7 +676,7 @@ If(Any(b {a}) {4} {5}) = z
   };
 }
 
-#[cfg(not(target_family = "wasm"))]
+#[cfg(stackful)]
 mod stackful {
   lang_tests!(shards_core::StackfulMesh);
 }

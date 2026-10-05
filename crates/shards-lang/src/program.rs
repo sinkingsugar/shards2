@@ -63,7 +63,7 @@ macro_rules! host {
 }
 
 host!(shards_core::Mesh, shards_core::Stackless);
-#[cfg(not(target_family = "wasm"))]
+#[cfg(stackful)]
 host!(shards_core::StackfulMesh, shards_core::Stackful);
 
 /// A source program, parsed and lowered.

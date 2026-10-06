@@ -6,7 +6,7 @@ waiting
 ready
 === reference
 @wire(poll {
-  Once({0 >= reading})
+  Keep(reading 0)
   Inc(reading)
   If({reading | IsLess(3)} {"waiting" | Log} {"ready" | Log Stop})
   Pause

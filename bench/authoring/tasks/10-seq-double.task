@@ -4,8 +4,8 @@ Given the sequence [1 2 3 4], build a new sequence with every element doubled an
 [2 4 6 8]
 === reference
 [1 2 3 4] = xs
-[] >= out
-0 >= i
+[] | Var(out)
+0 | Var(i)
 xs | Count = n
-While({i | IsLess(n)} { xs | Take(i) | Math.Multiply(2) | Push(out clear: false) Inc(i) })
+While({i | IsLess(n)} { xs | Take(i) | Math.Multiply(2) | Push(out) Inc(i) })
 out | Log

@@ -8,6 +8,6 @@ Count down from 5 to 1, logging each number on its own line, then log `liftoff`.
 1
 liftoff
 === reference
-6 >= n
+6 | Var(n)
 Repeat({ Dec(n) | Log } times: 5)
 "liftoff" | Log

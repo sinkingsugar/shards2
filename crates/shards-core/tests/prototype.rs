@@ -112,7 +112,7 @@ macro_rules! acceptance_tests {
         };
         mesh.add_wire(wire("main", false, vec![
           konst(Var::None), constructor, konst(Var::Int(1)),
-          ShardDef::new(&data::PUSH, vec![var("acc"), val(Var::Bool(false))]),
+          ShardDef::new(&data::PUSH, vec![var("acc")]),
           pause(),
         ]));
         let compiled = mesh.compile("main", Type::none()).unwrap();
@@ -147,7 +147,7 @@ macro_rules! acceptance_tests {
     fn inline_assignment_preserves_other_aliases() {
       let mut mesh = Mesh::new();
       mesh.add_wire(wire("main", false, vec![
-        konst(Var::Int(7)), set("a"), set("b"), update("a"),
+        konst(Var::Int(7)), declare("a"), declare("b"), update("a"),
         add(var("a")), update("a"), inc("a"), get("b"),
       ]));
       let compiled = mesh.compile("main", Type::none()).unwrap();
@@ -251,7 +251,7 @@ macro_rules! acceptance_tests {
         "worker",
         false,
         vec![
-          set("left"),
+          declare("left"),
           while_(
             vec![get("left"), is_more_equal(val(Var::Int(1)))],
             vec![
@@ -277,7 +277,7 @@ macro_rules! acceptance_tests {
     #[test]
     fn cache_reuses_equivalent_compose_and_misses_on_changed_dependencies() {
       let mut mesh = Mesh::new();
-      mesh.add_wire(wire("setter", false, vec![konst(Var::Int(5)), set("g")]));
+      mesh.add_wire(wire("setter", false, vec![konst(Var::Int(5)), declare("g")]));
       mesh.add_wire(wire("sub", false, vec![konst(Var::Int(1))]));
       mesh.add_wire(wire("caller", false, vec![do_("sub")]));
 
@@ -287,15 +287,18 @@ macro_rules! acceptance_tests {
       assert_eq!(mesh.cache_stats().wire_composes, 1);
       assert_eq!(mesh.cache_stats().hits, 1);
 
-      // "g" was absent, so Set declared a local. Declaring a mesh variable "g"
-      // invalidates that recorded absence: miss, and the new artifact binds the
-      // mesh variable.
+      // "g" was absent, so Var declared a local. Declaring a mesh variable
+      // "g" invalidates that recorded absence: the artifact is stale, and
+      // composing again reports the clash (no shadowing).
       mesh.declare_var("g", Var::Int(0), true);
       assert!(
         mesh.spawn(&local, Var::None).is_err(),
         "stale artifact must be rejected"
       );
-      let bound = mesh.compile("setter", Type::none()).unwrap();
+      assert_eq!(compose_error(&mut mesh, "setter").0, "duplicate-binding");
+      // A wire assigning the mesh variable binds it.
+      mesh.add_wire(wire("updater", false, vec![konst(Var::Int(5)), update("g")]));
+      let bound = mesh.compile("updater", Type::none()).unwrap();
       assert_eq!(mesh.cache_stats().wire_composes, 2);
       let id = mesh.spawn(&bound, Var::None).unwrap();
       mesh.run(10);
@@ -363,7 +366,7 @@ macro_rules! acceptance_tests {
       mesh.add_wire(wire(
         "outer",
         false,
-        vec![probe("outer"), set("x"), do_("inner"), get("x")],
+        vec![probe("outer"), declare("x"), do_("inner"), get("x")],
       ));
       let outer = mesh.compile("outer", Type::int()).unwrap();
 
@@ -512,52 +515,53 @@ macro_rules! acceptance_tests {
     }
 
     #[test]
-    fn reads_of_conditionally_initialized_locals_are_rejected() {
+    fn names_declared_in_blocks_do_not_escape() {
       let mut mesh = Mesh::new();
-      // Declared only in a branch that might not run, then read after it.
+      // Declared in a branch, then read after it (golden-path.md §3.2).
       mesh.add_wire(wire(
         "branch",
         false,
         vec![
           when(
             vec![konst(Var::Bool(false))],
-            vec![konst(Var::Int(7)), set("x")],
+            vec![konst(Var::Int(7)), declare("x")],
           ),
           get("x"),
         ],
       ));
       let (code, message) = compose_error(&mut mesh, "branch");
-      assert_eq!(code, "possibly-uninitialized");
-      assert!(message.contains("may be uninitialized"));
+      assert_eq!(code, "unknown-variable");
+      assert!(message.contains("unknown variable x"));
 
-      // Declared only in a loop body that can run zero times.
+      // Declared in a loop body.
       mesh.add_wire(wire(
         "zero-loop",
         false,
         vec![
-          repeat(vec![konst(Var::Int(1)), set("y")], val(Var::Int(0))),
+          repeat(vec![konst(Var::Int(1)), declare("y")], val(Var::Int(0))),
           get("y"),
         ],
       ));
       let (code, message) = compose_error(&mut mesh, "zero-loop");
-      assert_eq!(code, "possibly-uninitialized");
-      assert!(message.contains("may be uninitialized"));
+      assert_eq!(code, "unknown-variable");
+      assert!(message.contains("unknown variable y"));
 
-      // Valid patterns still compose: used only inside the branch, assigned
-      // again after it, or declared before it and updated inside.
+      // Valid patterns: used only inside the branch, declared again after
+      // it (the block's name is gone), or declared before it and updated
+      // inside.
       mesh.add_wire(wire(
         "valid",
         false,
         vec![
           when(
             vec![konst(Var::Bool(true))],
-            vec![konst(Var::Int(1)), set("a"), get("a")],
+            vec![konst(Var::Int(1)), declare("a"), get("a")],
           ),
           konst(Var::Int(2)),
-          set("a"),
+          declare("a"),
           get("a"),
           konst(Var::Int(0)),
-          set("b"),
+          declare("b"),
           when(
             vec![konst(Var::Bool(true))],
             vec![konst(Var::Int(5)), update("b")],
@@ -640,13 +644,13 @@ macro_rules! acceptance_tests {
     fn input_mismatches_say_where_the_input_came_from() {
       use shards_core::diagnostic::InputSource;
       let mut mesh = Mesh::new();
-      // Const produces the Float3; Set and When pass it through to Add.
+      // Const produces the Float3; Var and When pass it through to Add.
       mesh.add_wire(wire(
         "through",
         false,
         vec![
           konst(Var::Float3([0.0; 3])),
-          set("x"),
+          declare("x"),
           when(vec![konst(Var::Bool(true))], vec![]),
           add(val(Var::Float2([0.0; 2]))),
         ],
@@ -656,19 +660,19 @@ macro_rules! acceptance_tests {
         d.input_from,
         Some(InputSource {
           origin: Some((0, "Const".into())),
-          via: vec![(1, "Set".into()), (2, "When".into())],
+          via: vec![(1, "Var".into()), (2, "When".into())],
         })
       );
       assert!(
         d.message.ends_with(
-          "(the input comes from 0:Const, through 1:Set, 2:When, which pass their input through unchanged)"
+          "(the input comes from 0:Const, through 1:Var, 2:When, which pass their input through unchanged)"
         ),
         "{}",
         d.message
       );
       assert!(
         d.to_json().contains(
-          "\"input_from\":{\"origin\":{\"shard\":0,\"name\":\"Const\"},\"via\":[{\"shard\":1,\"name\":\"Set\"},{\"shard\":2,\"name\":\"When\"}]}"
+          "\"input_from\":{\"origin\":{\"shard\":0,\"name\":\"Const\"},\"via\":[{\"shard\":1,\"name\":\"Var\"},{\"shard\":2,\"name\":\"When\"}]}"
         ),
         "{}",
         d.to_json()
@@ -692,7 +696,7 @@ macro_rules! acceptance_tests {
       mesh.add_wire(wire(
         "assign",
         false,
-        vec![konst(Var::Int(1)), set("v"), konst(Var::Float(1.0)), update("v")],
+        vec![konst(Var::Int(1)), declare("v"), konst(Var::Float(1.0)), update("v")],
       ));
       let d = diagnostic(&mut mesh, "assign");
       assert_eq!(d.code, "variable-type-mismatch");
@@ -709,18 +713,21 @@ macro_rules! acceptance_tests {
       mesh.add_wire(wire(
         "ok",
         false,
-        vec![konst(Var::Int(0)), set("n"), repeat(vec![inc("n")], val(Var::Int(3))), get("n"), ref_("r"), get("r")],
+        vec![konst(Var::Int(0)), declare("n"), repeat(vec![inc("n")], val(Var::Int(3))), get("n"), bind("r"), get("r")],
       ));
       let ok = mesh.compile("ok", Type::none()).unwrap();
       let id = mesh.spawn(&ok, Var::None).unwrap();
       mesh.run(5);
       assert_eq!(mesh.outcome(id), Some(&Outcome::Completed(Var::Int(3))));
 
-      mesh.add_wire(wire("update", false, vec![konst(Var::Int(1)), ref_("r"), konst(Var::Int(2)), update("r")]));
-      assert_eq!(compose_error(&mut mesh, "update").0, "immutable-variable");
-      mesh.add_wire(wire("twice", false, vec![konst(Var::Int(1)), ref_("r"), ref_("r")]));
+      mesh.add_wire(wire("update", false, vec![konst(Var::Int(1)), bind("r"), konst(Var::Int(2)), update("r")]));
+      assert_eq!(compose_error(&mut mesh, "update").0, "immutable-binding");
+      mesh.add_wire(wire("twice", false, vec![konst(Var::Int(1)), bind("r"), bind("r")]));
       let d = diagnostic(&mut mesh, "twice");
-      assert_eq!((d.code, d.path_string().as_str()), ("variable-exists", "twice/2:Ref"));
+      assert_eq!((d.code, d.path_string().as_str()), ("duplicate-binding", "twice/2:Bind"));
+      // The first declaration is the related location.
+      let related = d.related.unwrap();
+      assert_eq!(related.path, [shards_core::diagnostic::PathStep::Wire("twice".into()), shards_core::diagnostic::PathStep::Shard { index: 1, name: "Bind".into() }]);
     }
 
     #[test]
@@ -732,8 +739,13 @@ macro_rules! acceptance_tests {
         "w",
         false,
         vec![
+          konst(Var::Seq(Default::default())),
+          declare("seen"),
+          konst(Var::Int(0)),
+          declare("before"),
+          declare("after"),
           konst(Var::Int(7)),
-          sub(vec![konst(Var::Int(1)), set("before"), pause(), konst(Var::Int(5)), set("after")]),
+          sub(vec![konst(Var::Int(1)), update("before"), pause(), konst(Var::Int(5)), update("after")]),
           push("seen"),
           get("after"),
           add(var("before")),
@@ -760,7 +772,7 @@ macro_rules! acceptance_tests {
         vec![
           konst(Var::Float3([1.0, 2.0, 3.0])),
           take(val(Var::Int(2))),
-          ref_("z"),
+          bind("z"),
           konst(open),
           take(val(Var::string("a"))),
         ],
@@ -837,7 +849,7 @@ macro_rules! acceptance_tests {
         false,
         vec![
           konst(Var::Int(0)),
-          set("n"),
+          declare("n"),
           repeat_until(vec![inc("n")], vec![pause(), get("n"), is_more_equal(val(Var::Int(3)))]),
           get("n"),
         ],
@@ -914,15 +926,15 @@ macro_rules! acceptance_tests {
         false,
         vec![
           konst(mixed()),
-          set("xs"),
+          declare("xs"),
           konst(Var::Seq(std::sync::Arc::new(vec![Var::Int(2)]))),
           update("xs"),
           konst(point(1.0, "a")),
-          set("p"),
+          declare("p"),
           konst(point(2.0, "b")),
           update("p"),
           konst(Var::Float4([1.0, 2.0, 3.0, 4.0])),
-          set("pose"),
+          declare("pose"),
           get("p"),
         ],
       ));
@@ -938,7 +950,7 @@ macro_rules! acceptance_tests {
         false,
         vec![
           konst(mixed()),
-          set("xs"),
+          declare("xs"),
           konst(Var::Seq(std::sync::Arc::new(vec![Var::Float(1.0)]))),
           update("xs"),
         ],
@@ -953,7 +965,7 @@ macro_rules! acceptance_tests {
         false,
         vec![
           konst(point(1.0, "a")),
-          set("p"),
+          declare("p"),
           konst(Var::table([
             ("x", Var::Float(1.0)),
             ("label", Var::string("a")),
@@ -977,7 +989,7 @@ macro_rules! acceptance_tests {
         vec![
           probe("resource"),
           konst(Var::Int(i64::MAX)),
-          set("x"),
+          declare("x"),
           inc("x"),
         ],
       ));
@@ -1109,7 +1121,7 @@ macro_rules! acceptance_tests {
         false,
         vec![
           konst(Var::Int(0)),
-          set("c"),
+          declare("c"),
           once(vec![pause(), get("c"), add(val(Var::Int(1))), update("c")]),
           when(
             vec![konst(Var::Bool(true))],
@@ -1205,7 +1217,7 @@ macro_rules! acceptance_tests {
           vec![
             probe("client"),
             konst(Var::Int(-1)),
-            set("id"),
+            declare("id"),
             when(
               vec![konst(Var::Bool(true))],
               vec![do_("fetch"), update("id")],
@@ -1421,7 +1433,7 @@ macro_rules! acceptance_tests {
     fn finished_instances_release_input_and_locals() {
       for fail in [false, true] {
         let mut mesh = Mesh::new();
-        let mut flow = vec![set("x")];
+        let mut flow = vec![declare("x")];
         if fail {
           flow.push(probe_mode("broken", "fail-instantiate"));
         }

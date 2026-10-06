@@ -24,7 +24,7 @@ fn shards2(args: &[&str]) -> (i32, String, String) {
 
 #[test]
 fn check_json_reports_located_diagnostics() {
-  let file = script("bad.shs", "0 >= n\n\"a\" | Add(2)\n");
+  let file = script("bad.shs", "0 | Var(n)\n\"a\" | Add(2)\n");
   let (code, out, _) = shards2(&["check", "--json", &file]);
   assert_eq!(code, 1);
   assert!(out.starts_with("{\"ok\":false,"), "{out}");
@@ -42,7 +42,7 @@ fn check_json_reports_located_diagnostics() {
 
 #[test]
 fn check_ok_and_run_with_script_arguments() {
-  let file = script("ok.shs", "@n | Ref(text)\n40 | Add(2)\n");
+  let file = script("ok.shs", "@n = text\n40 | Add(2)\n");
   let (code, out, _) = shards2(&["check", "--json", &file, "n:hello"]);
   assert_eq!(
     (code, out.trim()),
@@ -192,7 +192,7 @@ fn watch_reloads_atomic_saves_and_keeps_running_after_rejected_edits() {
     let live = |body| {
       format!(
         r#"@wire(inner {{{body}}})
-@wire(main {{Once({{0 >= n}}) Inc(n) Do(inner)}} looped: true)
+@wire(main {{Keep(n 0) Inc(n) Do(inner)}} looped: true)
 @mesh(m) @schedule(m main) @run(m fps: 10)"#
       )
     };

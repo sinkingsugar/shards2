@@ -1,8 +1,8 @@
 //! Shards over values: reading (`Take`), building (`Seq.Make`,
 //! `Table.Make`, `String.Format`) and appending (`Push`). All are leaf
 //! shards (one implementation for both schedulers). The frontend lowers
-//! `t.key` / `s.0`, computed sequence and table elements, f-strings and
-//! `>>` onto them.
+//! `t.key` / `s.0`, computed sequence and table elements and f-strings
+//! onto them.
 
 use std::sync::Arc;
 
@@ -195,33 +195,20 @@ pub(crate) fn take_value(input: &Var, key: &Var) -> Result<Var> {
 
 // --- Push ---
 
-pub static PUSH_PARAMS: &[ParamDecl] = &[
-  decl(
-    "variable",
-    crate::shard_doc!(
-      "The mutable sequence variable to append to. Declared as an empty sequence of the input's type if it does not exist yet."
-    ),
-    Forms::VARIABLE,
-    NONE_TYPES,
-    Requirement::Required,
-  ),
-  decl(
-    "clear",
-    crate::shard_doc!(
-      "When this Push declares the variable: its first run in each iteration of a looped wire starts the sequence over, so later pushes in the same iteration (in a Repeat, say) grow it. 1.x clears on every run of the declaring Push instead. A Push that does not run in an iteration (inside Once, a branch) leaves the sequence as it is."
-    ),
-    Forms::LITERAL,
-    &[TypeName::Bool],
-    Requirement::Default(DefaultValue::Bool(true)),
-  ),
-];
+pub static PUSH_PARAMS: &[ParamDecl] = &[decl(
+  "variable",
+  crate::shard_doc!("The existing mutable sequence variable to append to."),
+  Forms::VARIABLE,
+  NONE_TYPES,
+  Requirement::Required,
+)];
 
 pub const PUSH_DESC: ShardDesc = ShardDesc {
   name: "Push",
   version: 1,
   summary: crate::shard_doc!("Appends the input to a sequence variable."),
   help: crate::shard_doc!(
-    "Variable must be a mutable sequence whose element type accepts the input, or not exist yet (then it is declared, and with Clear its first run in each loop iteration starts the sequence over). Passes its input through. The `>> name` operator is a Push."
+    "`variable` must be a declared mutable sequence whose element type accepts the input: declare it first, for example `[] | Var(xs)`. Push neither declares nor clears it. Passes its input through."
   ),
   params: Params::Declared(PUSH_PARAMS),
   input: InputDesc::Any,
@@ -232,100 +219,51 @@ pub const PUSH_DESC: ShardDesc = ShardDesc {
 
 pub struct Push;
 
-pub struct PushCompiled {
-  pub(crate) binding: Binding,
-  /// This Push declared the variable and clears it each iteration.
-  pub(crate) clear: bool,
-}
-
 impl LeafShard for Push {
-  type Compiled = PushCompiled;
-  /// The iteration this Push last cleared in.
-  type State = Option<u64>;
+  type Compiled = Binding;
+  type State = ();
   const DESC: ShardDesc = PUSH_DESC;
 
-  fn compose<B: Backend>(
-    args: &Args,
-    ctx: &mut ComposeCtx<'_, B>,
-  ) -> Result<Composed<PushCompiled>> {
+  fn compose<B: Backend>(args: &Args, ctx: &mut ComposeCtx<'_, B>) -> Result<Composed<Binding>> {
     let name = variable(args, "variable");
     let input = ctx.input();
-    // Clearing applies only to the Push that declares the variable.
-    let mut clear = false;
-    let binding = match ctx.var(name) {
-      None => {
-        clear = args.bool("clear").unwrap_or(true);
-        ctx.declare_local(name, Type::seq(input), true).binding
-      }
-      Some(info) => {
-        let element = match info.ty.desc() {
-          TypeDesc::Seq(e) => Some(*e),
-          _ => None,
-        };
-        let problem = if !info.mutable {
-          Some(("immutable-variable", format!("{name} is immutable")))
-        } else {
-          match element {
-            Some(e) if e.accepts(input) => None,
-            Some(_) => Some((
-              "variable-type-mismatch",
-              format!("{name} is {}, cannot push {input}", info.ty),
-            )),
-            None => Some((
-              "variable-type-mismatch",
-              format!("{name} is {}, not a sequence", info.ty),
-            )),
-          }
-        };
-        if let Some((code, message)) = problem {
-          return Err(param_error(
-            args,
-            "Push",
-            "variable",
-            "compose-error",
-            code,
-            message,
-          ));
-        }
-        ctx.mark_initialized(info.binding);
-        info.binding
-      }
+    let info = super::assignable(args, ctx, "Push")?;
+    let problem = match info.ty.desc() {
+      TypeDesc::Seq(e) if e.accepts(input) => None,
+      TypeDesc::Seq(_) => Some(format!("{name} is {}, cannot push {input}", info.ty)),
+      _ => Some(format!("{name} is {}, not a sequence", info.ty)),
     };
+    if let Some(message) = problem {
+      return Err(param_error(
+        args,
+        "Push",
+        "variable",
+        "compose-error",
+        "variable-type-mismatch",
+        message,
+      ));
+    }
+    ctx.mark_initialized(info.binding);
     Ok(Composed {
-      compiled: PushCompiled { binding, clear },
+      compiled: info.binding,
       output: input,
     })
   }
 
-  fn instantiate(_: &PushCompiled, _: &mut InstanceCtx) -> Result<Option<u64>> {
-    Ok(None)
+  fn instantiate(_: &Binding, _: &mut InstanceCtx) -> Result<()> {
+    Ok(())
   }
 
-  fn activate(
-    c: &PushCompiled,
-    cleared_in: &mut Option<u64>,
-    ctx: &mut impl LeafCtx,
-    input: &Var,
-  ) -> Result<Flow> {
-    let b = &c.binding;
-    // With Clear, the first run in each loop iteration starts the sequence
-    // over (1.x clears on every run; a listed deviation). A Push that does
-    // not run (inside Once, or a branch) leaves the sequence as it is, so
-    // it always holds a sequence.
-    let fresh = c.clear && *cleared_in != Some(ctx.iteration());
-    if c.clear {
-      *cleared_in = Some(ctx.iteration());
-    }
+  fn activate(b: &Binding, _: &mut (), ctx: &mut impl LeafCtx, input: &Var) -> Result<Flow> {
     // Take the value out of its slot so the sequence is unshared and grows
     // in place instead of being copied.
-    let current = if fresh { Var::None } else { ctx.get(*b) };
+    let current = ctx.get(*b);
     ctx.set(*b, Var::None);
     let seq = match current {
       Var::Seq(mut items) => {
         Arc::make_mut(&mut items).push(input.clone());
         Var::Seq(items)
       }
-      Var::None => Var::Seq(Arc::new(vec![input.clone()])),
       other => {
         ctx.set(*b, other);
         return Err(Error::Activation(

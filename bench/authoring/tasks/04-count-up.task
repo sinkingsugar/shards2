@@ -7,5 +7,5 @@ Log the integers 1 to 5, one per line, using a loop.
 4
 5
 === reference
-0 >= n
+0 | Var(n)
 Repeat({ Inc(n) | Log } times: 5)

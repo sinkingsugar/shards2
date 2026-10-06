@@ -6,7 +6,7 @@ two
 other
 === reference
 [1 2 5] = xs
-0 >= i
+0 | Var(i)
 Repeat({
   xs | Take(i) | Match([1 {"one"} 2 {"two"} none {"other"}] passthrough: false) | Log
   Inc(i)

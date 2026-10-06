@@ -58,14 +58,14 @@ macro_rules! lang_tests {
     #[test]
     fn constructor_segments_preserve_snapshots_and_change_table_shapes() {
       let report = run(
-        "1 >= n\n{z: n a: 2}\n{a: 3 z: n} >= saved\n4 > n\n{b: n a: 5}\n{a: n b: 6} >= result\n[saved result]",
+        "1 | Var(n)\n{z: n a: 2}\n{a: 3 z: n} | Var(saved)\n4 | Update(n)\n{b: n a: 5}\n{a: n b: 6} | Var(result)\n[saved result]",
         &no_defines(),
       );
       assert_eq!(completed(&report, "root"), Var::Seq(std::sync::Arc::new(vec![
         Var::table([("a", Var::Int(3)), ("z", Var::Int(1))]),
         Var::table([("a", Var::Int(4)), ("b", Var::Int(6))]),
       ])));
-      let report = run("1 >= n\n{z: n a: 2}\n{c: n}", &no_defines());
+      let report = run("1 | Var(n)\n{z: n a: 2}\n{c: n}", &no_defines());
       assert_eq!(completed(&report, "root"), Var::table([("c", Var::Int(1))]));
     }
 
@@ -75,7 +75,7 @@ macro_rules! lang_tests {
         ("[n n]", "[[1 1] [2 2] [3 3]]"),
         ("{a: n b: n}", "[{a: 1 b: 1} {a: 2 b: 2} {a: 3 b: 3}]"),
       ] {
-        let source = format!("0 >= n\n[] >= saved\nRepeat({{ Inc(n) {expression} | Push(saved clear: false) }} times: 3)\nsaved | Is({expected})");
+        let source = format!("0 | Var(n)\n[] | Var(saved)\nRepeat({{ Inc(n) {expression} | Push(saved) }} times: 3)\nsaved | Is({expected})");
         assert_eq!(completed(&run(&source, &no_defines()), "root"), Var::Bool(true));
       }
     }
@@ -94,7 +94,7 @@ macro_rules! lang_tests {
     fn preserving_reload_pins_suspended_do_and_keeps_caller_counter() {
       let source = |value| format!(r#"@wire(inner {{ Pause() {value} }})
 @wire(outer {{ Do(inner) }})
-@wire(main {{ Once({{0 >= n}}) Inc(n) Log Do(outer) Log }} looped: true)
+@wire(main {{ Keep(n 0) Inc(n) Log Do(outer) Log }} looped: true)
 @mesh(m) @schedule(m main) @run(m)"#);
       let mut session = shards_lang::Session::<Mesh>::new();
       preserve(&mut session, &source(10));
@@ -114,7 +114,7 @@ macro_rules! lang_tests {
     #[test]
     fn preserving_reload_updates_deep_calls_inside_a_never_returning_parent() {
       let source = |value| format!(r#"@wire(inner {{ {value} Log Pause() }})
-@wire(outer {{ Once({{0 >= n}}) Repeat({{ Inc(n) Log Do(inner) }} forever: true) }})
+@wire(outer {{ Keep(n 0) Repeat({{ Inc(n) Log Do(inner) }} forever: true) }})
 Do(outer)"#);
       let mut session = shards_lang::Session::<Mesh>::new();
       preserve(&mut session, &source(10));
@@ -131,7 +131,7 @@ Do(outer)"#);
     #[test]
     fn preserving_reload_keeps_unrelated_wires_and_mesh_values() {
       let source = |value| format!(r#"@wire(main {{ Inc(shared) Log {value} Log }} looped: true)
-@wire(ticker {{ Once({{100 >= n}}) Inc(n) Log }} looped: true)
+@wire(ticker {{ Keep(n 100) Inc(n) Log }} looped: true)
 @mesh(m) @schedule(m main) @schedule(m ticker) @run(m)"#);
       let mut mesh = Mesh::new();
       mesh.declare_var("shared", Var::Int(0), true);
@@ -151,7 +151,7 @@ Do(outer)"#);
     #[test]
     fn preserving_reload_rejects_incompatible_do_interfaces_atomically() {
       let source = |body| format!(r#"@wire(inner {{ {body} }})
-@wire(main {{ Once({{0 >= n}}) Inc(n) Log Do(inner) ToString Log }} looped: true)
+@wire(main {{ Keep(n 0) Inc(n) Log Do(inner) ToString Log }} looped: true)
 @mesh(m) @schedule(m main) @run(m)"#);
       let mut session = shards_lang::Session::<Mesh>::new();
       preserve(&mut session, &source("10"));
@@ -171,11 +171,12 @@ Do(outer)"#);
     fn preserving_reload_explains_and_locates_binding_changes() {
       let source = |body| format!("@wire(step {{\n{body}\n}})\n@wire(outer {{ Do(step) }})\n@wire(main {{ Do(outer) }} looped: true)\n@mesh(m) @schedule(m main) @run(m)");
       for (old, new, reason, line) in [
-        ("10", "Once({\n  1 >= extra\n}) 10", "new local `extra`", 3),
-        ("1 >= extra 10", "10", "local `extra` was removed", 1),
-        ("1 >= extra 10", "1.5 >= extra 10", "local `extra` changed type from Int to Float", 2),
-        ("1 = extra 10", "1 >= extra 10", "local `extra` changed mutability", 2),
-        ("1 >= extra 10", "When(true {1 >= extra}) 10", "local `extra` changed definite initialization", 2),
+        ("10", "Once({\n  1 | Var(extra)\n}) 10", "new local `extra`", 3),
+        ("1 | Var(extra) 10", "10", "local `extra` was removed", 1),
+        ("1 | Var(extra) 10", "1.5 | Var(extra) 10", "local `extra` changed type from Int to Float", 2),
+        ("1 = extra 10", "1 | Var(extra) 10", "local `extra` changed mutability", 2),
+        // A name declared in a branch does not escape it.
+        ("1 | Var(extra) 10", "When(true {1 | Var(extra)}) 10", "local `extra` was removed", 2),
         ("10", "\"hello\"", "output type changed from Int to String", 1),
       ] {
         let mut session = shards_lang::Session::<Mesh>::new();
@@ -207,7 +208,7 @@ Do(outer)"#);
       struct Remove(std::path::PathBuf);
       impl Drop for Remove { fn drop(&mut self) { let _ = std::fs::remove_file(&self.0); } }
       let _remove = Remove(path.clone());
-      let source = |value| format!("@wire(step {{{value} Log}})\n@wire(main {{Once({{0 >= n}}) Inc(n) Log Do(step)}} looped: true)\n@mesh(m) @schedule(m main) @run(m fps: 0.1)");
+      let source = |value| format!("@wire(step {{{value} Log}})\n@wire(main {{Keep(n 0) Inc(n) Log Do(step)}} looped: true)\n@mesh(m) @schedule(m main) @run(m fps: 0.1)");
       std::fs::write(&path, source(10)).unwrap();
       let command = Cell::new(WatchControl::Continue);
       let mut revisions = 0;
@@ -255,7 +256,7 @@ Do(outer)"#);
 
     #[test]
     fn preserving_reload_keeps_unchanged_do_once_state_and_other_sessions() {
-      let source = |value| format!(r#"@wire(stable {{Once({{0 >= n}}) Inc(n) Log}})
+      let source = |value| format!(r#"@wire(stable {{Keep(n 0) Inc(n) Log}})
 @wire(changed {{{value} Log}})
 @wire(main {{Do(stable) Do(changed)}} looped: true)
 @mesh(m) @schedule(m main) @run(m)"#);
@@ -276,7 +277,7 @@ Do(outer)"#);
     #[test]
     fn preserving_reload_retries_failed_nested_instantiation_after_maybe() {
       let source = |body| format!(r#"@wire(inner {{{body}}})
-@wire(main {{Once({{0 >= n}}) Inc(n) Log Maybe({{Do(inner)}} silent: true)}} looped: true)
+@wire(main {{Keep(n 0) Inc(n) Log Maybe({{Do(inner)}} silent: true)}} looped: true)
 @mesh(m) @schedule(m main) @run(m)"#);
       let mut session = shards_lang::Session::<Mesh>::new();
       preserve(&mut session, &source("10"));
@@ -313,7 +314,7 @@ Do(outer)"#);
     #[test]
     fn preserving_reload_does_not_renumber_other_wires_temporaries() {
       let source = |body| format!(r#"@wire(changed {{{body}}})
-@wire(ticker {{Once({{0 >= n}}) Inc(n) Add(0 | Add(1)) Log}} looped: true)
+@wire(ticker {{Keep(n 0) Inc(n) Add(0 | Add(1)) Log}} looped: true)
 @mesh(m) @schedule(m changed) @schedule(m ticker) @run(m)"#);
       let mut session = shards_lang::Session::<Mesh>::new();
       preserve(&mut session, &source("1"));
@@ -430,7 +431,7 @@ Do(outer)"#);
     #[test]
     fn reload_rejects_bad_edits_without_resetting_the_running_program() {
       let mut session = shards_lang::Session::<Mesh>::new();
-      reload(&mut session, r#"@wire(tick { Once({0 >= n}) Inc(n) Log } looped: true)
+      reload(&mut session, r#"@wire(tick { Keep(n 0) Inc(n) Log } looped: true)
 @mesh(m) @schedule(m tick) @run(m fps: 30)"#);
       let (_, lines) = shards_core::log::capture(|| {
         session.tick();
@@ -487,7 +488,7 @@ Do(outer)"#);
       let mut session = shards_lang::Session::<Mesh>::new();
       for value in [10, 20, 30] {
         reload(&mut session, &format!(r#"@wire(value {{ {value} }})
-@wire(main {{ Once({{Do(value) >= n}}) Inc(n) Log }} looped: true)
+@wire(main {{ Keep(n 0) Once({{Do(value) | Update(n)}}) Inc(n) Log }} looped: true)
 @mesh(m) @schedule(m main) @run(m iterations: 2)"#));
         let (finished, lines) = shards_core::log::capture(|| {
           assert!(session.tick().is_empty());
@@ -547,11 +548,11 @@ Do(outer)"#);
     fn loose_code_runs_as_the_root_wire() {
       let report = run(
         "// word forms and operators
-0 >= n
+0 | Var(n)
 Repeat({Inc(n)} times: 3)
 n | Add(10) = result
 When({result | IsMoreEqual(13)} {
-  result | Add(1) > n
+  result | Add(1) | Update(n)
 })
 n",
         &no_defines(),
@@ -564,7 +565,7 @@ n",
       let report = run(
         "@wire(add-one { Add(1) })
 @wire(answer { 41 | Do(add-one) })
-@wire(ticker { Once({0 >= ticks}) Inc(ticks) } looped: true)
+@wire(ticker { Keep(ticks 0) Inc(ticks) } looped: true)
 @mesh(main)
 @schedule(main answer)
 @schedule(main ticker)
@@ -641,11 +642,13 @@ t",
 
     #[test]
     fn variable_errors_point_at_the_assignment() {
-      let report = check("1 = x\n2 > x");
+      let report = check("1 = x\n2 | Update(x)");
       let d = &report.diagnostics[0];
-      assert_eq!(d.code, "immutable-variable");
-      // At `> x`, the assignment that fails.
-      assert_eq!(at(d), (2, 3));
+      assert_eq!(d.code, "immutable-binding");
+      // At the Update that fails; the binding is the related location.
+      assert_eq!(at(d), (2, 5));
+      let related = d.related.as_ref().unwrap();
+      assert_eq!((related.line, related.column), (Some(1), Some(3)));
     }
 
     #[test]
@@ -692,14 +695,20 @@ f\"n is {n}, next {n | Add(1)}, {{literal}}\" = text
 
     #[test]
     fn push_appends_to_a_sequence() {
-      let report = run("1 >> xs\n2 >> xs\nxs", &no_defines());
+      let report = run("[] | Var(xs)\n1 | Push(xs)\n2 | Push(xs)\nxs", &no_defines());
       assert_eq!(
         completed(&report, "root"),
         Var::Seq(std::sync::Arc::new(vec![Var::Int(1), Var::Int(2)]))
       );
-      let report = check("1 >> xs\n\"s\" >> xs");
+      let report = check("[0] | Var(xs)\n\"s\" | Push(xs)");
       assert_eq!(report.diagnostics[0].code, "variable-type-mismatch");
-      assert_eq!(at(&report.diagnostics[0]), (2, 5));
+      assert_eq!(at(&report.diagnostics[0]), (2, 7));
+      // Push neither declares nor assigns an immutable binding.
+      let report = check("1 | Push(xs)");
+      assert_eq!(report.diagnostics[0].code, "unknown-variable");
+      assert!(report.diagnostics[0].message.contains("`value | Var(xs)`"));
+      let report = check("[] = xs\n1 | Push(xs)");
+      assert_eq!(report.diagnostics[0].code, "immutable-binding");
     }
 
     #[test]
@@ -793,7 +802,7 @@ false = close
 All(far {n | IsMore(1)}) = h
 All(far close) = i
 Any(close {n | Is(5)}) = j
-0 >= count
+0 | Var(count)
 Repeat({Inc(count)} until: {count | IsMoreEqual(3)})
 Repeat({Inc(count)} until: {count | IsMoreEqual(100)} times: 2)
 [a b c d e f g h i j count]",
@@ -824,7 +833,7 @@ Repeat({Inc(count)} until: {count | IsMoreEqual(100)} times: 2)
       // resume there, not restart, on both schedulers.
       let (report, lines) = shards_core::log::capture(|| {
         run(
-          "0 >= ticks
+          "0 | Var(ticks)
 If({true} {Pause Inc(ticks)})
 All({Pause true} {Inc(ticks) true})
 1 | Match([1 {Pause Inc(ticks)}])
@@ -858,16 +867,17 @@ ticks",
     // --- review findings (Astra and Opus, 2026-10-05) ---
 
     #[test]
-    fn a_failed_once_runs_again_instead_of_exposing_unassigned_variables() {
+    fn a_failed_once_runs_again() {
       // The first attempt fails inside Once before assigning x; Maybe's Else
       // fixes the index. Once must run again (not count as done), so x is
-      // assigned before it is read: never `x: none`.
+      // assigned before it is read: never the initial `x: 0`.
       let (report, lines) = shards_core::log::capture(|| {
         run(
-          "1 >= k
+          "1 | Var(k)
+0 | Var(x)
 Repeat({
   Maybe({
-    Once({[10] | Take(k) >= x})
+    Once({[10] | Take(k) | Update(x)})
     x | Log(\"x\")
   } {Math.Dec(k)} silent: true)
 } times: 2)",
@@ -893,7 +903,7 @@ Repeat({
         "true = a
 false = b
 If(All(a b) {1} {2}) = x
-When(a {3 >= y})
+When(a {3 | Var(y)})
 If(Any(b {a}) {4} {5}) = z
 [x z]",
         &no_defines(),
@@ -938,10 +948,11 @@ If(Any(b {a}) {4} {5}) = z
     }
 
     #[test]
-    fn push_restarts_its_sequence_each_iteration() {
+    fn per_iteration_and_kept_sequences() {
+      // `Var` declares afresh on every iteration; `Keep` persists.
       let (_, lines) = shards_core::log::capture(|| {
         run(
-          "@wire(w {1 >> s  s | Count | Log(\"cleared\")  1 | Push(kept clear: false)  kept | Count | Log(\"kept\")} looped: true)
+          "@wire(w {Keep(kept [])  [] | Var(s)  1 | Push(s)  s | Count | Log(\"cleared\")  1 | Push(kept)  kept | Count | Log(\"kept\")} looped: true)
 @mesh(m)
 @schedule(m w)
 @run(m iterations: 3)",
@@ -963,7 +974,7 @@ If(Any(b {a}) {4} {5}) = z
 
     #[test]
     fn computed_elements_keep_source_order() {
-      let report = run("0 >= n\n[n (Inc(n) n)]", &no_defines());
+      let report = run("0 | Var(n)\n[n (Inc(n) n)]", &no_defines());
       assert_eq!(
         completed(&report, "root"),
         Var::Seq(std::sync::Arc::new(vec![Var::Int(0), Var::Int(1)]))
@@ -971,9 +982,13 @@ If(Any(b {a}) {4} {5}) = z
     }
 
     #[test]
-    fn until_may_assign_what_action_reads() {
-      let report = run("0 >= n\nRepeat({x | Log} until: {n | ToString >= x  Inc(n) | IsMore(2)})\nn", &no_defines());
+    fn until_runs_before_action_and_may_assign_what_it_reads() {
+      let report = run("0 | Var(n)\n\"\" | Var(x)\nRepeat({x | Log} until: {n | ToString | Update(x)  Inc(n) | IsMore(2)})\nn", &no_defines());
       assert_eq!(completed(&report, "root"), Var::Int(3));
+      // Until and action are separate blocks: a name declared in one is
+      // not visible in the other.
+      let report = check("0 | Var(n)\nRepeat({x | Log} until: {n | ToString | Var(x)  Inc(n) | IsMore(2)})");
+      assert_eq!(report.diagnostics[0].code, "unknown-variable");
     }
 
     #[test]
@@ -990,31 +1005,62 @@ If(Any(b {a}) {4} {5}) = z
 
     // --- second review round (2026-10-05) ---
 
+    /// Golden path test E: binding errors name the variable and help.
     #[test]
-    fn push_initialized_in_once_keeps_its_sequence() {
+    fn bindings_report_unknown_duplicate_and_immutable_names() {
+      let report = check("0 | Var(counter)\n1 | Update(coutner)");
+      let d = &report.diagnostics[0];
+      assert_eq!((d.code, at(d)), ("unknown-variable", (2, 5)));
+      assert_eq!(d.did_you_mean, ["counter"]);
+
+      let report = check("0 | Var(counter)\n1 | Var(counter)");
+      let d = &report.diagnostics[0];
+      assert_eq!((d.code, at(d)), ("duplicate-binding", (2, 5)));
+      assert!(d.message.contains("`Update(counter)`"), "{}", d.message);
+      let related = d.related.as_ref().unwrap();
+      assert_eq!((related.line, related.column), (Some(1), Some(5)));
+      assert!(report.to_json().contains(r#""related":{"message":"counter is declared here","line":1,"column":5}"#), "{}", report.to_json());
+
+      let report = check("0 = counter\n1 | Update(counter)");
+      assert_eq!(report.diagnostics[0].code, "immutable-binding");
+      // `=` cannot rebind a visible name either, nor shadow a mesh variable.
+      let report = check("0 = x\n1 = x");
+      assert_eq!(report.diagnostics[0].code, "duplicate-binding");
+      // Disjoint sibling blocks may reuse a name.
+      let report = check("If(true {1 | Var(t) t} {2 | Var(t) t}) | Log");
+      assert!(report.ok(), "{}", report.to_json());
+      // A block may update an enclosing mutable variable.
+      let report = run("0 | Var(n)\nWhen(true {5 | Update(n)})\nn", &no_defines());
+      assert_eq!(completed(&report, "root"), Var::Int(5));
+    }
+
+    #[test]
+    fn input_is_a_reserved_name() {
+      for text in ["1 | Var(input)", "1 = input", "@wire(w {Keep(input 0)} looped: true) @mesh(m) @schedule(m w) @run(m)"] {
+        let report = check(text);
+        assert_eq!(report.diagnostics[0].code, "reserved-name", "{text}");
+        assert!(report.diagnostics[0].message.contains("entry value"));
+      }
+    }
+
+    #[test]
+    fn keep_holds_state_across_iterations() {
       let (report, lines) = shards_core::log::capture(|| {
         run(
-          "@wire(w {Once({0 >> s})  s | Count | Log} looped: true)
-@mesh(m)
-@schedule(m w)
-@run(m iterations: 3)",
+          "@wire(w {Keep(n 10)  n | Math.Add(1) | Update(n)  n | Log} looped: true)
+@mesh(m) @schedule(m w) @run(m iterations: 3)",
           &no_defines(),
         )
       });
       assert!(report.succeeded());
-      assert_eq!(lines, ["1", "1", "1"]);
-      // The declaring Push starts the sequence over each iteration; pushes
-      // after it (here in a Repeat) grow it within the iteration.
-      let (_, lines) = shards_core::log::capture(|| {
-        run(
-          "@wire(w {0 >> s  Repeat({1 >> s} times: 2)  s | Count | Log} looped: true)
-@mesh(m)
-@schedule(m w)
-@run(m iterations: 2)",
-          &no_defines(),
-        )
-      });
-      assert_eq!(lines, ["3", "3"]);
+      assert_eq!(lines, ["11", "12", "13"]);
+      // Keep belongs to a wire's top level, outside branches and loops.
+      let report = check("@wire(w {When(true {Keep(n 0)})} looped: true) @mesh(m) @schedule(m w) @run(m)");
+      let d = &report.diagnostics[0];
+      assert_eq!((d.code, at(d)), ("keep-not-top-level", (1, 21)));
+      // Its initial value is a literal, and its type follows it.
+      let report = check("@wire(w {Keep(n 0) 1.5 | Update(n)} looped: true) @mesh(m) @schedule(m w) @run(m)");
+      assert_eq!(report.diagnostics[0].code, "variable-type-mismatch");
     }
 
     /// `n` wires, each running the next through Do, called from the root.
@@ -1221,7 +1267,7 @@ fn unknown_names_suggest_the_closest() {
   assert_eq!(d[0].did_you_mean, ["Add"]);
   assert_eq!(at(&d[0]), (1, 5));
 
-  let d = load_errors("0 >= n\ninc(n)");
+  let d = load_errors("0 | Var(n)\ninc(n)");
   assert!(
     d[0]
       .message
@@ -1307,6 +1353,33 @@ fn every_1x_string_escape_is_accepted() {
     &no_defines(),
   );
   assert!(program.is_ok());
+}
+
+/// The old assignment forms fail with a plain error naming the word form.
+#[test]
+fn removed_assignment_forms_say_what_to_write() {
+  for (text, code, needle, column) in [
+    ("1 >= n", "removed-operator", "`value | Var(name)`", 3),
+    (
+      "0 | Var(n)\n1 > n",
+      "removed-operator",
+      "`value | Update(name)`",
+      3,
+    ),
+    (
+      "[] | Var(xs)\n1 >> xs",
+      "removed-operator",
+      "`value | Push(name)`",
+      3,
+    ),
+    ("1 | Set(n)", "removed-shard", "`value | Var(name)`", 5),
+    ("1 | Ref(n)", "removed-shard", "`value = name`", 5),
+  ] {
+    let d = load_errors(text);
+    assert_eq!(d[0].code, code, "{text}");
+    assert!(d[0].message.contains(needle), "{text}: {}", d[0].message);
+    assert_eq!(d[0].column, Some(column), "{text}");
+  }
 }
 
 #[test]

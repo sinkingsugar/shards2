@@ -106,7 +106,7 @@ Agreed 2026-10-05. 1.x refused `Int` with `Float` in arithmetic and comparisons,
   - Vectors of one size work per component; different sizes are a compose error.
   - Compose computes the result type from the two operands.
 - **Comparisons** (`IsLess`, `IsMore`, `IsMoreEqual`, `IsLessEqual`) take Int and Float mixed, compared by value. `Is`, `IsNot` and `IsAny` treat `1` and `1.0` as equal.
-- **Not changed:** variables keep their type, so a Float variable does not accept an Int through `Set`/`Update`, and parameter literals still follow the declared types.
+- **Not changed:** variables keep their type, so a Float variable does not accept an Int through `Update`, and parameter literals still follow the declared types.
 
 ## 7. Open decisions: table storage and value sets
 

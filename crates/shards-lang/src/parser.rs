@@ -227,11 +227,7 @@ impl<'a> Parser<'a> {
                 other.describe()
               ),
             )
-            .help(format!(
-              "`{} x` assigns the input to x (`{}(x)`)",
-              op.text(),
-              op.shard()
-            )),
+            .help("`value = x` binds the immutable name x to the value"),
           );
           None
         }

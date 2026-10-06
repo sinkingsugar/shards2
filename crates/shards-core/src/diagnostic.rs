@@ -114,6 +114,17 @@ impl TypeRef {
   }
 }
 
+/// A second location that explains a diagnostic, such as where a name was
+/// first declared. Compose sets `path`; the frontend adds line and column.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Related {
+  pub message: String,
+  /// Occurrence path of the related shard, starting at its wire.
+  pub path: Vec<PathStep>,
+  pub line: Option<u32>,
+  pub column: Option<u32>,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Diagnostic {
   pub phase: Phase,
@@ -137,6 +148,7 @@ pub struct Diagnostic {
   pub input_from: Option<InputSource>,
   /// Close names for a misspelled one (1.x field), best first.
   pub did_you_mean: Vec<String>,
+  pub related: Option<Related>,
 }
 
 impl Diagnostic {
@@ -162,7 +174,19 @@ impl Diagnostic {
       path: Vec::new(),
       input_from: None,
       did_you_mean: Vec::new(),
+      related: None,
     }
+  }
+
+  /// Adds a related location by occurrence path.
+  pub fn related(mut self, message: impl Into<String>, path: Vec<PathStep>) -> Diagnostic {
+    self.related = Some(Related {
+      message: message.into(),
+      path,
+      line: None,
+      column: None,
+    });
+    self
   }
 
   /// The path as text, e.g. `main/2:When/action/0:Add`.
@@ -234,6 +258,13 @@ impl Diagnostic {
     if !self.did_you_mean.is_empty() {
       let names: Vec<String> = self.did_you_mean.iter().map(|n| json_str(n)).collect();
       fields.push(format!("\"did_you_mean\":[{}]", names.join(",")));
+    }
+    if let Some(r) = &self.related {
+      let mut related = vec![format!("\"message\":{}", json_str(&r.message))];
+      if let (Some(line), Some(column)) = (r.line, r.column) {
+        related.push(format!("\"line\":{line},\"column\":{column}"));
+      }
+      fields.push(format!("\"related\":{{{}}}", related.join(",")));
     }
     if let Some(source) = &self.input_from {
       let step = |(index, name): &(usize, String)| {

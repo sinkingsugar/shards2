@@ -8,36 +8,17 @@
 use crate::problem::Problem;
 use crate::source::Span;
 
+/// The one assignment operator: `value = name` binds an immutable name.
+/// Mutable variables use word forms (`Var`, `Update`, `Push`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AssignOp {
-  /// `=`: `Ref`.
-  Ref,
-  /// `>=`: `Set`.
-  Set,
-  /// `>`: `Update`.
-  Update,
-  /// `>>`: `Push`.
-  Push,
+  /// `=`.
+  Bind,
 }
 
 impl AssignOp {
   pub fn text(self) -> &'static str {
-    match self {
-      AssignOp::Ref => "=",
-      AssignOp::Set => ">=",
-      AssignOp::Update => ">",
-      AssignOp::Push => ">>",
-    }
-  }
-
-  /// The word form the operator stands for.
-  pub fn shard(self) -> &'static str {
-    match self {
-      AssignOp::Ref => "Ref",
-      AssignOp::Set => "Set",
-      AssignOp::Update => "Update",
-      AssignOp::Push => "Push",
-    }
+    "="
   }
 }
 
@@ -260,20 +241,30 @@ impl<'a> Lexer<'a> {
       b':' => single(self, Tok::Colon),
       b'@' => single(self, Tok::At),
       b'#' => single(self, Tok::Hash),
-      b'=' => single(self, Tok::Assign(AssignOp::Ref)),
+      b'=' => single(self, Tok::Assign(AssignOp::Bind)),
       b'>' => {
-        self.pos += 1;
-        Some(Tok::Assign(match self.peek(0) {
-          Some(b'=') => {
-            self.pos += 1;
-            AssignOp::Set
-          }
-          Some(b'>') => {
-            self.pos += 1;
-            AssignOp::Push
-          }
-          _ => AssignOp::Update,
-        }))
+        // `>=`, `>` and `>>` were assignments; Shards 2 spells them as words.
+        let (len, message) = match self.peek(1) {
+          Some(b'=') => (
+            2,
+            "`>=` is removed: declare a mutable variable with `value | Var(name)`",
+          ),
+          Some(b'>') => (
+            2,
+            "`>>` is removed: append with `value | Push(name)` after declaring the sequence (`[] | Var(name)`)",
+          ),
+          _ => (
+            1,
+            "`>` is removed: assign an existing mutable variable with `value | Update(name)` (comparisons are shards: `IsMore`)",
+          ),
+        };
+        self.pos += len;
+        self.problems.push(Problem::syntax(
+          Span::new(start, self.pos),
+          "removed-operator",
+          message.to_string(),
+        ));
+        None
       }
       b'.' if next.is_some_and(|n| n.is_ascii_digit()) => {
         self.pos += 1;
@@ -682,16 +673,27 @@ mod tests {
         Tok::Eof
       ]
     );
-    assert_eq!(
-      toks("= >= > >>"),
-      [
-        Tok::Assign(AssignOp::Ref),
-        Tok::Assign(AssignOp::Set),
-        Tok::Assign(AssignOp::Update),
-        Tok::Assign(AssignOp::Push),
-        Tok::Eof
-      ]
-    );
+    assert_eq!(toks("="), [Tok::Assign(AssignOp::Bind), Tok::Eof]);
+  }
+
+  /// The old assignment operators are syntax errors that say what to write.
+  #[test]
+  fn removed_operators_name_their_word_forms() {
+    for (text, word) in [
+      ("1 >= n", "Var("),
+      ("1 > n", "Update("),
+      ("1 >> n", "Push("),
+    ] {
+      let (_, problems) = lex(text);
+      assert_eq!(problems.len(), 1, "{text}");
+      assert_eq!(problems[0].code, "removed-operator");
+      assert!(
+        problems[0].message.contains(word),
+        "{}",
+        problems[0].message
+      );
+      assert_eq!(problems[0].span, Span::new(2, text.len() - 2));
+    }
   }
 
   #[test]

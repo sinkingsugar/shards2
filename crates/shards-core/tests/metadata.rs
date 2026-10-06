@@ -174,13 +174,13 @@ macro_rules! metadata_tests {
           Arg::named("predicate", ParamValue::Flow(vec![konst(Var::Bool(true))])),
         ],
       );
-      let flow = vec![konst(Var::Int(7)), set("x"), named_when, get("x")];
+      let flow = vec![konst(Var::Int(7)), declare("x"), named_when, get("x")];
       assert_eq!(run(flow, Var::None), Outcome::Completed(Var::Int(0)));
 
       // A variable operand is a binding read at activation.
       let flow = vec![
         konst(Var::Int(5)),
-        set("k"),
+        declare("k"),
         konst(Var::Int(1)),
         add_with(vec![Arg::named("operand", var("k"))]),
       ];
@@ -211,13 +211,13 @@ macro_rules! metadata_tests {
           Some(0)
         )
       );
-      // A possibly-uninitialized variable, through an undescribed shard
-      // (Get): structured too, without a parameter.
+      // A name declared in a block is not visible after it (golden-path.md
+      // §3.2): reading it is an unknown variable.
       let d = compile_error(
         vec![
           when(
             vec![konst(Var::Bool(false))],
-            vec![konst(Var::Int(1)), set("x")],
+            vec![konst(Var::Int(1)), declare("x")],
           ),
           get("x"),
         ],
@@ -225,7 +225,7 @@ macro_rules! metadata_tests {
       );
       assert_eq!(
         (d.code, d.shard.as_deref()),
-        ("possibly-uninitialized", Some("Get"))
+        ("unknown-variable", Some("Get"))
       );
     }
 
@@ -237,15 +237,46 @@ macro_rules! metadata_tests {
         |ty: &'static shards_core::ShardType, args: Vec<Arg>| ShardDef::with_args(ty, args);
       let cases: Vec<(&str, Vec<ShardDef>, &str, &str, Option<&str>)> = vec![
         (
-          "set-type",
+          "var-duplicate",
           vec![
             konst(Var::Int(1)),
-            set("x"),
+            declare("x"),
             konst(Var::Float(1.0)),
-            set("x"),
+            declare("x"),
           ],
-          "variable-type-mismatch",
-          "Set",
+          "duplicate-binding",
+          "Var",
+          Some("variable"),
+        ),
+        (
+          "var-input",
+          vec![konst(Var::Int(1)), declare("input")],
+          "reserved-name",
+          "Var",
+          Some("variable"),
+        ),
+        (
+          "keep-nested",
+          vec![when(
+            vec![konst(Var::Bool(true))],
+            vec![keep("n", Var::Int(0))],
+          )],
+          "keep-not-top-level",
+          "Keep",
+          None,
+        ),
+        (
+          "push-unknown",
+          vec![konst(Var::Int(1)), push("nope")],
+          "unknown-variable",
+          "Push",
+          Some("variable"),
+        ),
+        (
+          "update-immutable",
+          vec![konst(Var::Int(1)), bind("x"), update("x")],
+          "immutable-binding",
+          "Update",
           Some("variable"),
         ),
         (
@@ -259,7 +290,7 @@ macro_rules! metadata_tests {
           "update-type",
           vec![
             konst(Var::Int(1)),
-            set("x"),
+            declare("x"),
             konst(Var::Float(1.0)),
             update("x"),
           ],
@@ -269,7 +300,7 @@ macro_rules! metadata_tests {
         ),
         (
           "inc-type",
-          vec![konst(Var::Float(1.0)), set("f"), inc("f")],
+          vec![konst(Var::Float(1.0)), declare("f"), inc("f")],
           "wrong-variable-type",
           "Math.Inc",
           Some("variable"),
@@ -285,7 +316,7 @@ macro_rules! metadata_tests {
           "repeat-times-var",
           vec![
             konst(Var::Float(2.0)),
-            set("t"),
+            declare("t"),
             named(
               &REPEAT,
               vec![
@@ -447,7 +478,7 @@ macro_rules! metadata_tests {
       // Repeat with a negative count runs its body zero times, as documented.
       let flow = vec![
         konst(Var::Int(0)),
-        set("n"),
+        declare("n"),
         repeat(vec![inc("n")], val(Var::Int(-3))),
         get("n"),
       ];

@@ -6,13 +6,13 @@ Find the index (0-based) of a value in the sequence [10 20 30 40], or -1 when it
 === reference
 [10 20 30 40] = xs
 [30 99] = targets
-0 >= t
+0 | Var(t)
 Repeat({
   targets | Take(t) = target
-  -1 >= found
-  0 >= i
+  -1 | Var(found)
+  0 | Var(i)
   Repeat({
-    When({All({found | Is(-1)} {xs | Take(i) | Is(target)})} {i > found})
+    When({All({found | Is(-1)} {xs | Take(i) | Is(target)})} {i | Update(found)})
     Inc(i)
   } times: 4)
   found | Log

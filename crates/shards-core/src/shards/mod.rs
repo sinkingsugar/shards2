@@ -39,8 +39,10 @@ use crate::var::Var;
 use leaf::leaf_type;
 
 pub static CONST: ShardType = leaf_type::<leaf::Const>();
-pub static SET: ShardType = leaf_type::<leaf::Set>();
-pub static REF: ShardType = leaf_type::<leaf::Ref>();
+pub static VAR: ShardType = leaf_type::<leaf::VarDecl>();
+/// `value = name`; not in the catalog.
+pub static BIND: ShardType = leaf_type::<leaf::Bind>();
+pub static KEEP: ShardType = leaf_type::<leaf::Keep>();
 pub static UPDATE: ShardType = leaf_type::<leaf::Update>();
 pub static GET: ShardType = leaf_type::<leaf::Get>();
 pub static INC: ShardType = leaf_type::<leaf::Inc>();
@@ -92,8 +94,8 @@ pub static REQUEST: ShardType = async_shard::async_type::<sim::Request>();
 /// Every shard type in this crate, for building a [`crate::Catalog`].
 pub static CATALOG: &[&ShardType] = &[
   &CONST,
-  &SET,
-  &REF,
+  &VAR,
+  &KEEP,
   &UPDATE,
   &GET,
   &INC,
@@ -317,121 +319,241 @@ pub(crate) fn compose_const(args: &Args) -> Result<Composed<Var>> {
   })
 }
 
-pub static SET_PARAMS: &[ParamDecl] = &[decl(
+/// Checks that a declaration may introduce `name` here: not the reserved
+/// `input`, and not a name already visible (no shadowing, golden-path.md
+/// §3.2). Frontend temporaries (`%` names) are exempt.
+pub(crate) fn check_declaration<B: Backend>(
+  args: &Args,
+  ctx: &mut ComposeCtx<'_, B>,
+  shard: &str,
+) -> Result<()> {
+  let name = variable(args, "variable");
+  if name.starts_with('%') {
+    return Ok(());
+  }
+  if name == "input" {
+    return Err(param_error(
+      args,
+      shard,
+      "variable",
+      "compose-error",
+      "reserved-name",
+      "`input` is reserved: it names the entry value of the wire or function; pick another name"
+        .into(),
+    ));
+  }
+  if let Some(info) = ctx.var(name) {
+    let (message, help) = match info.binding {
+      Binding::Mesh(_) => (
+        format!("{name} is already a mesh variable"),
+        format!("assign it with `Update({name})`, or pick another name"),
+      ),
+      Binding::Local(_) if info.mutable => (
+        format!("{name} is already declared"),
+        format!("assign it with `Update({name})`, or pick another name"),
+      ),
+      Binding::Local(_) => (
+        format!("{name} is already declared (immutable)"),
+        "pick another name".to_string(),
+      ),
+    };
+    let mut err = param_error(
+      args,
+      shard,
+      "variable",
+      "compose-error",
+      "duplicate-binding",
+      format!("{message}; {help}"),
+    );
+    if let (Error::Diagnostic(d), Some(path)) = (&mut err, ctx.declaration_path(info.binding)) {
+      **d = (**d)
+        .clone()
+        .related(format!("{name} is declared here"), path);
+    }
+    return Err(err);
+  }
+  Ok(())
+}
+
+/// An error about the variable a shard writes: unknown (with suggestions),
+/// immutable, or of the wrong type.
+pub(crate) fn assignable<B: Backend>(
+  args: &Args,
+  ctx: &mut ComposeCtx<'_, B>,
+  shard: &str,
+) -> Result<crate::compose::VarInfo> {
+  let name = variable(args, "variable");
+  let Some(info) = ctx.var(name) else {
+    let mut err = param_error(
+      args,
+      shard,
+      "variable",
+      "compose-error",
+      "unknown-variable",
+      format!("unknown variable {name}; declare it first with `value | Var({name})`"),
+    );
+    if let Error::Diagnostic(d) = &mut err {
+      d.did_you_mean = crate::diagnostic::closest(name, ctx.visible_names(), 3);
+    }
+    return Err(err);
+  };
+  if !info.mutable {
+    let mut err = param_error(
+      args,
+      shard,
+      "variable",
+      "compose-error",
+      "immutable-binding",
+      format!(
+        "{name} is immutable (declared with `= {name}`); declare it with `Var({name})` to change it"
+      ),
+    );
+    if let (Error::Diagnostic(d), Some(path)) = (&mut err, ctx.declaration_path(info.binding)) {
+      **d = (**d)
+        .clone()
+        .related(format!("{name} is declared here"), path);
+    }
+    return Err(err);
+  }
+  Ok(info)
+}
+
+pub static VAR_PARAMS: &[ParamDecl] = &[decl(
   "variable",
-  crate::shard_doc!(
-    "The variable to assign. Declared as a mutable local if it does not exist yet."
-  ),
+  crate::shard_doc!("The mutable variable to declare; no visible variable may have its name."),
   Forms::VARIABLE,
   NONE_TYPES,
   Requirement::Required,
 )];
 
-pub const SET_DESC: ShardDesc = ShardDesc {
-  name: "Set",
+pub const VAR_DESC: ShardDesc = ShardDesc {
+  name: "Var",
   version: 1,
-  summary: crate::shard_doc!("Assigns the input to a mutable variable."),
+  summary: crate::shard_doc!("Declares a mutable variable holding the input."),
   help: crate::shard_doc!(
-    "Declares a mutable local variable with the input's type if Variable does not exist; otherwise Variable must be mutable and have the input's type. Passes its input through."
+    "Declares a mutable variable with the input's type, visible after it in the same block and the blocks inside it. Assign it later with Update. Declaring a name that is already visible is an error (no shadowing). Passes its input through: `0 | Var(n)`."
   ),
-  params: Params::Declared(SET_PARAMS),
+  params: Params::Declared(VAR_PARAMS),
   input: InputDesc::Any,
   output: OutputDesc::Passthrough,
   targets: Targets::All,
   aliases: &[],
 };
 
-/// `Set`: assigns the input to a mutable variable, declaring a local if needed.
-pub(crate) fn compose_set<B: Backend>(
+/// `Var`: declares a mutable local holding the input.
+pub(crate) fn compose_var<B: Backend>(
   args: &Args,
   ctx: &mut ComposeCtx<'_, B>,
 ) -> Result<Composed<Binding>> {
-  let name = variable(args, "variable");
+  check_declaration(args, ctx, "Var")?;
   let input = ctx.input();
-  let binding = match ctx.var(name) {
-    Some(info) if info.mutable && info.ty.accepts(input) => {
-      ctx.mark_initialized(info.binding);
-      info.binding
-    }
-    Some(info) => {
-      let (code, message) = if info.mutable {
-        (
-          "variable-type-mismatch",
-          format!("{name} is {}, cannot assign {input}", info.ty),
-        )
-      } else {
-        ("immutable-variable", format!("{name} is immutable"))
-      };
-      return Err(param_error(
-        args,
-        "Set",
-        "variable",
-        "compose-error",
-        code,
-        message,
-      ));
-    }
-    None => ctx.declare_local(name, input, true).binding,
-  };
   Ok(Composed {
-    compiled: binding,
+    compiled: ctx
+      .declare_local(variable(args, "variable"), input, true)
+      .binding,
     output: input,
   })
 }
 
-pub static REF_PARAMS: &[ParamDecl] = &[decl(
+pub static BIND_PARAMS: &[ParamDecl] = &[decl(
   "variable",
-  crate::shard_doc!("The immutable local variable to declare."),
+  crate::shard_doc!("The immutable name to bind."),
   Forms::VARIABLE,
   NONE_TYPES,
   Requirement::Required,
 )];
 
-pub const REF_DESC: ShardDesc = ShardDesc {
-  name: "Ref",
+/// `value = name`. Not in the catalog: scripts write the `=` form.
+pub const BIND_DESC: ShardDesc = ShardDesc {
+  name: "Bind",
   version: 1,
-  summary: crate::shard_doc!("Declares an immutable variable holding the input."),
+  summary: crate::shard_doc!("Binds an immutable name to the input (`value = name`)."),
   help: crate::shard_doc!(
-    "Declares an immutable local variable with the input's type. The variable must not exist yet; it cannot be assigned again with Set or Update. Running the same Ref again (in a loop) gives it the new value. Passes its input through. The `= name` operator is a Ref."
+    "Declares an immutable variable with the input's type. It cannot be assigned again; running the same binding again (in a loop) gives it the new value. Passes its input through."
   ),
-  params: Params::Declared(REF_PARAMS),
+  params: Params::Declared(BIND_PARAMS),
   input: InputDesc::Any,
   output: OutputDesc::Passthrough,
   targets: Targets::All,
   aliases: &[],
 };
 
-/// `Ref`: declares an immutable local holding the input.
-pub(crate) fn compose_ref<B: Backend>(
+/// `= name`: declares an immutable local holding the input.
+pub(crate) fn compose_bind<B: Backend>(
   args: &Args,
   ctx: &mut ComposeCtx<'_, B>,
 ) -> Result<Composed<Binding>> {
-  let name = variable(args, "variable");
+  check_declaration(args, ctx, "Bind")?;
   let input = ctx.input();
   // `%` names are frontend temporaries (source cannot name them): each
-  // occurrence declares a fresh slot, shadowing an earlier one, so a wire
-  // inlined twice by Do with different input types still composes.
-  if name.starts_with('%') {
-    return Ok(Composed {
-      compiled: ctx.declare_local(name, input, false).binding,
-      output: input,
-    });
-  }
-  if ctx.var(name).is_some() {
-    return Err(param_error(
-      args,
-      "Ref",
-      "variable",
-      "compose-error",
-      "variable-exists",
-      format!(
-        "{name} already exists; Ref declares a new variable (use Set or Update to assign a mutable one)"
-      ),
-    ));
-  }
+  // occurrence declares a fresh slot, so a wire inlined twice by Do with
+  // different input types still composes.
   Ok(Composed {
-    compiled: ctx.declare_local(name, input, false).binding,
+    compiled: ctx
+      .declare_local(variable(args, "variable"), input, false)
+      .binding,
     output: input,
+  })
+}
+
+pub static KEEP_PARAMS: &[ParamDecl] = &[
+  decl(
+    "variable",
+    crate::shard_doc!("The persistent mutable variable to declare."),
+    Forms::VARIABLE,
+    NONE_TYPES,
+    Requirement::Required,
+  ),
+  decl(
+    "value",
+    crate::shard_doc!("Its initial value: a literal, applied once per instance."),
+    Forms::LITERAL,
+    NONE_TYPES,
+    Requirement::Required,
+  ),
+];
+
+pub const KEEP_DESC: ShardDesc = ShardDesc {
+  name: "Keep",
+  version: 1,
+  summary: crate::shard_doc!(
+    "Declares persistent state: a mutable variable kept across iterations."
+  ),
+  help: crate::shard_doc!(
+    "`Keep(n 0)` declares the mutable variable `n` with the type of its literal initial value. The value is applied once, the first time the instance reaches it; later iterations of a looped wire keep what was assigned. Only allowed at a wire's top level, outside branches and loops. Passes its input through."
+  ),
+  params: Params::Declared(KEEP_PARAMS),
+  input: InputDesc::Any,
+  output: OutputDesc::Passthrough,
+  targets: Targets::All,
+  aliases: &[],
+};
+
+/// `Keep`: the slot and its initial value.
+pub(crate) fn compose_keep<B: Backend>(
+  args: &Args,
+  ctx: &mut ComposeCtx<'_, B>,
+) -> Result<Composed<(Binding, Var)>> {
+  if !ctx.at_top_level() {
+    return Err(Error::Diagnostic(Box::new(
+      Diagnostic::new(
+        Phase::Compose,
+        "compose-error",
+        "keep-not-top-level",
+        "Keep declares state at a wire's top level; it cannot be inside a branch or loop"
+          .to_string(),
+      )
+      .shard("Keep"),
+    )));
+  }
+  check_declaration(args, ctx, "Keep")?;
+  let value = args.literal("value").expect("decoded value").clone();
+  let binding = ctx
+    .declare_local(variable(args, "variable"), value.type_of(), true)
+    .binding;
+  Ok(Composed {
+    compiled: (binding, value),
+    output: ctx.input(),
   })
 }
 
@@ -448,7 +570,7 @@ pub const UPDATE_DESC: ShardDesc = ShardDesc {
   version: 1,
   summary: crate::shard_doc!("Assigns the input to an existing mutable variable."),
   help: crate::shard_doc!(
-    "`variable` must exist, be mutable and have the input's type. Passes its input through."
+    "`variable` must be declared (with Var, Keep or as a mesh variable), be mutable and have the input's type. Passes its input through."
   ),
   params: Params::Declared(UPDATE_PARAMS),
   input: InputDesc::Any,
@@ -464,26 +586,7 @@ pub(crate) fn compose_update<B: Backend>(
 ) -> Result<Composed<Binding>> {
   let name = variable(args, "variable");
   let input = ctx.input();
-  let Some(info) = ctx.var(name) else {
-    return Err(param_error(
-      args,
-      "Update",
-      "variable",
-      "compose-error",
-      "unknown-variable",
-      format!("unknown variable {name}"),
-    ));
-  };
-  if !info.mutable {
-    return Err(param_error(
-      args,
-      "Update",
-      "variable",
-      "compose-error",
-      "immutable-variable",
-      format!("{name} is immutable"),
-    ));
-  }
+  let info = assignable(args, ctx, "Update")?;
   if !info.ty.accepts(input) {
     return Err(param_error(
       args,
@@ -1392,11 +1495,17 @@ pub mod defs {
   pub fn konst(v: Var) -> ShardDef {
     ShardDef::new(&CONST, vec![val(v)])
   }
-  pub fn ref_(name: &str) -> ShardDef {
-    ShardDef::new(&REF, vec![var(name)])
+  /// `= name`.
+  pub fn bind(name: &str) -> ShardDef {
+    ShardDef::new(&BIND, vec![var(name)])
   }
-  pub fn set(name: &str) -> ShardDef {
-    ShardDef::new(&SET, vec![var(name)])
+  /// `Var(name)`.
+  pub fn declare(name: &str) -> ShardDef {
+    ShardDef::new(&VAR, vec![var(name)])
+  }
+  /// `Keep(name value)`.
+  pub fn keep(name: &str, value: Var) -> ShardDef {
+    ShardDef::new(&KEEP, vec![var(name), val(value)])
   }
   pub fn update(name: &str) -> ShardDef {
     ShardDef::new(&UPDATE, vec![var(name)])

@@ -102,7 +102,7 @@ host loop on that thread.
 ```shards
 @wire(step { 10 | Log })
 @wire(main {
-  Once({ 0 >= counter })
+  Keep(counter 0)
   Inc(counter) | Log
   Do(step)
 } looped: true)
@@ -112,7 +112,7 @@ host loop on that thread.
 ```
 
 Changing `10` to `20` in `step` keeps `main` running: its counter continues,
-its `Once` does not repeat, and its next `Do(step)` uses the edited body.
+its `Keep` state is retained, and its next `Do(step)` uses the edited body.
 This works through multiple nested `Do` calls, including a child called
 repeatedly inside a parent that never returns.
 

@@ -6,8 +6,8 @@ Write a looped process, run on a scheduler for exactly 3 iterations (one per tic
 115
 === reference
 @wire(acc {
-  Once({100 >= total})
-  total | Math.Add(5) > total
+  Keep(total 100)
+  total | Math.Add(5) | Update(total)
   total | Log
 } looped: true)
 @mesh(m) @schedule(m acc) @run(m iterations: 3)

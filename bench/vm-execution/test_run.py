@@ -1,7 +1,7 @@
 """Result validation must reject a fast run that did the wrong work."""
 import unittest
 
-from run import parse_output
+from run import dialect, parse_output, script
 
 
 class OutputValidation(unittest.TestCase):
@@ -41,3 +41,13 @@ main: 0
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Dialects(unittest.TestCase):
+    def test_2_uses_its_own_syntax(self):
+        for case in ("push-shared-seq", "add-float4", "do-int"):
+            text = dialect(script(case, 2, 10, 2), "2-stackless")
+            for old in ("Set(", "Times:", "Clear:"):
+                self.assertNotIn(old, text, case)
+            self.assertIn(" | Var(", text)
+            self.assertEqual(script(case, 2, 10, 2), dialect(script(case, 2, 10, 2), "1x"))

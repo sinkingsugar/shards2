@@ -97,6 +97,35 @@ impl FrameLayout {
     &self.slots
   }
 
+  /// The names visible now, for restoring at the end of a block.
+  pub(crate) fn visible(&self) -> HashMap<String, usize> {
+    self.index.clone()
+  }
+
+  /// Ends a block: names declared inside it stop being visible (their slots
+  /// stay in the frame). Frontend temporaries (`%` names) stay visible,
+  /// since lowering reads a hoisted value after the SubFlow computing it.
+  pub(crate) fn restore_visible(&mut self, mut saved: HashMap<String, usize>) {
+    for (name, index) in &self.index {
+      if name.starts_with('%') {
+        saved.insert(name.clone(), *index);
+      }
+    }
+    self.index = saved;
+  }
+
+  /// Visible variable names, sorted (for suggestions).
+  pub fn names(&self) -> Vec<String> {
+    let mut names: Vec<String> = self
+      .index
+      .keys()
+      .filter(|n| !n.starts_with('%'))
+      .cloned()
+      .collect();
+    names.sort();
+    names
+  }
+
   pub fn len(&self) -> usize {
     self.slots.len()
   }
@@ -183,6 +212,9 @@ pub struct ComposeCtx<'a, B: Backend> {
   /// How many flows enclose the one being composed, counting wires
   /// inlined by `Do` and composed for `Spawn` ([`MAX_FLOW_DEPTH`]).
   depth: usize,
+  /// How many blocks (nested flows of shards) enclose the shard being
+  /// composed within its wire body; 0 at a wire's top level.
+  blocks: usize,
 }
 
 /// How deeply flows may nest, counting wires inlined by `Do` (they run in
@@ -224,6 +256,34 @@ impl<B: Backend> ComposeCtx<'_, B> {
     })
   }
 
+  /// Variable names visible here, locals and mesh variables, sorted. For
+  /// suggestions; it records no dependencies.
+  pub fn visible_names(&self) -> Vec<String> {
+    let mut names = self.locals.names();
+    for name in self.env.mesh_layout.names() {
+      if !names.contains(&name) {
+        names.push(name);
+      }
+    }
+    names.sort();
+    names
+  }
+
+  /// Whether the shard being composed is at its wire body's top level,
+  /// outside every branch and loop.
+  pub fn at_top_level(&self) -> bool {
+    self.blocks == 0
+  }
+
+  /// Where a local was declared: the occurrence path of the declaring
+  /// shard, from its wire.
+  pub fn declaration_path(&self, binding: Binding) -> Option<Vec<PathStep>> {
+    match binding {
+      Binding::Local(i) => self.local_paths.get(i).cloned(),
+      Binding::Mesh(_) => None,
+    }
+  }
+
   /// Resolves a variable that is about to be read. Fails if it is unknown, or
   /// not definitely initialized here (e.g. only assigned in a `When` body or
   /// a loop body that might not run).
@@ -243,7 +303,18 @@ impl<B: Backend> ComposeCtx<'_, B> {
       )))
     };
     match self.var(name) {
-      None => variable_error("unknown-variable", format!("unknown variable {name}")),
+      None => {
+        let near = crate::diagnostic::closest(name, self.visible_names(), 3);
+        variable_error("unknown-variable", format!("unknown variable {name}")).map_err(
+          |e: crate::Error| match e {
+            crate::Error::Diagnostic(mut d) => {
+              d.did_you_mean = near;
+              crate::Error::Diagnostic(d)
+            }
+            other => other,
+          },
+        )
+      }
       Some(info) if !info.initialized => variable_error(
         "possibly-uninitialized",
         format!(
@@ -304,8 +375,20 @@ impl<B: Backend> ComposeCtx<'_, B> {
   }
 
   /// Composes a nested flow (e.g. a `When` body) with the given input type,
-  /// into the same local frame.
+  /// into the same local frame. The flow is a block: names it declares are
+  /// not visible after it (golden-path.md §3.2).
   pub fn compose_flow(&mut self, flow: &[ShardDef], input: Type) -> Result<CompiledFlow<B>> {
+    let visible = self.locals.visible();
+    self.blocks += 1;
+    let result = self.compose_flow_unscoped(flow, input);
+    self.blocks -= 1;
+    self.locals.restore_visible(visible);
+    result
+  }
+
+  /// Composes a flow whose declarations stay visible after it: a wire body,
+  /// or a wire inlined by `Do`, which shares its caller's variables.
+  fn compose_flow_unscoped(&mut self, flow: &[ShardDef], input: Type) -> Result<CompiledFlow<B>> {
     if self.depth >= MAX_FLOW_DEPTH {
       return Err(crate::Error::Diagnostic(Box::new(
         crate::diagnostic::Diagnostic::new(
@@ -451,10 +534,13 @@ impl<B: Backend> ComposeCtx<'_, B> {
     let parent_path =
       std::mem::replace(&mut self.diagnostic_path, vec![PathStep::Wire(name.into())]);
     let parent_args = self.current_args.take();
-    let flow = self.compose_flow(&def.flow, input).map_err(|err| {
+    // A wire's body is its own top level, even when `Do` inlines it.
+    let blocks = std::mem::replace(&mut self.blocks, 0);
+    let flow = self.compose_flow_unscoped(&def.flow, input).map_err(|err| {
       self.failed_child = Some(Child::Wire(name.to_string()));
       err.prefix_path(PathStep::Wire(name.to_string()))
     });
+    self.blocks = blocks;
     self.composing.pop();
     self.diagnostic_path = parent_path;
     self.current_args = parent_args;
@@ -716,9 +802,10 @@ impl<B: Backend> ComposeCache<B> {
         initialized: Vec::new(),
         failed_child: None,
         depth,
+        blocks: 0,
       };
       ctx
-        .compose_flow(&def.flow, input)
+        .compose_flow_unscoped(&def.flow, input)
         .map(|flow| {
           (
             flow,

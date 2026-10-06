@@ -10,9 +10,9 @@ Define a reusable named routine `clamp` that clamps a value to a lower and an up
 })
 0 = lo
 3 = hi
-5 >= value
+5 | Var(value)
 Do(clamp) | Log
--2 > value
+-2 | Update(value)
 Do(clamp) | Log
-2 > value
+2 | Update(value)
 Do(clamp) | Log

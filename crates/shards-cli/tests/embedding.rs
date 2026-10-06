@@ -402,7 +402,7 @@ fn preserving_reload_keeps_pending_host_operation_until_its_call_returns() {
     let load = |session: &mut shards_lang::Session<H>, input| {
       let source = format!(
         r#"@wire(inner {{{input} Host.Warm}})
-@wire(main {{Once({{0 >= n}}) Inc(n) Log Do(inner)}} looped: true)
+@wire(main {{Keep(n 0) Inc(n) Log Do(inner)}} looped: true)
 @mesh(m) @schedule(m main) @run(m)"#
       );
       session

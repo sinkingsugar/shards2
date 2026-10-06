@@ -4,11 +4,11 @@ Log the largest element of the sequence [3 8 1 9 4]. Do not hard-code the answer
 9
 === reference
 [3 8 1 9 4] = xs
-xs | Take(0) >= best
-0 >= i
+xs | Take(0) | Var(best)
+0 | Var(i)
 Repeat({
   xs | Take(i) = x
-  When({x | IsMore(best)} {x > best})
+  When({x | IsMore(best)} {x | Update(best)})
   Inc(i)
 } times: 5)
 best | Log

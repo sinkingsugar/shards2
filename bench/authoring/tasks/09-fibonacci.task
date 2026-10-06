@@ -12,11 +12,11 @@ Log the first 10 Fibonacci numbers, starting 0, 1, 1, 2, ..., one per line.
 21
 34
 === reference
-0 >= a
-1 >= b
+0 | Var(a)
+1 | Var(b)
 Repeat({
   a | Log
   a | Math.Add(b) = next
-  b > a
-  next > b
+  b | Update(a)
+  next | Update(b)
 } times: 10)

@@ -203,16 +203,16 @@ impl LeafShard for Const {
   }
 }
 
-/// Assigns the input to a mutable variable, declaring a local if needed.
-pub struct Set;
+/// `Var`: declares a mutable local holding the input.
+pub struct VarDecl;
 
-impl LeafShard for Set {
+impl LeafShard for VarDecl {
   type Compiled = Binding;
   no_state!(Binding);
-  const DESC: ShardDesc = SET_DESC;
+  const DESC: ShardDesc = VAR_DESC;
 
   fn compose<B: Backend>(args: &Args, ctx: &mut ComposeCtx<'_, B>) -> Result<Composed<Binding>> {
-    compose_set(args, ctx)
+    compose_var(args, ctx)
   }
 
   fn activate(b: &Binding, _: &mut (), ctx: &mut impl LeafCtx, input: &Var) -> Result<Flow> {
@@ -221,20 +221,55 @@ impl LeafShard for Set {
   }
 }
 
-/// Declares an immutable local holding the input.
-pub struct Ref;
+/// `= name`: declares an immutable local holding the input.
+pub struct Bind;
 
-impl LeafShard for Ref {
+impl LeafShard for Bind {
   type Compiled = Binding;
   no_state!(Binding);
-  const DESC: ShardDesc = REF_DESC;
+  const DESC: ShardDesc = BIND_DESC;
 
   fn compose<B: Backend>(args: &Args, ctx: &mut ComposeCtx<'_, B>) -> Result<Composed<Binding>> {
-    compose_ref(args, ctx)
+    compose_bind(args, ctx)
   }
 
   fn activate(b: &Binding, _: &mut (), ctx: &mut impl LeafCtx, input: &Var) -> Result<Flow> {
     ctx.set(*b, input.clone());
+    Ok(Flow::Next(input.clone()))
+  }
+}
+
+/// `Keep`: persistent state, initialized the first time the instance
+/// reaches it.
+pub struct Keep;
+
+impl LeafShard for Keep {
+  type Compiled = (Binding, Var);
+  /// Whether the initial value was applied.
+  type State = bool;
+  const DESC: ShardDesc = KEEP_DESC;
+
+  fn compose<B: Backend>(
+    args: &Args,
+    ctx: &mut ComposeCtx<'_, B>,
+  ) -> Result<Composed<(Binding, Var)>> {
+    compose_keep(args, ctx)
+  }
+
+  fn instantiate(_: &(Binding, Var), _: &mut InstanceCtx) -> Result<bool> {
+    Ok(false)
+  }
+
+  fn activate(
+    (b, value): &(Binding, Var),
+    applied: &mut bool,
+    ctx: &mut impl LeafCtx,
+    input: &Var,
+  ) -> Result<Flow> {
+    if !*applied {
+      ctx.set(*b, value.clone());
+      *applied = true;
+    }
     Ok(Flow::Next(input.clone()))
   }
 }

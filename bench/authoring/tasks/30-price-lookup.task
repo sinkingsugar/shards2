@@ -5,11 +5,11 @@ Prices are stored in a table {apple: 3 pear: 5}. An order is the sequence ["appl
 === reference
 {apple: 3 pear: 5} = prices
 ["apple" "pear" "apple"] = order
-0 >= total
-0 >= i
+0 | Var(total)
+0 | Var(i)
 Repeat({
   order | Take(i) = item
-  prices | Take(item) | ExpectInt | Math.Add(total) > total
+  prices | Take(item) | ExpectInt | Math.Add(total) | Update(total)
   Inc(i)
 } times: 3)
 total | Log

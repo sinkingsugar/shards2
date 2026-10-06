@@ -6,7 +6,7 @@ true
 false
 === reference
 [3 8 12] = xs
-0 >= i
+0 | Var(i)
 Repeat({
   xs | Take(i) = x
   All({x | IsMoreEqual(5)} {x | IsLessEqual(10)}) | Log

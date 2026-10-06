@@ -6,7 +6,7 @@ zero
 positive
 === reference
 [-3 0 7] = xs
-0 >= i
+0 | Var(i)
 Repeat({
   xs | Take(i) = x
   If({x | IsLess(0)} {"negative"} {If({x | Is(0)} {"zero"} {"positive"})}) | Log

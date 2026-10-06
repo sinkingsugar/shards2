@@ -17,9 +17,9 @@ use std::sync::Arc;
 
 use shards_core::describe::{self, Forms, ParamDecl};
 use shards_core::diagnostic::{Diagnostic, PathStep};
-use shards_core::shards::data::{PUSH, SEQ_MAKE, STRING_FORMAT, TABLE_MAKE, TAKE};
-use shards_core::shards::{CONST, GET, REF, SET, SUB, UPDATE};
-use shards_core::{Arg, Catalog, ParamValue, ShardDef, ShardType, Var, WireDef};
+use shards_core::shards::data::{SEQ_MAKE, STRING_FORMAT, TABLE_MAKE, TAKE};
+use shards_core::shards::{BIND, CONST, GET, SUB};
+use shards_core::{Arg, Catalog, ParamValue, ShardDef, Var, WireDef};
 
 use crate::ast::*;
 use crate::lexer::AssignOp;
@@ -528,19 +528,17 @@ impl Lowerer<'_> {
   ) {
     for stmt in stmts {
       match stmt {
-        Statement::Assign { op, op_span, var } => {
+        Statement::Assign {
+          op: AssignOp::Bind,
+          op_span,
+          var,
+        } => {
           let span = op_span.to(var.span);
-          let ty: &'static ShardType = match op {
-            AssignOp::Ref => &REF,
-            AssignOp::Set => &SET,
-            AssignOp::Update => &UPDATE,
-            AssignOp::Push => &PUSH,
-          };
           self.emit(
             out,
             prefix,
             span,
-            ShardDef::with_args(ty, vec![Arg::pos(ParamValue::Var(var.node.clone()))]),
+            ShardDef::with_args(&BIND, vec![Arg::pos(ParamValue::Var(var.node.clone()))]),
           );
         }
         Statement::Pipeline(pipe) => {
@@ -762,7 +760,7 @@ impl Lowerer<'_> {
     format!("%{}", self.temps)
   }
 
-  /// Emits `SubFlow({ <computation> | Set(%n) })` and returns `%n`. The
+  /// Emits `SubFlow({ <computation> = %n })` and returns `%n`. The
   /// computation runs on every activation right before the shard that uses
   /// the value, and the input flows past it unchanged.
   fn hoist(
@@ -781,13 +779,13 @@ impl Lowerer<'_> {
     inner_prefix.push(PathStep::Param("action".into()));
     let mut body = Vec::new();
     lower(self, &mut body, &inner_prefix);
-    // A `%` Ref declares a fresh slot at each occurrence, so a wire inlined
+    // A `%` binding declares a fresh slot at each occurrence, so a wire inlined
     // twice by Do (even with different input types) still composes.
     self.emit(
       &mut body,
       &inner_prefix,
       span,
-      ShardDef::with_args(&REF, vec![Arg::pos(ParamValue::Var(name.clone()))]),
+      ShardDef::with_args(&BIND, vec![Arg::pos(ParamValue::Var(name.clone()))]),
     );
     self.emit(
       out,
@@ -926,6 +924,24 @@ impl Lowerer<'_> {
       // Suggest aliases too, so `Ad` suggests `Add` as written in scripts.
       let all: Vec<String> = self.catalog.names().iter().map(|n| n.to_string()).collect();
       let suggestions = closest(&name.node, all, 3);
+      if let Some(help) = match name.node.as_str() {
+        "Set" => Some(
+          "declare a mutable variable with `value | Var(name)`, assign it with `value | Update(name)`",
+        ),
+        "Ref" => Some("bind an immutable name with `value = name`"),
+        _ => None,
+      } {
+        self.problem(
+          Problem::construct(
+            name.span,
+            "unknown-shard",
+            "removed-shard",
+            format!("`{}` is removed in Shards 2: {help}", name.node),
+          )
+          .shard(&name.node),
+        );
+        return;
+      }
       if matches!(name.node.as_str(), "And" | "Or") {
         let (word, all) = if name.node == "And" {
           ("And", "All")

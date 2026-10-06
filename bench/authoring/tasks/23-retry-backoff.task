@@ -5,17 +5,17 @@ attempt 1 failed, waiting 1 ticks
 attempt 2 failed, waiting 2 ticks
 attempt 3 succeeded
 === reference
-0 >= attempt
-1 >= delay
-false >= done
+0 | Var(attempt)
+1 | Var(delay)
+false | Var(done)
 Repeat({
   Inc(attempt)
   If({attempt | IsMoreEqual(3)} {
     f"attempt {attempt} succeeded" | Log
-    true > done
+    true | Update(done)
   } {
     f"attempt {attempt} failed, waiting {delay} ticks" | Log
     Repeat({Pause} times: delay)
-    delay | Math.Multiply(2) > delay
+    delay | Math.Multiply(2) | Update(delay)
   })
 } until: {done})

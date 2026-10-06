@@ -103,6 +103,16 @@ def script(case, width, iterations, batches):
 """
 
 
+def dialect(text, engine):
+    """The same workload in an engine's syntax. Scripts are written in the
+    1.x dialect; 2.0 declares with Var, labels lowercase, and Push neither
+    declares nor clears."""
+    if engine == "1x":
+        return text
+    return (text.replace("Push(items Clear: false)", "Push(items)")
+            .replace(" | Set(", " | Var(").replace("Times:", "times:"))
+
+
 def parse_output(output, iterations, batches):
     seconds = re.findall(r"VM_SECONDS: ([^\r\n]+)", output)
     valid = re.findall(r"VM_VALID: (\w+)", output)
@@ -247,25 +257,30 @@ def main():
         writer = csv.DictWriter(f, fieldnames=fields, lineterminator="\n")
         writer.writeheader()
         for job, (case, width) in enumerate(jobs, 1):
-            path = scripts / f"{case}-{width}.shs"
+            paths = {engine: scripts / f"{case}-{width}-{engine.split('-')[0]}.shs" for engine in engines}
+
+            def write(iterations, batches):
+                for engine, path in paths.items():
+                    path.write_text(dialect(script(case, width, iterations, batches), engine))
+
             iterations = args.iterations
             if iterations is None:
                 probe = 10000
-                path.write_text(script(case, width, probe, 2))
+                write(probe, 2)
                 rates = []
                 for engine, command in engines.items():
-                    times = run(command, path, probe, 2, args.timeout)
+                    times = run(command, paths[engine], probe, 2, args.timeout)
                     rates.append(times[-1] / probe)
                     calibration.append(dict(case=case, width=width, engine=engine, iterations=probe, seconds=times))
                 iterations = max(100, min(100_000_000, math.ceil(min(args.target_ms / 1000 / min(rates),
                                                                           args.max_ms / 1000 / max(rates)))))
             batches = args.warmup + args.samples
-            path.write_text(script(case, width, iterations, batches))
+            write(iterations, batches)
             for round_index in range(args.rounds):
                 order = list(engines)
                 rng.shuffle(order)
                 for engine in order:
-                    times = run(engines[engine], path, iterations, batches, args.timeout)
+                    times = run(engines[engine], paths[engine], iterations, batches, args.timeout)
                     for batch, seconds in enumerate(times):
                         row = dict(case=case, width=width, engine=engine, round=round_index, batch=batch,
                                    warmup=batch < args.warmup, iterations=iterations, seconds=seconds,

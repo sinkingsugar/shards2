@@ -6,7 +6,7 @@ Map colour names to codes: "red" is 1, "green" is 2, anything else is 0. For the
 1
 === reference
 ["green" "blue" "red"] = xs
-0 >= i
+0 | Var(i)
 Repeat({
   xs | Take(i) | Match(["red" {1} "green" {2} none {0}] passthrough: false) | Log
   Inc(i)

@@ -137,8 +137,8 @@ pub(crate) fn lower_scratch_releases(code: &mut [Instruction]) {
 }
 
 /// Select by Rust implementation identity, never by a user-controlled name.
-/// Only operations that need no activation state participate (a non-clearing
-/// Push never touches its iteration state). Normal lifecycle stays in nodes.
+/// Only operations that need no activation state participate. Normal
+/// lifecycle stays in nodes.
 pub(crate) fn leaf<L: LeafShard>(c: &L::Compiled, output: Type) -> Option<InlineOp> {
   let id = TypeId::of::<L>();
   let c = c as &dyn Any;
@@ -146,8 +146,8 @@ pub(crate) fn leaf<L: LeafShard>(c: &L::Compiled, output: Type) -> Option<Inline
     Op::Const(c.downcast_ref::<Var>()?.clone())
   } else if id == TypeId::of::<leaf::Get>() {
     Op::get(*c.downcast_ref::<Binding>()?)
-  } else if id == TypeId::of::<leaf::Set>()
-    || id == TypeId::of::<leaf::Ref>()
+  } else if id == TypeId::of::<leaf::VarDecl>()
+    || id == TypeId::of::<leaf::Bind>()
     || id == TypeId::of::<leaf::Update>()
   {
     Op::Set(*c.downcast_ref::<Binding>()?)
@@ -164,11 +164,7 @@ pub(crate) fn leaf<L: LeafShard>(c: &L::Compiled, output: Type) -> Option<Inline
     entries.sort_unstable_by(|a, b| a.0.cmp(&b.0));
     Op::TableMake(output, entries)
   } else if id == TypeId::of::<data::Push>() {
-    let c = c.downcast_ref::<data::PushCompiled>()?;
-    if c.clear {
-      return None;
-    }
-    Op::Push(c.binding)
+    Op::Push(*c.downcast_ref::<Binding>()?)
   } else if id == TypeId::of::<leaf::Add>() {
     match (output, c.downcast_ref::<Operand>()?) {
       (ty, Operand::Const(Var::Int(v))) if ty == Type::int() => Op::AddIntConst(*v),
@@ -346,7 +342,6 @@ pub(crate) fn run(
           value = &scratch;
           match &mut *frames.slot(*b) {
             Var::Seq(items) => std::sync::Arc::make_mut(items).push(scratch.clone()),
-            slot @ Var::None => *slot = Var::Seq(std::sync::Arc::new(vec![scratch.clone()])),
             _ => {
               return Err(Error::Activation(
                 "Push: the variable is not a sequence".into(),

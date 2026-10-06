@@ -156,6 +156,15 @@ impl Program {
     } else {
       d.file = Some(self.source.name.clone());
     }
+    if let Some(related) = &mut d.related {
+      let mut probe = Diagnostic::new(Phase::Compose, "", "", "");
+      probe.path = related.path.clone();
+      if let Some(span) = self.lowered.map.locate(&probe) {
+        let (line, column) = self.source.line_col(span.start);
+        related.line = Some(line);
+        related.column = Some(column);
+      }
+    }
     // `x-1` is one name in Shards; say so when it is the unknown variable.
     if d.code == "unknown-variable"
       && let Some(name) = d

@@ -77,7 +77,7 @@ The toolchain is pinned in `rust-toolchain.toml`. CI runs fmt, clippy and tests 
 
 ## Git
 
-Work on `main`; there are no feature branches so far. Commit after the full check set above passes locally, push, and watch the CI run (`gh run watch`); CI runs on pushes to `main` and on pull requests. Review findings from Astra are addressed in follow-up commits with regression tests.
+Golden-path work (`docs/golden-path.md`) happens on the `golden-path` branch, with a draft pull request to `main` so CI runs on every push; other work goes on `main`. Commit after the full check set above passes locally, push, and watch the CI run (`gh run watch`); CI runs on pushes to `main` and on pull requests. Review findings from Astra are addressed in follow-up commits with regression tests.
 
 ## Private projects
 

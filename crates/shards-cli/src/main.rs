@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! shards2 check [--json] [--stackful] <file> [key:value ...]
-//! shards2 run [--stackful] <file> [key:value ...]
+//! shards2 run [--json] [--stackful] <file> [key:value ...]
 //! shards2 watch [--stackful] <file> [key:value ...]
 //! shards2 describe <shard>
 //! shards2 search <text>
@@ -10,21 +10,25 @@
 //! ```
 //!
 //! `check --json` prints the 1.x `shards check --json` envelope
-//! (`{ok, file, diagnostics}`); `key:value` arguments are the script's
+//! (`{ok, file, diagnostics}`). `run --json` prints one object after the
+//! run instead of the log and result lines: `{ok, file, diagnostics, log,
+//! outcomes, spawned_failures}`, where `log` holds the logged lines and
+//! each outcome is `{wire, outcome, value?, error?}`. `key:value` arguments are the script's
 //! `@key` values. Exit codes: 0 success, 1 problems or a failed run, 2
 //! usage.
 
 use std::collections::HashMap;
 use std::process::ExitCode;
 
+use shards_core::diagnostic::{Diagnostic, json_str};
 use shards_core::{Catalog, Outcome};
-use shards_lang::{CheckReport, Host, Program, Source, render};
+use shards_lang::{CheckReport, Host, Program, RunReport, Source, render};
 
 mod watch;
 
 const USAGE: &str = "usage:
   shards2 check [--json] [--stackful] <file> [key:value ...]
-  shards2 run [--stackful] <file> [key:value ...]
+  shards2 run [--json] [--stackful] <file> [key:value ...]
   shards2 watch [--stackful] <file> [key:value ...]
   shards2 describe <shard>
   shards2 search <text>
@@ -121,29 +125,55 @@ fn run(o: &Options) -> Result<ExitCode, String> {
   let program = match Program::load(source, &catalog(), &o.defines) {
     Ok(p) => p,
     Err((source, diagnostics)) => {
-      for d in &diagnostics {
-        eprint!("{}", render(d, &source));
+      if o.json {
+        println!("{}", run_json(&o.file, &diagnostics, &[], None));
+      } else {
+        for d in &diagnostics {
+          eprint!("{}", render(d, &source));
+        }
       }
       return Ok(ExitCode::FAILURE);
     }
   };
   if o.stackful {
-    run_on::<shards_core::StackfulMesh>(&program)
+    run_on::<shards_core::StackfulMesh>(&program, o)
   } else {
-    run_on::<shards_core::Mesh>(&program)
+    run_on::<shards_core::Mesh>(&program, o)
   }
 }
 
-fn run_on<H: Host>(program: &Program) -> Result<ExitCode, String> {
-  let report = match program.run::<H>() {
+fn run_on<H: Host>(program: &Program, o: &Options) -> Result<ExitCode, String> {
+  let (result, log) = if o.json {
+    shards_core::log::capture(|| program.run::<H>())
+  } else {
+    (program.run::<H>(), Vec::new())
+  };
+  let report = match result {
     Ok(r) => r,
     Err(diagnostics) => {
-      for d in &diagnostics {
-        eprint!("{}", render(d, &program.source));
+      if o.json {
+        println!("{}", run_json(&o.file, &diagnostics, &log, None));
+      } else {
+        for d in &diagnostics {
+          eprint!("{}", render(d, &program.source));
+        }
       }
       return Ok(ExitCode::FAILURE);
     }
   };
+  if o.json {
+    println!("{}", run_json(&o.file, &[], &log, Some(&report)));
+  } else {
+    print_outcomes(&report);
+  }
+  Ok(if report.succeeded() {
+    ExitCode::SUCCESS
+  } else {
+    ExitCode::FAILURE
+  })
+}
+
+fn print_outcomes(report: &RunReport) {
   for (wire, outcome) in &report.outcomes {
     match outcome {
       Some(Outcome::Completed(v)) => println!("{wire}: {v}"),
@@ -158,11 +188,54 @@ fn run_on<H: Host>(program: &Program) -> Result<ExitCode, String> {
       eprintln!("{wire} (spawned): failed: {e}");
     }
   }
-  Ok(if report.succeeded() {
-    ExitCode::SUCCESS
-  } else {
-    ExitCode::FAILURE
-  })
+}
+
+/// `{wire, outcome, value?, error?}`; a wire still running is `running`.
+fn outcome_json(wire: &str, outcome: Option<&Outcome>) -> String {
+  let (kind, extra) = match outcome {
+    Some(Outcome::Completed(v)) => (
+      "completed",
+      format!(",\"value\":{}", json_str(&v.to_string())),
+    ),
+    Some(Outcome::Stopped) => ("stopped", String::new()),
+    Some(Outcome::Cancelled) => ("cancelled", String::new()),
+    Some(Outcome::Failed(e)) => ("failed", format!(",\"error\":{}", json_str(&e.to_string()))),
+    None => ("running", String::new()),
+  };
+  format!(
+    "{{\"wire\":{},\"outcome\":\"{kind}\"{extra}}}",
+    json_str(wire)
+  )
+}
+
+fn run_json(
+  file: &str,
+  diagnostics: &[Diagnostic],
+  log: &[String],
+  report: Option<&RunReport>,
+) -> String {
+  let join = |items: Vec<String>| items.join(",");
+  let ok = diagnostics.is_empty() && report.is_some_and(RunReport::succeeded);
+  let outcomes = report.map_or(Vec::new(), |r| {
+    r.outcomes
+      .iter()
+      .map(|(w, o)| outcome_json(w, o.as_ref()))
+      .collect()
+  });
+  let spawned = report.map_or(Vec::new(), |r| {
+    r.spawned_failures
+      .iter()
+      .map(|(w, o)| outcome_json(w, Some(o)))
+      .collect()
+  });
+  format!(
+    "{{\"ok\":{ok},\"file\":{},\"diagnostics\":[{}],\"log\":[{}],\"outcomes\":[{}],\"spawned_failures\":[{}]}}",
+    json_str(file),
+    join(diagnostics.iter().map(Diagnostic::to_json).collect()),
+    join(log.iter().map(|l| json_str(l)).collect()),
+    join(outcomes),
+    join(spawned),
+  )
 }
 
 fn main() -> ExitCode {

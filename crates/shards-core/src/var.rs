@@ -110,6 +110,13 @@ impl Table {
     TableBuilder::default()
   }
 
+  /// A builder holding this table's entries, to derive a changed table.
+  /// Takes the storage when no other table shares it; otherwise copies
+  /// the entries, sharing their keys and values.
+  pub fn into_builder(self) -> TableBuilder {
+    TableBuilder(Arc::try_unwrap(self.0).unwrap_or_else(|shared| (*shared).clone()))
+  }
+
   pub fn len(&self) -> usize {
     self.0.len()
   }
@@ -187,6 +194,15 @@ impl TableBuilder {
   pub fn insert(&mut self, key: impl Into<Arc<str>>, value: Var) -> &mut TableBuilder {
     self.0.insert(key.into(), value);
     self
+  }
+
+  /// Removes a key, returning its value.
+  pub fn remove(&mut self, key: &str) -> Option<Var> {
+    self.0.remove(key)
+  }
+
+  pub fn get(&self, key: &str) -> Option<&Var> {
+    self.0.get(key)
   }
 
   pub fn with(mut self, key: impl Into<Arc<str>>, value: Var) -> TableBuilder {

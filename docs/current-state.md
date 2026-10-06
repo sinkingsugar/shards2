@@ -18,7 +18,7 @@ Checkpoint: 2026-10-06. Check `git log` and the working tree for later changes. 
 | Milestone | Status |
 |---|---|
 | M0 docs hygiene | done (this file, `history.md`, README) |
-| M0 authoring eval | done: 38 tasks with references checked by `cargo test`, the `current` primer, a runner for any model CLI ([README](../bench/authoring/README.md)). Baseline: Sonnet via Claude Code 2.1.291, 2026-10-06, at 40cb29b (`baseline.csv`, transcripts in `bench/authoring/transcripts/baseline-sonnet`). Other models not run yet |
+| M0 authoring eval | harness done: 38 tasks with references checked by `cargo test`, the `current` primer, a runner for any model CLI that judges `shards2 run --json` logs ([README](../bench/authoring/README.md)). The first Sonnet baseline (7bd1852) is superseded: it used the first primer (two misleading statements, review F5), recorded only the `sonnet` alias, and ran one trial. **Rerun pending**: corrected primer, recorded model IDs, 3 trials, Sonnet and Haiku, with `shards2` from tag `authoring-control-v1` |
 | M1 opaque collections | done: `Var::Table(Table)` with private storage, `as_table`/`as_seq`/`as_str`, `TableBuilder`, sorted iteration (`host_contract::hosts_use_opaque_collections`) |
 | M2 to M7 | not started |
 
@@ -26,9 +26,11 @@ The current syntax (`>=`, `>`, `>>`, `Do`, uppercase labels) is what the code ac
 
 ## Baseline findings
 
-- The tasks are easy for Sonnet on today's syntax (one wrong output, two one-round repairs), so later variant runs need harder tasks or weaker models to discriminate.
-- Wrong output (`27-persistent-total`): a looped wire already yields once per iteration, so a `Pause` at its end makes each iteration take two ticks. The primer's looped example shows `Pause`, and the model copied it. Decide in M4 whether a looped wire should yield both times; until then the primer should say it.
-- Repairs: a variable declared inside a `While` body read after it (`may be uninitialized`), and an open-table `Take` giving `Int | None` that needed `ExpectInt`.
+From the first (superseded) Sonnet run:
+
+- The tasks are easy for Sonnet on today's syntax (one wrong output, two one-round repairs). Harder tasks are needed before the M5 rerun; the control tag keeps the old syntax runnable for their baseline.
+- Wrong output (`27-persistent-total`): a looped wire already yields once per iteration, so a `Pause` at its end makes each iteration take two ticks. The first primer's looped example showed `Pause`, and the model copied it; the primer now explains it. Decide in M4 whether a looped wire should yield both times.
+- Repairs: a variable declared inside a `Repeat` body read after it (`possibly-uninitialized`), and a variable-key `Take` giving `Int | None` that needed `ExpectInt` (the first primer said missing keys were always compile errors).
 
 ## Open items outside the golden path
 
@@ -39,4 +41,4 @@ The current syntax (`>=`, `>`, `>>`, `Do`, uppercase labels) is what the code ac
 
 ## Verified
 
-This checkpoint is a documentation change. The last code checkpoint and its review are recorded in [history.md](history.md). Re-run the check set in `AGENTS.md` before relying on any status above.
+Locally on Linux x86-64 at the commit resolving the M0/M1 reviews: the full check set in `AGENTS.md` (fmt, clippy native, rustls and wasm, workspace tests on both schedulers, docs-off, release nesting, WASI suites). CI results come from the draft pull request for `golden-path`; macOS and the ESP32 build are verified only there. Re-run the check set before relying on any status above.

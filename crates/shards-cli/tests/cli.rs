@@ -64,6 +64,41 @@ fn check_ok_and_run_with_script_arguments() {
 }
 
 #[test]
+fn run_json_separates_the_log_from_wire_results() {
+  // A log line that looks like a result line stays in `log`.
+  let file = script(
+    "json.shs",
+    "@wire(main { 1 | Log(\"main\") Maybe({[1] | Take(3)}) \"a\\\"b\" | Log })\n@mesh(m) @schedule(m,main) @run(m)\n",
+  );
+  for backend in [&[][..], &["--stackful"][..]] {
+    let mut args = vec!["run", "--json"];
+    args.extend_from_slice(backend);
+    args.push(&file);
+    let (code, out, err) = shards2(&args);
+    assert_eq!((code, err.as_str()), (0, ""), "{out}");
+    let expected = format!(
+      r#"{{"ok":true,"file":"{file}","diagnostics":[],"log":["main: 1","Maybe: activation error: Take: index 3 is out of range (length 1)","a\"b"],"outcomes":[{{"wire":"main","outcome":"completed","value":"\"a\\\"b\""}}],"spawned_failures":[]}}"#
+    );
+    assert_eq!(out.trim(), expected);
+  }
+  let failing = script("fail.shs", "[1] | Take(3)\n");
+  let (code, out, _) = shards2(&["run", "--json", &failing]);
+  assert_eq!(code, 1);
+  assert!(
+    out.contains(r#""ok":false"#)
+      && out.contains(r#""outcome":"failed","error":"activation error: Take"#),
+    "{out}"
+  );
+  let unknown = script("unknown.shs", "Nope\n");
+  let (code, out, _) = shards2(&["run", "--json", &unknown]);
+  assert_eq!(code, 1);
+  assert!(
+    out.contains(r#""code":"unknown-shard""#) && out.contains(r#""log":[],"outcomes":[]"#),
+    "{out}"
+  );
+}
+
+#[test]
 fn syntax_errors_are_rendered_with_the_source_line() {
   let file = script("syntax.shs", "\"Hello\" | Log(\n");
   let (code, _, err) = shards2(&["check", &file]);

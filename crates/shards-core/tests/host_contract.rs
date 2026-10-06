@@ -251,4 +251,25 @@ fn hosts_use_opaque_collections() {
   assert_eq!(seq.as_table(), None);
   assert_eq!(value.as_seq(), None);
   assert_eq!(Var::Int(1).as_str(), None);
+
+  // Deriving a changed table: shared storage is copied, unique storage is
+  // taken, and the original snapshot never changes.
+  let original = table.clone();
+  let mut changed = original.clone().into_builder();
+  assert_eq!(changed.remove("a"), Some(Var::string("x")));
+  changed.insert("b", Var::Int(4)).insert("c", Var::None);
+  assert_eq!(changed.get("b"), Some(&Var::Int(4)));
+  let changed = changed.build();
+  assert_eq!(changed.keys().collect::<Vec<_>>(), ["b", "c"]);
+  assert_eq!(original, *table);
+  let unique = Table::builder().with("k", Var::Int(1)).build();
+  assert_eq!(unique.storage_owners(), 1);
+  assert_eq!(
+    unique
+      .into_builder()
+      .with("k", Var::Int(2))
+      .build()
+      .get("k"),
+    Some(&Var::Int(2))
+  );
 }

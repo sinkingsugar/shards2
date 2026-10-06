@@ -4,7 +4,7 @@
 
 **Mandate:** compatibility with 1.x and with current 2.0 scripts is not a goal. Delete old forms outright; no aliases, deprecations or migration tooling. Update existing tests and examples directly.
 
-**For the implementing session:** read this file, then `AGENTS.md` and `docs/current-state.md`. Work milestone by milestone (§9). Each milestone is one or more commits on `main` that pass the full check set in `AGENTS.md`, update the docs listed in its gate, and get an Astra review through the review-handoff skill before the next milestone starts. Do not start a milestone early because its code looks easy.
+**For the implementing session:** read this file, then `AGENTS.md` and `docs/current-state.md`. Work milestone by milestone (§9). Each milestone is one or more commits on the `golden-path` branch (CI runs through its draft pull request to `main`) that pass the full check set in `AGENTS.md`, update the docs listed in its gate, and get an Astra review through the review-handoff skill before the next milestone starts. Do not start a milestone early because its code looks easy.
 
 ---
 
@@ -183,7 +183,7 @@ Until the gate passes, the old stackless engine and stackful stay as oracles for
 
 ### 7.1 Opaque collections (first, M1)
 
-Nothing outside `shards-core` names `BTreeMap`. `Var::as_table() -> Option<TableRef>`, `as_seq() -> Option<&[Var]>`, `as_str() -> Option<&str>`, a `TableBuilder`, sorted iteration. The external host moves to this API before it couples to the map.
+Nothing outside `shards-core` names `BTreeMap`. `Var::as_table() -> Option<&Table>` (an opaque `Table`, which `Var::Table` holds; earlier drafts called the view `TableRef`), `as_seq() -> Option<&[Var]>`, `as_str() -> Option<&str>`, a `TableBuilder` (`Table::into_builder` derives a changed table), sorted iteration. The external host moves to this API before it couples to the map.
 
 ### 7.2 Layout (M6)
 

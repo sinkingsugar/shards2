@@ -11,7 +11,7 @@ A program is a pipeline of **shards**. Each shard receives the previous shard's 
 
 - `Int` (`42`, `-3`), `Float` (`1.5`, `2.0`, `1e3`; write `1.0`, never `1.`), `Bool` (`true`, `false`), `String` (`"text"`), `none`.
 - Sequences: `[1 2 3]`. Commas are optional.
-- Tables: `{name: "ann" age: 41}`. Keys are known at compile time, so reading a missing key is a compile error.
+- Tables: `{name: "ann" age: 41}`. Reading a missing key with a constant key (`t.missing`, `Take("missing")`) is a compile error. `Take` with a key in a variable outputs the value or `none` (`Int | None` here), so narrow it with `ExpectInt` and friends before arithmetic.
 - Float vectors: `[1.0 2.0] | ToFloat2`, `[1.0 2.0 3.0] | ToFloat3`.
 - A literal on its own is a shard that outputs that value.
 - Arithmetic on two Ints gives an Int, and integer division truncates (`7 | Math.Divide(2)` is `3`); an Int mixed with a Float gives a Float. Convert with `ToFloat` and `ToInt`.
@@ -63,16 +63,15 @@ Without `@run`, code at the top level runs once, as the wire `root`. With `@run`
 @wire(ticker {
   Once({0 >= n})                             // state kept across iterations
   Inc(n) | Log
-  Pause                                      // yield to the scheduler until the next tick
-} Looped: true)                              // restart the body on every iteration
+} Looped: true)                              // one iteration per tick
 @mesh(main)
 @schedule(main ticker)
-@run(main Iterations: 3)                     // run the mesh for 3 ticks; FPS: 60 sets the rate
+@run(main Iterations: 3)                     // run the mesh for 3 ticks (logs 1, 2, 3); FPS: 60 sets the rate
 ```
 
 - `Do(wire)` runs another wire inline, sharing the caller's variables, and outputs the wire's output.
 - `Spawn(wire)` starts a new independent instance of a wire with the current input as its input.
-- `Pause` suspends until the next scheduler tick; `Pause(0.5)` waits at least half a second.
+- A looped wire yields to the scheduler after each iteration, so it runs one iteration per tick. `Pause` suspends until the next tick, so a `Pause` inside a looped wire makes that iteration take an extra tick. `Pause(0.5)` waits at least half a second.
 - `@run` runs until every scheduled wire finishes, or for `Iterations` ticks.
 
 ## Running

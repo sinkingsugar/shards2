@@ -5,12 +5,12 @@ Spec: [docs/golden-path.md §8](../../docs/golden-path.md). It measures how well
 ## Pieces
 
 - `tasks/*.task`: small tasks, each with a `prompt`, the `expected` log lines and a hidden `reference` solution. `cargo test -p authoring-eval` runs every reference in-process and requires exactly the expected log, so the tasks stay solvable as the language changes (M2 rewrites the references with the rest of the suite). The tree-fold task arrives with recursion (M7).
-- `reference/<variant>.md`: the language primer for a syntax variant. The model gets the primer followed by `shards2 catalog` and `shards2 describe` for every shard (`authoring-eval reference` prints it). `current` is the pre-M2 syntax.
+- `reference/<variant>.md`: the language primer for a syntax variant. The model gets the primer followed by `shards2 catalog` and `shards2 describe` for every shard (`authoring-eval reference` prints it). `current` is the pre-M2 syntax; keep it after M2. A later variant's primer changes only what its syntax requires, so a difference in results is the syntax's, not the primer's.
 - `src/main.rs`: the runner. It shells out to a model command; there is no embedded API client.
 
 ## Running
 
-Build `shards2` first (`cargo build --release -p shards-cli`), then:
+Build `shards2` first (`cargo build --release -p shards-cli`; the runner needs `run --json`), then:
 
 ```sh
 cargo run -p authoring-eval -- verify    # reference solutions through the real CLI
@@ -23,10 +23,12 @@ cargo run -p authoring-eval -- run --model codex --format text \
   --cmd 'codex exec --skip-git-repo-check --sandbox read-only -' --out results.csv
 ```
 
-The prompt goes to the command's stdin, from an empty temporary directory, so the model sees only the prompt; disable tools where the CLI allows it. Per task: the model's last fenced code block is checked with `shards2 check --json`; diagnostics go back for at most `--rounds` repairs (default 5); a program that checks is run and its log compared with the expected lines (the result lines `shards2 run` prints for `root` and scheduled wires are ignored). `--only TEXT` selects tasks whose id contains the text, `--jobs N` runs tasks in parallel (default 4).
+The prompt goes to the command's stdin, from an empty temporary directory, so the model sees only the prompt; disable tools where the CLI allows it. The command runs in its own process group, killed when it exits or after 10 minutes. Per task: the model's last complete fenced code block is checked with `shards2 check --json`; diagnostics go back for at most `--rounds` repairs (default 5); a program that checks is run with `shards2 run --json`, which must succeed and log exactly the expected lines. `--only TEXT` selects tasks whose id contains the text, `--jobs N` runs tasks in parallel (default 4), `--trials N` repeats each task.
+
+Pass a full model ID or use `claude-json`, which records the resolved model. To compare a new syntax variant with `current` on the same model and day, rerun `current` with a `shards2` built from the tag `authoring-control-v1` (`--shards2 path/to/that/shards2`), the last control before M2 changes the syntax.
 
 ## Results
 
-One CSV row per (task, model, variant): `SemanticSuccess` (the log matched), `FirstPassSuccess` (the first reply checked clean), `RepairRounds`, `Tokens` (summed over rounds; `claude-json` only, and it includes the CLI's own system prompt, about 20k tokens a call), `LatencyMs` (model time only) and `Failure`: `syntax` (parse errors), `missing-shard` (an unknown shard), `compose` (other check errors), `runtime`, `wrong-output`, `timeout` or `model-error`.
+One CSV row per (task, model, variant, trial): `ModelId` (what the CLI reported, `claude-json` only), `SemanticSuccess` (the log matched), `FirstPassSuccess` (the first reply checked clean), `FirstFailure` (the class of that first failure), `RepairRounds`, `Tokens` and `OutputTokens` (summed over rounds, `claude-json` only; `Tokens` is dominated by the fixed prompt, about 16k tokens of reference plus about 7k of the CLI's system prompt a call, so compare `OutputTokens`), `LatencyMs` (model time only) and `Failure`. Failure classes: `syntax` (parse errors), `missing-shard` (an unknown shard), `compose` (other check errors), `format` (no complete code block in the reply), `runtime`, `wrong-output`, `timeout`, `model-error` and `harness-error` (the runner's own step failed; the transcript says why).
 
-`baseline.csv` holds the pre-M2 baseline, with its transcripts in `transcripts/baseline-sonnet/`. Commit rows from real runs only, never mock or placeholder data. Small samples are evidence, not proof.
+Each run lives in `results/<date>-<what>/` (`results.csv` and `transcripts/`). `results/2026-10-06-sonnet-primer-v1` is the first Sonnet run, superseded (first primer, alias only, one trial; its `FirstFailure` values were filled in from the transcripts, and `ModelId` and `OutputTokens` were not recorded). Commit rows from real runs only, never mock or placeholder data. Small samples are evidence, not proof.

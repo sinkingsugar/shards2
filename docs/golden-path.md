@@ -159,6 +159,8 @@ A continuation records the parent frame, its phase or program counter, any input
 
 Every composite is rewritten once onto this protocol: `If`, `When`, `While`, `Repeat`, `Once`, `Maybe`, `All`, `Any`, `Match`, `SubFlow`, `Spawn`, and later the function call. `Do` still exists during M4 and must be ported too, but minimally (it is an `Enter` into an inlined flow); it is deleted in M5, so do not invest in it. `LeafShard` and `AsyncShard` keep their single implementations; async futures live in their frame's state and wakers mark the instance ready.
 
+M4 implementation uses `stackless::engine`: builtin composite descriptors request child entry or return a completion (value, error or signal) to the runner. The arena owns all flow states by generation-tagged handle; activation, initialization and cleanup use explicit work lists. Existing anonymous blocks and `Do` still share the wire's variable frame, as required until M5. `Mesh::set_max_call_depth` limits named entries (256 native, 32 ESP-IDF), independently of the retained recursive compose limit. M4 preserves the existing loop scheduling rule: a root iteration yields even if a `Pause` already yielded within it.
+
 ### 6.2 Complexity target
 
 - Re-polling a pending leaf dispatches **zero** ancestor handlers, at any depth.

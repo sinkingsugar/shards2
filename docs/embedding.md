@@ -302,3 +302,7 @@ This watches one source file. Dependency watching, asynchronous compilation,
 general state migration, cross-revision cache reuse and a network serving
 protocol remain deferred. An embedding host can trigger either reload mode
 from its own watcher or command channel.
+
+### Stackless execution limits (M4)
+
+`Mesh::set_max_call_depth(n)` limits nested named invocations; the default is 256 on native/WASI and 32 on ESP-IDF. Exceeding it reports an activation diagnostic with code `recursion-limit`. Anonymous control blocks do not count as named calls. The compose nesting limit remains separately enforced while compose still recurses. A preserving revision retains the mesh's configured runtime limit. The trampoline resumes the active leaf directly and owns child state centrally; LeafShard and AsyncShard implementations need no changes.

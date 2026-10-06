@@ -24,6 +24,7 @@ jobs:
       - run: python3 -m unittest discover -s bench/vm-execution -v
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+      - run: cargo test --release --workspace
       # Small builds: shard documentation prose compiled out, contract kept.
       - run: cargo test -p shards-core -p shards-io --no-default-features --test metadata --test catalog
       - run: cargo test -p shards-lang --no-default-features
@@ -46,8 +47,9 @@ jobs:
       - run: cargo clippy -p shards-core -p shards-lang --target wasm32-wasip1 --lib --tests -- -D warnings
       - name: Run acceptance, metadata and frontend tests on wasm
         run: |
-          cargo test -p shards-core --test prototype --test metadata --target wasm32-wasip1 --no-run
+          cargo test -p shards-core --test prototype --test metadata --test trampoline --target wasm32-wasip1 --no-run
           cargo test -p shards-lang --test lang --target wasm32-wasip1 --no-run
           node scripts/run-wasi.mjs "$(ls -t target/wasm32-wasip1/debug/deps/prototype-*.wasm | head -1)"
           node scripts/run-wasi.mjs "$(ls -t target/wasm32-wasip1/debug/deps/metadata-*.wasm | head -1)"
+          node scripts/run-wasi.mjs "$(ls -t target/wasm32-wasip1/debug/deps/trampoline-*.wasm | head -1)"
           node scripts/run-wasi.mjs "$(ls -t target/wasm32-wasip1/debug/deps/lang-*.wasm | head -1)"

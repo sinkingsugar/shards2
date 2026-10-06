@@ -1,23 +1,14 @@
-//! Experimental stackless scheduler (design doc §3.4).
-//!
-//! Same compiled/state model, same compose (cache, dependency recording,
-//! definite initialization) as the stackful reference. The difference is how
-//! suspension works: there are no coroutines. An activation returns
-//! [`Step::Suspend`], and whatever must survive until the next tick lives in
-//! the instance's state:
-//!
-//! - a [`FlowState`] records which node suspended and that node's input, and
-//!   resumes there;
-//! - a shard that runs nested flows keeps its own resume point (its phase, a
-//!   loop counter) in its `State`.
-//!
-//! On the next tick the scheduler activates the instance's root flow again, and
-//! each level continues from its saved point. Cancelling is just cleanup: there
-//! is no suspended stack to unwind.
+//! Stackless execution on an iterative, directly resumable frame runner.
+//! Composite requests enter child frames; pending leaves resume without
+//! redispatching ancestors. State ownership and cleanup are flat and iterative.
 
+mod arena;
+mod engine;
 pub mod runtime;
 pub mod shards;
 
+pub use engine::Control;
+pub(crate) use engine::Engine;
 use std::any::Any;
 use std::mem::size_of;
 use std::sync::Arc;
@@ -26,9 +17,9 @@ use std::task::Waker;
 use crate::args::Args;
 use crate::compose::{Backend, Binding, CompiledWire, ComposeCtx};
 use crate::error::Result;
-use crate::flow::CompiledFlow;
+
 use crate::instance::{CleanupCtx, Frames, InstanceCtx, InstanceId, LeafCtx};
-use crate::lifecycle::{cleanup_each, instantiate_all};
+
 use crate::shard::{Composed, ShardType};
 use crate::var::Var;
 
@@ -82,6 +73,7 @@ pub struct ActivationCtx<'a> {
   pub(crate) waker: &'a Waker,
   /// The loop iteration ([`LeafCtx::iteration`]).
   pub(crate) iteration: u64,
+  pub(crate) max_call_depth: usize,
 }
 
 impl ActivationCtx<'_> {
@@ -166,15 +158,21 @@ pub trait Shard: 'static {
 
   fn instantiate(compiled: &Self::Compiled, ctx: &mut InstanceCtx) -> Result<Self::State>;
 
+  /// Builtin composites describe children to the runner, never activate them.
+  #[doc(hidden)]
+  fn control(_compiled: &Self::Compiled) -> Option<Control<'_>> {
+    None
+  }
+
   #[doc(hidden)]
   fn inline(_compiled: &Self::Compiled) -> Option<crate::inline::InlineOp> {
     None
   }
 
   /// Starts an activation, or continues one that returned [`Step::Suspend`].
-  /// A shard that can suspend (directly or through a nested flow) must keep
-  /// its resume point in `state`, and must reset it whenever it returns
-  /// anything other than `Suspend`, including errors.
+  /// A directly suspending leaf keeps its pending operation in `state` and
+  /// resets it on completion/error. Builtin composites instead expose their
+  /// control description; the runner owns and resets their continuations.
   fn activate(
     compiled: &Self::Compiled,
     state: &mut Self::State,
@@ -192,6 +190,10 @@ pub trait Shard: 'static {
 /// Type-erased stackless compiled node.
 pub trait CompiledNode: Send + Sync {
   #[doc(hidden)]
+  fn control(&self) -> Option<Control<'_>> {
+    None
+  }
+  #[doc(hidden)]
   fn inline(&self) -> Option<crate::inline::InlineOp> {
     None
   }
@@ -207,6 +209,9 @@ pub trait CompiledNode: Send + Sync {
 struct Node<S: Shard>(S::Compiled);
 
 impl<S: Shard> CompiledNode for Node<S> {
+  fn control(&self) -> Option<Control<'_>> {
+    S::control(&self.0)
+  }
   fn inline(&self) -> Option<crate::inline::InlineOp> {
     S::inline(&self.0)
   }
@@ -255,107 +260,4 @@ pub(crate) fn compose_erased<S: Shard>(
     compiled: Arc::new(Node::<S>(composed.compiled)),
     output: composed.output,
   })
-}
-
-/// Per-instance state of a stackless [`CompiledFlow`]: one state per node,
-/// plus the resume point if the flow is suspended.
-pub struct FlowState {
-  states: Vec<Box<dyn Any>>,
-  /// The node that suspended, and the input it was activated with.
-  resume: Option<(usize, Var)>,
-  cleaned: bool,
-}
-
-impl FlowState {
-  /// Whether the flow is suspended partway (it will resume, not restart).
-  pub fn is_suspended(&self) -> bool {
-    self.resume.is_some()
-  }
-}
-
-impl CompiledFlow<Stackless> {
-  /// Same contract as the stackful version: on failure (or panic), the nodes
-  /// already instantiated are cleaned up before the error is returned.
-  pub fn instantiate(&self, ctx: &mut InstanceCtx) -> Result<FlowState> {
-    let mut cleanup_ctx = ctx.cleanup_ctx();
-    let done = instantiate_all(
-      self.nodes.iter(),
-      |node| node.instantiate(ctx),
-      |node, state| node.cleanup(state.as_mut(), &mut cleanup_ctx),
-    )?;
-    Ok(FlowState {
-      states: done.into_iter().map(|(_, state)| state).collect(),
-      resume: None,
-      cleaned: false,
-    })
-  }
-
-  /// Runs the flow, or continues it from its resume point if it suspended.
-  /// On resume, `input` is ignored: the suspended node gets its saved input.
-  pub fn activate(
-    &self,
-    state: &mut FlowState,
-    ctx: &mut ActivationCtx<'_>,
-    input: &Var,
-  ) -> Result<Step> {
-    let (start, mut value) = match state.resume.take() {
-      Some((index, value)) => (index, value),
-      None => (0, input.clone()),
-    };
-    let mut index = start;
-    while index < self.nodes.len() {
-      if self.code[index].is_constructor() {
-        (index, value) =
-          crate::inline::construct(&self.code, index, value, ctx.locals, ctx.mesh_frame)?;
-        continue;
-      }
-      if !matches!(self.code[index].op, crate::inline::Op::Fallback) {
-        (index, value) = crate::inline::run(&self.code, index, value, ctx.locals, ctx.mesh_frame)?;
-        continue;
-      }
-      match self.nodes[index].activate(state.states[index].as_mut(), ctx, &value)? {
-        Step::Next(output) => value = output,
-        Step::Suspend => {
-          state.resume = Some((index, value));
-          return Ok(Step::Suspend);
-        }
-        other => return Ok(other),
-      }
-      index += 1;
-    }
-    Ok(Step::Next(value))
-  }
-
-  /// Same contract as the stackful version: every node's cleanup runs once,
-  /// even if one panics; the first panic is re-raised afterwards.
-  pub fn cleanup(&self, state: &mut FlowState, ctx: &mut CleanupCtx) {
-    assert!(!state.cleaned, "flow state cleaned up twice");
-    state.cleaned = true;
-    state.resume = None;
-    cleanup_each(
-      self.nodes.iter().zip(state.states.iter_mut()).rev(),
-      |(node, node_state)| node.cleanup(node_state.as_mut(), ctx),
-    );
-  }
-
-  pub fn state_size(&self, state: &FlowState) -> usize {
-    self
-      .nodes
-      .iter()
-      .zip(state.states.iter())
-      .map(|(node, s)| node.state_size(s.as_ref()) + size_of::<Box<dyn Any>>())
-      .sum::<usize>()
-      + size_of::<FlowState>()
-  }
-}
-
-impl Drop for FlowState {
-  fn drop(&mut self) {
-    if !std::thread::panicking() {
-      debug_assert!(
-        self.cleaned || self.states.is_empty(),
-        "flow state dropped without cleanup"
-      );
-    }
-  }
 }

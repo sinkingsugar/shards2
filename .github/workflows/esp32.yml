@@ -72,12 +72,12 @@ jobs:
           key: esp32-${{ matrix.chip }}-${{ matrix.toolchain }}-idf5.5.5
       - name: Link release firmware
         run: >
-          cargo +${{ matrix.toolchain }} build --locked --release --target ${{ matrix.target }}
+          cargo +${{ matrix.toolchain }} build --features acceptance --locked --release --target ${{ matrix.target }}
           --message-format=json-render-diagnostics > "$RUNNER_TEMP/build.json"
       # The example's code is chip-independent; lint it once.
       - name: Lint firmware
         if: matrix.chip == 'esp32c3'
-        run: cargo +${{ matrix.toolchain }} clippy --locked --release --target ${{ matrix.target }} -- -D warnings
+        run: cargo +${{ matrix.toolchain }} clippy --features acceptance --locked --release --target ${{ matrix.target }} -- -D warnings
       - name: Collect generated SDK configuration
         run: |
           mkdir -p artifact
@@ -119,4 +119,4 @@ jobs:
           echo "$RUNNER_TEMP/qemu/bin" >> "$GITHUB_PATH"
           echo "$RUNNER_TEMP/espflash" >> "$GITHUB_PATH"
       - name: Run firmware in QEMU
-        run: ../../scripts/esp32-qemu.sh ${{ matrix.chip }} target/${{ matrix.target }}/release/shards-esp32
+        run: ../../scripts/esp32-qemu.sh ${{ matrix.chip }} target/${{ matrix.target }}/release/shards-esp32 180

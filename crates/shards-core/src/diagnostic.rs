@@ -23,6 +23,7 @@ pub enum Phase {
   /// Building the wire: name resolution and argument decoding.
   Construct,
   Compose,
+  Activate,
 }
 
 impl Phase {
@@ -31,6 +32,7 @@ impl Phase {
       Phase::Parse => "parse",
       Phase::Construct => "construct",
       Phase::Compose => "compose",
+      Phase::Activate => "activate",
     }
   }
 }

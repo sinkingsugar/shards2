@@ -1,7 +1,6 @@
-//! The stackless scheduler: no coroutines. Each tick activates every running
-//! instance's root flow once; a `Suspend` means "activate again next tick",
-//! and the instance's state holds the resume points. Same API and contract as
-//! the stackful [`crate::Mesh`].
+//! Stackless mesh scheduling over the directly resumable frame runner.
+//! Each tick resumes the active innermost leaf; a Suspend parks its frame.
+//! Wake modes, instance isolation and terminal cleanup match the reference.
 
 use std::collections::{HashMap, HashSet};
 use std::mem::size_of;
@@ -9,7 +8,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 use std::task::Waker;
 
-use super::{ActivationCtx, FlowState, Stackless, Step};
+use super::{ActivationCtx, Engine, Stackless, Step};
 use crate::compose::{CacheStats, CompiledWire, ComposeCache, ComposeEnv, FrameLayout, WireDef};
 use crate::error::{Error, Result, panic_message};
 use crate::instance::{InstanceCtx, InstanceId, InstanceMemory, Outcome, WakeFlag, WakeMode};
@@ -23,7 +22,7 @@ struct Instance {
   locals: Vec<Var>,
   /// `None` until instantiated (on the instance's first tick), and after
   /// cleanup.
-  state: Option<FlowState>,
+  state: Option<Engine>,
   started: bool,
   memory: InstanceMemory,
   outcome: Option<Outcome>,
@@ -46,6 +45,7 @@ pub struct Mesh {
   instances: Vec<Instance>,
   next_id: InstanceId,
   wake_mode: WakeMode,
+  max_call_depth: usize,
 }
 
 impl Default for Mesh {
@@ -71,7 +71,17 @@ impl Mesh {
       instances: Vec::new(),
       next_id: 0,
       wake_mode: WakeMode::default(),
+      max_call_depth: if cfg!(target_os = "espidf") { 32 } else { 256 },
     }
+  }
+
+  /// Limit nested named invocations independently of the compose nesting limit.
+  pub fn set_max_call_depth(&mut self, depth: usize) {
+    self.max_call_depth = depth;
+  }
+
+  pub fn max_call_depth(&self) -> usize {
+    self.max_call_depth
   }
 
   pub fn set_wake_mode(&mut self, mode: WakeMode) {
@@ -138,6 +148,7 @@ impl Mesh {
     next.layout = self.layout.clone();
     next.frame = self.frame.clone();
     next.wake_mode = self.wake_mode;
+    next.max_call_depth = self.max_call_depth;
     next
   }
 
@@ -214,6 +225,17 @@ impl Mesh {
     self.inline_calls.lookups.get()
   }
 
+  /// Composite entries and completion handlers dispatched by live instances.
+  /// Pending leaf re-polls must leave this unchanged, regardless of nesting.
+  pub fn composite_dispatches(&self) -> u64 {
+    self
+      .instances
+      .iter()
+      .filter_map(|i| i.state.as_ref())
+      .map(|s| s.dispatches)
+      .sum()
+  }
+
   pub fn cache_stats(&self) -> CacheStats {
     self.cache.stats
   }
@@ -273,6 +295,7 @@ impl Mesh {
       frame,
       spawn_queue,
       inline_calls,
+      max_call_depth,
       ..
     } = self;
     for instance in instances.iter_mut() {
@@ -285,7 +308,7 @@ impl Mesh {
         continue;
       }
       instance.waiting = false;
-      step(instance, frame, spawn_queue, inline_calls);
+      step(instance, frame, spawn_queue, inline_calls, *max_call_depth);
     }
     for (wire, input) in std::mem::take(&mut self.spawn_queue) {
       self.start(wire, input);
@@ -397,6 +420,7 @@ fn step(
   frame: &mut Vec<Var>,
   spawn_queue: &mut Vec<(Arc<CompiledWire<Stackless>>, Var)>,
   inline_calls: &crate::reload::Revisions<Stackless>,
+  max_call_depth: usize,
 ) {
   if !instance.started {
     instance.started = true;
@@ -406,17 +430,19 @@ fn step(
     let wire = &instance.wire;
     // Flow instantiation already turns panics into errors; this is a last
     // line of defense so a panic never escapes `tick`.
-    let instantiated = catch_unwind(AssertUnwindSafe(|| wire.flow.instantiate(&mut ictx)))
-      .unwrap_or_else(|payload| {
-        Err(Error::Activation(format!(
-          "panic in instantiate: {}",
-          panic_message(&*payload)
-        )))
-      });
+    let instantiated = catch_unwind(AssertUnwindSafe(|| {
+      Engine::instantiate(wire.clone(), &mut ictx)
+    }))
+    .unwrap_or_else(|payload| {
+      Err(Error::Activation(format!(
+        "panic in instantiate: {}",
+        panic_message(&*payload)
+      )))
+    });
     match instantiated {
       Ok(state) => {
         instance.memory = InstanceMemory {
-          state_bytes: instance.wire.flow.state_size(&state)
+          state_bytes: state.state_size()
             + instance.locals.len() * size_of::<Var>()
             + size_of::<Vec<Var>>(),
           stack_reserved: 0,
@@ -434,7 +460,6 @@ fn step(
   let result = {
     let Instance {
       id,
-      wire,
       input,
       locals,
       state,
@@ -454,8 +479,9 @@ fn step(
         waiting,
         waker,
         iteration: *iteration,
+        max_call_depth,
       };
-      wire.flow.activate(state, &mut ctx, input)
+      state.activate(&mut ctx, input)
     }))
   };
 
@@ -486,9 +512,7 @@ fn finish(instance: &mut Instance, mut outcome: Outcome) {
       instance: instance.id,
     }
     .cleanup_ctx();
-    let wire = &instance.wire;
-    if let Err(payload) = catch_unwind(AssertUnwindSafe(|| wire.flow.cleanup(&mut state, &mut ctx)))
-    {
+    if let Err(payload) = catch_unwind(AssertUnwindSafe(|| state.cleanup(&mut ctx))) {
       outcome = Outcome::Failed(Error::Activation(format!(
         "panic in cleanup: {}",
         panic_message(&*payload)

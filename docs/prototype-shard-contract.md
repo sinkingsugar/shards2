@@ -236,3 +236,9 @@ measurement. The compiled/state split is not contingent on by-value outputs.
 8. §8: compose-time resolution to `Local`/`Mesh` bindings.
 
 Prototype-only choices (§1 dispatch, §6 output slot, `ActivationCtx` API and suspension representation, §7 stackful coroutines, §9 minimal `Var`) can change after measurement without breaking these.
+
+## Golden path M4 execution update
+
+The stackless runner now owns generation-tagged flow frames and dispatches child entry/completion iteratively. Pending async leaves and Pause resume directly; no ancestor handler is dispatched merely to find a pending leaf. Composite continuations retain the input, phase, loop limit/counter and selected child. The runner resets transient continuation state on value/error/control-signal exits, and routes errors through the nearest Maybe and Return through Do's current named boundary. No frame pointer survives a callback or suspension.
+
+Initialization and cleanup are iterative and preserve the existing depth-first/reverse-depth-first order. Cleanup detaches ownership before calling host code, attempts all leaf cleanups through the shared lifecycle helper, and reports the first panic. Reloaded Do bodies stay pinned while active and replace their child subtree only at the next entry. Native LeafShard and AsyncShard APIs are unchanged. Ordinary variable scope, Keep storage and root-loop yielding are preserved for the later function/frame-layout milestone.

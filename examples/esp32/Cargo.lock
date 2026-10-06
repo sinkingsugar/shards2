@@ -879,8 +879,10 @@ version = "0.1.0"
 dependencies = [
  "embuild",
  "esp-idf-sys",
+ "quote",
  "shards-core",
  "shards-lang",
+ "syn 2.0.119",
 ]
 
 [[package]]

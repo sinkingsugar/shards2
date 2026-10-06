@@ -1,3 +1,26 @@
+#[cfg(feature = "acceptance")]
+mod acceptance {
+  mod prototype {
+    include!(concat!(env!("OUT_DIR"), "/prototype.rs"));
+  }
+  mod metadata {
+    include!(concat!(env!("OUT_DIR"), "/metadata.rs"));
+  }
+  mod lang {
+    include!(concat!(env!("OUT_DIR"), "/lang.rs"));
+  }
+  mod trampoline {
+    include!(concat!(env!("OUT_DIR"), "/trampoline.rs"));
+  }
+  pub fn run() {
+    prototype::run_suite();
+    metadata::run_suite();
+    lang::run_suite();
+    trampoline::run_suite();
+    println!("Shards ESP32 acceptance suites passed");
+  }
+}
+
 use std::collections::HashMap;
 
 use shards_core::{Catalog, Mesh, Outcome, Var};
@@ -18,6 +41,8 @@ fn main() {
   assert_eq!(report.outcomes[0].1, Some(Outcome::Completed(Var::Int(42))));
   assert!(report.spawned_failures.is_empty());
   assert!(report.ticks >= 2, "Pause must suspend and resume");
+  #[cfg(feature = "acceptance")]
+  acceptance::run();
   // Low-water marks since boot: parse, compose and run all happened above.
   // Stack depth follows the code path, so emulator runs measure it too.
   // SAFETY: plain FreeRTOS/ESP-IDF queries; a null handle is this task.

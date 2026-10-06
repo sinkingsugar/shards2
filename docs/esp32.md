@@ -124,3 +124,7 @@ jobs continue to test runtime semantics in depth.
 The build layout follows the official
 [ESP-IDF Rust template](https://github.com/esp-rs/esp-idf-template/tree/master/cargo)
 and Rust's [ESP-IDF target documentation](https://doc.rust-lang.org/rustc/platform-support/esp-idf.html).
+
+## M4 acceptance build
+
+CI builds with `--features acceptance`. The example build script derives a direct runner from `shards-core/tests/{prototype,metadata,trampoline}.rs` and `shards-lang/tests/lang.rs`, preserving test cfg attributes and using the default mesh. The regular smoke example remains available without this feature. Device tests omit panic-unwind-only behavior (ESP-IDF aborts on panic), native filesystem watching and host allocator instrumentation. Deep-call tests obey the device's default invocation limit of 32 and use a smaller over-limit source to fit the heap. The success marker is printed only after all enabled suites finish; a panic or missing marker fails QEMU.

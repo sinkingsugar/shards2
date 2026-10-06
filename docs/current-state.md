@@ -22,13 +22,14 @@ Checkpoint: 2026-10-06. Check `git log` and the working tree for later changes. 
 | M1 opaque collections | done: `Var::Table(Table)` with private storage, `as_table`/`as_seq`/`as_str`, `TableBuilder`, sorted iteration (`host_contract::hosts_use_opaque_collections`) |
 | M2 surface syntax | done, review fixes verified at `cd7a56e`: lowercase labels (D3, enforced by the parser and `Catalog::new`); `= x`, `Var`, `Update`, `Push` (no declare or clear), `Keep` at a wire's top level (D7); `>=`, `>`, `>>`, `Set`, `Ref` removed with plain errors; blocks scope their declarations, no shadowing (`duplicate-binding` with a related location), `reserved-name` for `input`; exhaustive `Match` with `default:` (D8). Tests E and F pass (F's function case waits for M5) |
 | M3 signatures and effects | done, local full checks passed and [Astra review](../.agent-handoffs/reviews/2026-10-06-cd7a56e-codex-76b308.md) found no blockers: common owned/borrowed signature, classified core effects/lifetimes, transitive mesh/effect inference, catalog/describe metadata and source-located occurrence types in `check --json` |
-| M4 to M7 | not started |
+| M4 trampoline | implemented; gate checks in progress. Direct leaf resume, iterative initialization/cleanup, generation-tagged frames, central control continuations, call-depth limit. Stackful remains until native/WASI/device checks, benchmarks and Astra review pass |
+| M5 to M7 | not started |
 
 The code accepts the M2 syntax. `Do` stays until M5 replaces it with functions; a wire inlined by `Do` still shares its caller's variables, and its top level counts as a wire top level for `Keep`.
 
 M2 notes for later milestones:
 
-- Ordinary locals are not yet fresh per root iteration (§3.4); `Keep` is a leaf whose state applies the initial value on first activation, which is correct under both. Revisit when frames move to the trampoline (M4).
+- Ordinary locals are not yet fresh per root iteration (§3.4); `Keep` is a leaf whose state applies the initial value on first activation. M4 preserves the existing scope/storage semantics; the private parameter/Keep/local frame layout lands with M5.
 - With block scoping, `possibly-uninitialized` is no longer reachable from the shipped shards (every declaration assigns, and nothing declared in a branch escapes); the check stays for host shards that declare without assigning.
 - `LeafCtx::iteration` lost its only user (Push's clearing) and is kept for per-iteration locals.
 
@@ -48,4 +49,4 @@ M2 notes for later milestones:
 
 ## Verified
 
-Locally on Linux x86-64 for M3: the full check set in `AGENTS.md` (fmt, clippy native, rustls and wasm, workspace tests on both schedulers, docs-off, release nesting, WASI suites, Python benchmark-runner tests). M2 review findings are independently closed in [.agent-handoffs/verifications/2026-10-06-cd7a56e-codex-af86ad.md](../.agent-handoffs/verifications/2026-10-06-cd7a56e-codex-af86ad.md). CI results come from the draft pull request for `golden-path`; macOS and the ESP32 build are verified only there. Re-run the check set before relying on any status above.
+Locally on Linux x86-64 for M4 before stackful deletion: the full check set in `AGENTS.md` (fmt, clippy native, rustls and wasm, workspace tests on both schedulers in debug and release, docs-off, release nesting, WASI suites including trampoline, Python benchmark-runner tests, targeted arena Miri). M2 review findings are independently closed in [.agent-handoffs/verifications/2026-10-06-cd7a56e-codex-af86ad.md](../.agent-handoffs/verifications/2026-10-06-cd7a56e-codex-af86ad.md). CI results come from the draft pull request for `golden-path`; macOS and the ESP32 build are verified only there. Re-run the check set before relying on any status above.

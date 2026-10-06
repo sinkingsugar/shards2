@@ -198,7 +198,7 @@ Do(outer)"#);
       }
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(any(target_arch = "wasm32", target_os = "espidf")))]
     #[test]
     fn file_watcher_callbacks_preserve_reject_restart_and_stop() {
       use shards_lang::{FileWatcher, WatchControl, WatchEvent};
@@ -326,7 +326,7 @@ Do(outer)"#);
       assert_eq!(lines, ["2", "3"]);
     }
 
-    #[cfg(not(target_family = "wasm"))]
+    #[cfg(panic = "unwind")]
     #[test]
     fn preserving_reload_attempts_cleanup_once_when_boundary_cleanup_panics() {
       use shards_core::shards::{take_probe_events, ProbeEventKind};
@@ -514,7 +514,7 @@ Do(outer)"#);
       assert!(session.tick().is_empty());
     }
 
-    #[cfg(not(target_family = "wasm"))]
+    #[cfg(panic = "unwind")]
     #[test]
     fn reload_reports_cleanup_failure_and_still_cleans_other_instances() {
       use shards_core::shards::{take_probe_events, ProbeEventKind};
@@ -1098,8 +1098,13 @@ If(Any(b {a}) {4} {5}) = z
     fn deep_do_chains_are_a_diagnostic_not_a_crash() {
       // Within the limit it runs, on the stackful scheduler's coroutine
       // stack too.
-      assert_eq!(completed(&run(&do_chain(40), &no_defines()), "root"), Var::Int(1));
-      for n in [80, 400, 3000] {
+      // ESP-IDF's runtime invocation limit is 32; desktop defaults to 256.
+      let depth = if cfg!(target_os = "espidf") { 20 } else { 40 };
+      assert_eq!(completed(&run(&do_chain(depth), &no_defines()), "root"), Var::Int(1));
+      // The device exercises the same over-limit diagnostic without parsing
+      // thousands of unrelated declarations into its constrained heap.
+      let excessive: &[usize] = if cfg!(target_os = "espidf") { &[80] } else { &[80, 400, 3000] };
+      for &n in excessive {
         let report = check(&do_chain(n));
         assert_eq!(report.diagnostics[0].code, "too-deep", "{n}");
       }

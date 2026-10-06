@@ -1,6 +1,6 @@
 // The 1.x client of the HTTP concurrency benchmark (see run.sh). Matched
 // with shards-io's bench_http example: N wires, each doing one Http.Get
-// (timeout: 30) against the shared latency server. Spawning (which in 1.x
+// (Timeout: 30) against the shared latency server. Spawning (which in 1.x
 // also clones and composes each copy) is timed as creation; waiting for every
 // request to finish is timed as execution. Failed requests are counted, so a
 // run cannot look faster by doing less.
@@ -14,7 +14,7 @@
 @wire(req {
   Maybe({
     none
-    Http.Get(@url timeout: 30)
+    Http.Get(@url Timeout: 30)
     Inc(done)
   } {
     Inc(failed)
@@ -27,7 +27,7 @@
   0 | Set(failed Global: true)
 
   Time.NowMs = create-start
-  Repeat({Spawn(req)} times: n)
+  Repeat({Spawn(req)} Times: n)
   Time.NowMs | Sub(create-start) = create-ms
 
   Time.NowMs = exec-start
@@ -35,7 +35,7 @@
   Repeat({
     Pause(0.0)
     Inc(ticks)
-  } until: {done | Add(failed) | IsMoreEqual(n)})
+  } Until: {done | Add(failed) | IsMoreEqual(n)})
   Time.NowMs | Sub(exec-start) = exec-ms
 
   ["BENCH runtime=1.x instances=" n " create_ms=" create-ms " exec_ms=" exec-ms " ticks=" ticks " ok=" done " failed=" failed]

@@ -440,7 +440,7 @@ passed. Independent verification of the review fix remains a separate step.
 
 A second review (`2026-10-05-a003cb7-claude-3dc841#F1`) found that even without
 constructor state caches, `inline::run` borrowed the previous output for its
-whole segment. `[acc]` followed directly by `1 | Push(acc clear: false)` kept
+whole segment. `[acc]` followed directly by `1 | Push(acc Clear: false)` kept
 that captured accumulator shared during Push, causing repeated full copies.
 The earlier constructor-cache finding was independently verified as fixed;
 this is a separate retention cause.

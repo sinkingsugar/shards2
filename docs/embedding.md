@@ -56,7 +56,7 @@ Build one catalog from the core list and the host's list:
 Catalog::new(&[shards_core::shards::CATALOG, HOST_CATALOG])
 ```
 
-Add `shards_io::CATALOG` if scripts use `Http.Get`. then:
+Add `shards_io::CATALOG` if scripts use `Http.Get`. Then:
 
 - **Check without running:** `shards_lang::check::<shards_core::Mesh>(Source::new(path, text), &catalog, &defines)`. It returns the 1.x `{ok, file, diagnostics}` JSON envelope (`to_json()`), and `shards_lang::render` prints a diagnostic for humans.
 - **Run:** `Program::load(source, &catalog, &defines)`, then `program.run::<shards_core::Mesh>()`. The default is the stackless scheduler; `StackfulMesh` is the other one. The report has each entry wire's outcome, plus failures of spawned instances.

@@ -1376,6 +1376,33 @@ fn every_1x_string_escape_is_accepted() {
   assert!(program.is_ok());
 }
 
+/// A declaration or assignment target is a name: computed values and paths
+/// are rejected, not hoisted into a hidden temporary (M2 review F1).
+#[test]
+fn variable_targets_must_be_names() {
+  for (text, line, column) in [
+    ("1 | Var((2))", 1, 9),
+    ("Keep((0) 10)", 1, 6),
+    ("{count: 1} = obj\n7 | Var(obj.count)", 2, 9),
+    ("{count: 1} = obj\n7 | Update(obj.count)", 2, 12),
+    ("1 | Var(2)", 1, 9),
+    ("0 | Var(n)\nInc(n | Add(1))", 2, 5),
+  ] {
+    let d = load_errors(text);
+    assert_eq!(d[0].code, "expected-variable-name", "{text}");
+    assert_eq!(
+      (d[0].line, d[0].column),
+      (Some(line), Some(column)),
+      "{text}"
+    );
+    assert!(
+      d[0].message.contains("takes a variable name"),
+      "{}",
+      d[0].message
+    );
+  }
+}
+
 /// The old assignment forms fail with a plain error naming the word form.
 #[test]
 fn removed_assignment_forms_say_what_to_write() {

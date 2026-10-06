@@ -1043,6 +1043,29 @@ impl Lowerer<'_> {
         values.push(v);
         continue;
       }
+      // A parameter taking only a variable names one (`Var(x)`, `Update(x)`,
+      // `Keep(x 0)`): a computed value or a path cannot be a name.
+      if let Some(d) = decl.filter(|d| names_variable(d))
+        && !is_plain_var(&param.value)
+      {
+        self.problem(
+          Problem::construct(
+            param.value.span,
+            "generic",
+            "expected-variable-name",
+            format!(
+              "{}.{} takes a variable name such as `x`, not a computed value or a path",
+              ty.name(),
+              d.name
+            ),
+          )
+          .shard(ty.name())
+          .param(d.name),
+        );
+        ok = false;
+        values.push(None);
+        continue;
+      }
       if is_direct(&param.value, *decl) {
         values.push(None);
         continue;
@@ -1254,6 +1277,14 @@ fn is_direct(pipe: &Pipe, decl: Option<&ParamDecl>) -> bool {
     },
     _ => false,
   }
+}
+
+/// A parameter that takes only a variable: its value is a name, never a
+/// computed value.
+fn names_variable(d: &ParamDecl) -> bool {
+  d.forms.contains(Forms::VARIABLE)
+    && !d.forms.contains(Forms::LITERAL)
+    && !d.forms.contains(Forms::FLOW)
 }
 
 /// A plain variable read (no path).

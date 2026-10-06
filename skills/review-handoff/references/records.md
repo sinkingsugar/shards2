@@ -11,7 +11,7 @@ Use the following fields as plain Markdown bullets. No parser or database is req
 - Record: <filename stem>
 - Author: <agent/session label; do not guess model identity>
 - Created: <UTC timestamp>
-- base: <full hash, or not applicable with reason>
+- Base: <full hash, or not applicable with reason>
 - Reviewed: <full hash and working-tree qualification>
 - Scope: <included/excluded areas>
 - Provenance: <fresh review, or imported report and its source>

@@ -109,6 +109,8 @@ pub const IF_DESC: ShardDesc = ShardDesc {
   )),
   targets: Targets::All,
   aliases: &[],
+  effects: crate::signature::Effects::NONE,
+  lifetime: crate::signature::Lifetime::Stateless,
 };
 
 /// `flows`: `[predicate, then]` or `[predicate, then, else]`.
@@ -191,6 +193,8 @@ pub const MATCH_DESC: ShardDesc = ShardDesc {
   )),
   targets: Targets::All,
   aliases: &[],
+  effects: crate::signature::Effects::NONE,
+  lifetime: crate::signature::Lifetime::Stateless,
 };
 
 pub struct MatchCompiled<B: Backend> {
@@ -340,6 +344,8 @@ pub const MAYBE_DESC: ShardDesc = ShardDesc {
   )),
   targets: Targets::All,
   aliases: &[],
+  effects: crate::signature::Effects::IO,
+  lifetime: crate::signature::Lifetime::Stateless,
 };
 
 /// `flows`: `[action]` or `[action, else]`.
@@ -418,6 +424,8 @@ pub const ALL_DESC: ShardDesc = ShardDesc {
   output: OutputDesc::Fixed(TypeName::Bool),
   targets: Targets::All,
   aliases: &[],
+  effects: crate::signature::Effects::NONE,
+  lifetime: crate::signature::Lifetime::Stateless,
 };
 
 pub const ANY_DESC: ShardDesc = ShardDesc {
@@ -432,6 +440,8 @@ pub const ANY_DESC: ShardDesc = ShardDesc {
   output: OutputDesc::Fixed(TypeName::Bool),
   targets: Targets::All,
   aliases: &[],
+  effects: crate::signature::Effects::NONE,
+  lifetime: crate::signature::Lifetime::Stateless,
 };
 
 #[derive(Clone, Copy)]

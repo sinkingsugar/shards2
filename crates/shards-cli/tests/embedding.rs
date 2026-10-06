@@ -55,6 +55,8 @@ const READING_DESC: ShardDesc = ShardDesc {
   output: OutputDesc::Dynamic("{id: Int value: Float | None unit: String}"),
   targets: Targets::All,
   aliases: &[],
+  effects: shards_core::signature::Effects::UNKNOWN,
+  lifetime: shards_core::signature::Lifetime::Unknown,
 };
 
 struct Reading;
@@ -127,6 +129,8 @@ const SCAN_DESC: ShardDesc = ShardDesc {
   output: OutputDesc::Fixed(TypeName::Int),
   targets: Targets::NativeOnly,
   aliases: &[],
+  effects: shards_core::signature::Effects::UNKNOWN,
+  lifetime: shards_core::signature::Lifetime::Unknown,
 };
 
 struct Scan;

@@ -17,6 +17,7 @@ pub struct CompiledFlow<B: Backend> {
   pub(crate) nodes: Vec<Arc<B::Node>>,
   pub(crate) code: Vec<crate::inline::Instruction>,
   pub output: Type,
+  pub analysis: crate::signature::Analysis,
 }
 
 /// Per-instance state of a [`CompiledFlow`]: one state per node.

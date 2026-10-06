@@ -20,8 +20,9 @@ Checkpoint: 2026-10-06. Check `git log` and the working tree for later changes. 
 | M0 docs hygiene | done (this file, `history.md`, README) |
 | M0 authoring eval | done: 38 tasks with references checked by `cargo test`, the `current` primer, a runner for any model CLI that judges `shards2 run --json` logs ([README](../bench/authoring/README.md)). Baseline in `bench/authoring/results/2026-10-06-baseline` (3 trials, `shards2` from tag `authoring-control-v1`, Claude Code 2.1.291): `claude-sonnet-5-5` 113 of 114 correct, 112 clean first passes; `claude-haiku-4-5-20251001` 110 of 114, 101 clean first passes. The first single-trial run is kept, superseded, in `results/2026-10-06-sonnet-primer-v1` |
 | M1 opaque collections | done: `Var::Table(Table)` with private storage, `as_table`/`as_seq`/`as_str`, `TableBuilder`, sorted iteration (`host_contract::hosts_use_opaque_collections`) |
-| M2 surface syntax | done, awaiting review: lowercase labels (D3, enforced by the parser and `Catalog::new`); `= x`, `Var`, `Update`, `Push` (no declare or clear), `Keep` at a wire's top level (D7); `>=`, `>`, `>>`, `Set`, `Ref` removed with plain errors; blocks scope their declarations, no shadowing (`duplicate-binding` with a related location), `reserved-name` for `input`; exhaustive `Match` with `default:` (D8). Tests E and F pass (F's function case waits for M5) |
-| M3 to M7 | not started |
+| M2 surface syntax | done, review fixes verified at `cd7a56e`: lowercase labels (D3, enforced by the parser and `Catalog::new`); `= x`, `Var`, `Update`, `Push` (no declare or clear), `Keep` at a wire's top level (D7); `>=`, `>`, `>>`, `Set`, `Ref` removed with plain errors; blocks scope their declarations, no shadowing (`duplicate-binding` with a related location), `reserved-name` for `input`; exhaustive `Match` with `default:` (D8). Tests E and F pass (F's function case waits for M5) |
+| M3 signatures and effects | done, local full checks passed and [Astra review](../.agent-handoffs/reviews/2026-10-06-cd7a56e-codex-76b308.md) found no blockers: common owned/borrowed signature, classified core effects/lifetimes, transitive mesh/effect inference, catalog/describe metadata and source-located occurrence types in `check --json` |
+| M4 to M7 | not started |
 
 The code accepts the M2 syntax. `Do` stays until M5 replaces it with functions; a wire inlined by `Do` still shares its caller's variables, and its top level counts as a wire top level for `Keep`.
 
@@ -47,4 +48,4 @@ M2 notes for later milestones:
 
 ## Verified
 
-Locally on Linux x86-64 at each M2 commit: the full check set in `AGENTS.md` (fmt, clippy native, rustls and wasm, workspace tests on both schedulers, docs-off, release nesting, WASI suites). CI results come from the draft pull request for `golden-path`; macOS and the ESP32 build are verified only there. Re-run the check set before relying on any status above.
+Locally on Linux x86-64 for M3: the full check set in `AGENTS.md` (fmt, clippy native, rustls and wasm, workspace tests on both schedulers, docs-off, release nesting, WASI suites, Python benchmark-runner tests). M2 review findings are independently closed in [.agent-handoffs/verifications/2026-10-06-cd7a56e-codex-af86ad.md](../.agent-handoffs/verifications/2026-10-06-cd7a56e-codex-af86ad.md). CI results come from the draft pull request for `golden-path`; macOS and the ESP32 build are verified only there. Re-run the check set before relying on any status above.

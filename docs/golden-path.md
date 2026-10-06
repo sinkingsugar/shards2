@@ -127,6 +127,8 @@ pub struct Effects {
 
 A shard that declares nothing is `unknown`. Every core catalog shard is classified in M3. A definition's effects are the union over its body, its argument expressions and everything it calls (over each strongly connected component once recursion exists), plus its mesh access and lifetime from the signature. `pure: true` requires: stateless, no mesh access, all effect flags false, no suspension. A failure is `not-pure`, naming the offending shard and effect. Effect metadata on native shards is a trusted host contract, not a sandbox.
 
+M3 implementation: `signature::Signature` is the shared owned-or-borrowed view; native descriptions and compiled wires expose it. `CompiledFlow::analysis` carries inferred effects, mesh access and relative occurrence paths; frontend analysis attaches source locations. See [metadata implementation](shard-metadata-and-compose.md#golden-path-m3-signatures-and-inference) for JSON fields and conservative native classifications. Function declarations and purity/permission enforcement remain M5.
+
 ## 4. Lowering and caching
 
 - A compiled function body holds callee-relative bindings, its frame layout, effects, code and the node-to-source mapping. A call site holds argument evaluation code plus a reference to a compiled body; bodies are never cloned into callers.

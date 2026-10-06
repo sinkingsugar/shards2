@@ -44,12 +44,16 @@ fn check_json_reports_located_diagnostics() {
 fn check_ok_and_run_with_script_arguments() {
   let file = script("ok.shs", "@n = text\n40 | Add(2)\n");
   let (code, out, _) = shards2(&["check", "--json", &file, "n:hello"]);
-  assert_eq!(
-    (code, out.trim()),
-    (
-      0,
-      format!("{{\"ok\":true,\"file\":\"{file}\",\"diagnostics\":[]}}").as_str()
-    )
+  assert_eq!(code, 0, "{out}");
+  assert!(
+    out.starts_with(&format!(
+      "{{\"ok\":true,\"file\":\"{file}\",\"diagnostics\":[],\"wires\":["
+    )),
+    "{out}"
+  );
+  assert!(
+    out.contains("\"input\":\"Int\",\"output\":\"Int\""),
+    "{out}"
   );
   // Script arguments may come before the file.
   let (code, _, err) = shards2(&["check", "n:hello", &file]);

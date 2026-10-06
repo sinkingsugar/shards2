@@ -14,6 +14,10 @@ Depend on them by path or git. Host shards live in the host's own crate, and not
 
 Every shard has one static description (`ShardDesc`). Its name, version, help, parameters, input and output come from there, and the decoder, catalog and documentation all read it. Prefix host shard names with a namespace (`Host.Reading`) so they cannot collide with core names; `Catalog::new` rejects duplicates, aliases included.
 
+Declare `effects: Effects` and `lifetime: Lifetime` from `shards_core::signature` in the description. Effects describe potential suspension, I/O, time, randomness and unknown behavior; use `Effects::NONE` only for operations with none of these. `ShardDesc::undocumented` defaults to unknown effects and lifetime. This is a trusted host contract. Stateless describes semantic lifetime: temporary state retained during a suspended operation does not make a shard stateful; state remembered across invocations does.
+
+Compose records mesh reads through `ComposeCtx::read_var` (also used by `Operand`) and writes through `mark_initialized`. A read-modify-write must use both. `var` is only a binding lookup and records no read. Use the compose helpers for child flows and wires so their effects and mesh access are included. `CompiledWire::signature()` exposes exact composed types and inferred mesh access; `ShardDesc::signature()` exposes native metadata through the same owned-or-borrowed view.
+
 Choose the trait by what the shard does:
 
 | The shard | Implement | Notes |

@@ -134,6 +134,8 @@ pub const LOG_DESC: ShardDesc = ShardDesc {
   output: OutputDesc::Passthrough,
   targets: Targets::All,
   aliases: &[],
+  effects: crate::signature::Effects::IO,
+  lifetime: crate::signature::Lifetime::Stateless,
 };
 
 pub struct Log;
@@ -188,6 +190,8 @@ pub const STOP_DESC: ShardDesc = ShardDesc {
   )),
   targets: Targets::All,
   aliases: &[],
+  effects: crate::signature::Effects::NONE,
+  lifetime: crate::signature::Lifetime::Stateless,
 };
 
 pub struct Stop;
@@ -245,6 +249,8 @@ impl EqualitySpec for IsSpec {
     output: OutputDesc::Fixed(TypeName::Bool),
     targets: Targets::All,
     aliases: &[],
+    effects: crate::signature::Effects::NONE,
+    lifetime: crate::signature::Lifetime::Stateless,
   };
   const EQUAL: bool = true;
 }
@@ -260,6 +266,8 @@ impl EqualitySpec for IsNotSpec {
     output: OutputDesc::Fixed(TypeName::Bool),
     targets: Targets::All,
     aliases: &[],
+    effects: crate::signature::Effects::NONE,
+    lifetime: crate::signature::Lifetime::Stateless,
   };
   const EQUAL: bool = false;
 }
@@ -337,6 +345,8 @@ const fn ordered_desc(name: &'static str, summary: &'static str) -> ShardDesc {
     output: OutputDesc::Fixed(TypeName::Bool),
     targets: Targets::All,
     aliases: &[],
+    effects: crate::signature::Effects::NONE,
+    lifetime: crate::signature::Lifetime::Stateless,
   }
 }
 
@@ -403,6 +413,8 @@ pub const IS_ANY_DESC: ShardDesc = ShardDesc {
   output: OutputDesc::Fixed(TypeName::Bool),
   targets: Targets::All,
   aliases: &[],
+  effects: crate::signature::Effects::NONE,
+  lifetime: crate::signature::Lifetime::Stateless,
 };
 
 pub struct IsAny;
@@ -480,6 +492,8 @@ pub const PARSE_INT_DESC: ShardDesc = ShardDesc {
   output: OutputDesc::Fixed(TypeName::Int),
   targets: Targets::All,
   aliases: &[],
+  effects: crate::signature::Effects::NONE,
+  lifetime: crate::signature::Lifetime::Stateless,
 };
 
 pub struct ParseInt;
@@ -579,6 +593,8 @@ const fn pure_desc(
     output,
     targets: Targets::All,
     aliases: &[],
+    effects: crate::signature::Effects::NONE,
+    lifetime: crate::signature::Lifetime::Stateless,
   }
 }
 
@@ -683,15 +699,18 @@ impl PureOp for IsNotNoneOp {
 
 pub struct TimeNowOp;
 impl PureOp for TimeNowOp {
-  const DESC: ShardDesc = pure_desc(
-    "Time.Now",
-    crate::shard_doc!("Outputs the time in seconds, from a monotonic clock."),
-    crate::shard_doc!(
-      "Ignores its input. The value counts from an arbitrary start (the first use in the process): use it for differences, not dates."
-    ),
-    InputDesc::Ignored,
-    OutputDesc::Fixed(TypeName::Float),
-  );
+  const DESC: ShardDesc = ShardDesc {
+    effects: crate::signature::Effects::TIME,
+    ..pure_desc(
+      "Time.Now",
+      crate::shard_doc!("Outputs the time in seconds, from a monotonic clock."),
+      crate::shard_doc!(
+        "Ignores its input. The value counts from an arbitrary start (the first use in the process): use it for differences, not dates."
+      ),
+      InputDesc::Ignored,
+      OutputDesc::Fixed(TypeName::Float),
+    )
+  };
   fn output(_: Type) -> std::result::Result<Type, &'static [TypeName]> {
     Ok(Type::float())
   }

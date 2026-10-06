@@ -281,19 +281,7 @@ impl Diagnostic {
       ));
     }
     if !self.path.is_empty() {
-      let steps: Vec<String> = self
-        .path
-        .iter()
-        .map(|step| match step {
-          PathStep::Wire(name) => format!("{{\"wire\":{}}}", json_str(name)),
-          PathStep::Shard { index, name } => {
-            format!("{{\"shard\":{index},\"name\":{}}}", json_str(name))
-          }
-          PathStep::Param(name) => format!("{{\"param\":{}}}", json_str(name)),
-          PathStep::Item(index) => format!("{{\"item\":{index}}}"),
-        })
-        .collect();
-      fields.push(format!("\"path\":[{}]", steps.join(",")));
+      fields.push(format!("\"path\":{}", path_json(&self.path)));
     }
     format!("{{{}}}", fields.join(","))
   }
@@ -384,4 +372,20 @@ pub fn json_str(s: &str) -> String {
   }
   out.push('"');
   out
+}
+
+/// JSON for a semantic occurrence path, shared by diagnostics and analysis.
+pub fn path_json(path: &[PathStep]) -> String {
+  let steps: Vec<String> = path
+    .iter()
+    .map(|step| match step {
+      PathStep::Wire(name) => format!("{{\"wire\":{}}}", json_str(name)),
+      PathStep::Shard { index, name } => {
+        format!("{{\"shard\":{index},\"name\":{}}}", json_str(name))
+      }
+      PathStep::Param(name) => format!("{{\"param\":{}}}", json_str(name)),
+      PathStep::Item(index) => format!("{{\"item\":{index}}}"),
+    })
+    .collect();
+  format!("[{}]", steps.join(","))
 }

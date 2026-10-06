@@ -25,6 +25,7 @@ pub mod reload;
 pub mod runtime;
 pub mod shard;
 pub mod shards;
+pub mod signature;
 pub mod stackless;
 pub mod types;
 pub mod var;

@@ -16,6 +16,7 @@ use crate::error::Result;
 use crate::flow::CompiledFlow;
 use crate::reload::{InlineCall, InlineKey, InlineRegistry, InlineSignature, SiteStep};
 use crate::shard::{Composed, ShardDef, ShardType};
+use crate::signature::{Analysis, Occurrence};
 use crate::types::Type;
 
 /// A scheduler's kind of compiled node. Compose is shared by both schedulers:
@@ -175,6 +176,25 @@ pub struct CompiledWire<B: Backend> {
 }
 
 impl<B: Backend> CompiledWire<B> {
+  /// A process signature with exact composed types and inferred mesh access.
+  pub fn signature(&self) -> crate::signature::Signature<'_> {
+    use crate::signature::{Lifetime, Signature, SignatureInput, SignatureOutput};
+    Signature {
+      name: self.name.as_str().into(),
+      revision: 1,
+      input: SignatureInput::Type(self.input),
+      output: SignatureOutput::Type(self.flow.output),
+      params: Some(Vec::new()),
+      lifetime: Lifetime::Stateful,
+      effects: self.flow.analysis.effects,
+      uses: self.flow.analysis.uses.clone(),
+      mutates: self.flow.analysis.mutates.clone(),
+      source: None,
+      summary: "".into(),
+      help: "".into(),
+    }
+  }
+
   pub fn deps_valid(&self, env: &ComposeEnv<'_>) -> bool {
     self.deps.iter().all(|d| d.still_valid(env))
   }
@@ -191,6 +211,7 @@ pub(crate) enum Child {
 
 /// The context a shard's `compose` receives.
 pub struct ComposeCtx<'a, B: Backend> {
+  analysis: Analysis,
   input: Type,
   locals: FrameLayout,
   env: &'a ComposeEnv<'a>,
@@ -321,7 +342,12 @@ impl<B: Backend> ComposeCtx<'_, B> {
           "{name} may be uninitialized here (it is only assigned in a branch or loop body that might not run)"
         ),
       ),
-      Some(info) => Ok(info),
+      Some(info) => {
+        if matches!(info.binding, Binding::Mesh(_)) {
+          self.analysis.access(name, info.ty, false);
+        }
+        Ok(info)
+      }
     }
   }
 
@@ -341,6 +367,10 @@ impl<B: Backend> ComposeCtx<'_, B> {
 
   /// Records that the shard being composed assigns this variable.
   pub fn mark_initialized(&mut self, binding: Binding) {
+    if let Binding::Mesh(i) = binding {
+      let (name, slot) = &self.env.mesh_layout.slots[i];
+      self.analysis.access(name, slot.ty, true);
+    }
     if let Binding::Local(i) = binding {
       self.initialized[i] = true;
     }
@@ -374,15 +404,34 @@ impl<B: Backend> ComposeCtx<'_, B> {
     result
   }
 
+  fn child_prefix(&self, child: &Child) -> Vec<PathStep> {
+    let mut path = Vec::new();
+    if let Some((param, item)) = self.current_args.as_ref().and_then(|a| a.param_of(child)) {
+      path.push(PathStep::Param(param.into()));
+      if let Some(item) = item {
+        path.push(PathStep::Item(item));
+      }
+    }
+    if let Child::Wire(name) = child {
+      path.push(PathStep::Wire(name.clone()));
+    }
+    path
+  }
+
   /// Composes a nested flow (e.g. a `When` body) with the given input type,
   /// into the same local frame. The flow is a block: names it declares are
   /// not visible after it (golden-path.md §3.2).
   pub fn compose_flow(&mut self, flow: &[ShardDef], input: Type) -> Result<CompiledFlow<B>> {
+    let child = Child::Flow(flow.as_ptr());
     let visible = self.locals.visible();
     self.blocks += 1;
     let result = self.compose_flow_unscoped(flow, input);
     self.blocks -= 1;
     self.locals.restore_visible(visible);
+    if let Ok(flow) = &result {
+      let prefix = self.child_prefix(&child);
+      self.analysis.include(&flow.analysis, &prefix);
+    }
     result
   }
 
@@ -426,6 +475,7 @@ impl<B: Backend> ComposeCtx<'_, B> {
 
   fn compose_flow_at_depth(&mut self, flow: &[ShardDef], input: Type) -> Result<CompiledFlow<B>> {
     let saved = self.input;
+    let mut analysis = Analysis::default();
     let mut nodes = Vec::with_capacity(flow.len());
     let mut code = Vec::with_capacity(flow.len());
     let mut ty = input;
@@ -451,6 +501,15 @@ impl<B: Backend> ComposeCtx<'_, B> {
         index,
         name: def.ty.name().into(),
       });
+      let node_input = self.input;
+      let parent_analysis = std::mem::replace(
+        &mut self.analysis,
+        Analysis {
+          effects: def.ty.desc.effects,
+          lifetime: def.ty.desc.lifetime,
+          ..Analysis::default()
+        },
+      );
       let composed = decode(&def.ty.desc, &def.args).and_then(|args| {
         check_input(def.ty, self.input)?;
         let args = Arc::new(args);
@@ -475,6 +534,7 @@ impl<B: Backend> ComposeCtx<'_, B> {
       self.diagnostic_path.pop();
       self.site.path.pop();
       self.next_flow = saved_next;
+      let mut node_analysis = std::mem::replace(&mut self.analysis, parent_analysis);
       let composed = match composed {
         Ok(c) => c,
         Err(err) => {
@@ -487,6 +547,23 @@ impl<B: Backend> ComposeCtx<'_, B> {
           }));
         }
       };
+      node_analysis.occurrences.insert(
+        0,
+        Occurrence {
+          path: Vec::new(),
+          input: node_input,
+          output: composed.output,
+          effects: node_analysis.effects,
+          lifetime: node_analysis.lifetime,
+        },
+      );
+      analysis.include(
+        &node_analysis,
+        &[PathStep::Shard {
+          index,
+          name: def.ty.name().into(),
+        }],
+      );
       code.push(crate::inline::Instruction::new(
         B::inline(&composed.compiled),
         def.ty.name(),
@@ -502,6 +579,7 @@ impl<B: Backend> ComposeCtx<'_, B> {
     let output = if diverged { Type::never() } else { ty };
     crate::inline::lower_scratch_releases(&mut code);
     Ok(CompiledFlow {
+      analysis,
       nodes,
       code,
       output,
@@ -544,6 +622,12 @@ impl<B: Backend> ComposeCtx<'_, B> {
     self.composing.pop();
     self.diagnostic_path = parent_path;
     self.current_args = parent_args;
+    if let Ok(flow) = &flow {
+      self.analysis.include(
+        &flow.analysis,
+        &self.child_prefix(&Child::Wire(name.into())),
+      );
+    }
     flow
   }
 
@@ -606,6 +690,10 @@ impl<B: Backend> ComposeCtx<'_, B> {
           self.failed_child = Some(Child::Wire(name.to_string()));
         }
       })?;
+    self.analysis.include(
+      &wire.flow.analysis,
+      &self.child_prefix(&Child::Wire(name.into())),
+    );
     self.deps.extend(wire.deps.iter().cloned());
     self.restart_deps.extend(wire.deps.iter().cloned());
     self.inline_calls.extend(
@@ -782,6 +870,7 @@ impl<B: Backend> ComposeCache<B> {
     composing.push(def.name.clone());
     let result = {
       let mut ctx = ComposeCtx {
+        analysis: Analysis::default(),
         input,
         locals: FrameLayout::default(),
         env,

@@ -24,6 +24,8 @@ const DRIFTED_DESC: ShardDesc = ShardDesc {
   output: OutputDesc::Dynamic("{name: String}"),
   targets: Targets::All,
   aliases: &[],
+  effects: shards_core::signature::Effects::UNKNOWN,
+  lifetime: shards_core::signature::Lifetime::Unknown,
 };
 
 impl LeafShard for Drifted {
@@ -67,6 +69,8 @@ const RECORD_DESC: ShardDesc = ShardDesc {
   output: OutputDesc::Passthrough,
   targets: Targets::All,
   aliases: &[],
+  effects: shards_core::signature::Effects::UNKNOWN,
+  lifetime: shards_core::signature::Lifetime::Unknown,
 };
 
 impl LeafShard for Record {
@@ -128,6 +132,27 @@ fn wire(input: Var) -> WireDef {
 macro_rules! host_contract_tests {
   ($mesh:ty) => {
     use super::*;
+
+    #[test]
+    fn unknown_host_effects_propagate_through_nested_flows() {
+      use shards_core::shards::defs::{konst, sub};
+      let mut mesh = <$mesh>::new();
+      mesh.add_wire(WireDef {
+        name: "unknown".into(),
+        looped: false,
+        flow: vec![sub(vec![
+          konst(Var::Int(1)),
+          ShardDef::new(&DRIFTED, vec![]),
+        ])],
+      });
+      let wire = mesh.compile("unknown", Type::none()).unwrap();
+      assert!(wire.flow.analysis.effects.unknown);
+      assert!(wire.flow.analysis.occurrences[0].effects.unknown);
+      assert_eq!(
+        wire.flow.analysis.lifetime,
+        shards_core::signature::Lifetime::Unknown
+      );
+    }
 
     #[test]
     fn declared_input_types_are_enforced() {

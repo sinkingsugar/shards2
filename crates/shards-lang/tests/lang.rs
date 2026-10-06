@@ -1207,14 +1207,38 @@ If(Any(b {a}) {4} {5}) = z
     }
 
     #[test]
+    fn analysis_locates_nested_calls_and_computed_operands() {
+      use shards_core::diagnostic::PathStep;
+      let report = check("@wire(helper {Pause 2 | Math.Add(3)})\n1 | Math.Add((Time.Now | ToInt))\nDo(helper)\nDo(helper)\nKeep(n 0)");
+      assert!(report.ok(), "{}", report.to_json());
+      let root = &report.wires[0];
+      assert!(root.analysis.effects.time && root.analysis.effects.suspends);
+      assert_eq!(root.analysis.lifetime, shards_core::signature::Lifetime::Stateful);
+      let calls: Vec<_> = root.occurrences.iter().filter(|o| matches!(o.occurrence.path.last(), Some(PathStep::Shard {name, ..}) if name == "Do")).collect();
+      assert_eq!(calls.iter().map(|o| o.line.unwrap()).collect::<Vec<_>>(), [3, 4]);
+      assert!(calls.iter().all(|o| o.occurrence.effects.suspends));
+      let pauses: Vec<_> = root.occurrences.iter().filter(|o| matches!(o.occurrence.path.last(), Some(PathStep::Shard {name, ..}) if name == "Pause")).collect();
+      assert_eq!(pauses.len(), 2);
+      assert_ne!(pauses[0].occurrence.path, pauses[1].occurrence.path);
+      assert_eq!(pauses[0].line, Some(1));
+      assert_eq!(pauses[0].column, Some(15));
+      let time = root.occurrences.iter().find(|o| matches!(o.occurrence.path.last(), Some(PathStep::Shard {name, ..}) if name == "Time.Now")).unwrap();
+      assert_eq!(time.line, Some(2));
+      assert_eq!(time.occurrence.output, shards_core::Type::float());
+      assert!(root.occurrences.iter().all(|o| o.span.is_some()));
+      // Separate source locations never enter a shared compose artifact.
+      let shifted = check("\n\n1 | Math.Add(2)");
+      assert!(shifted.wires[0].occurrences.iter().all(|o| o.line == Some(3)));
+    }
+
+    #[test]
     fn a_valid_program_checks_clean() {
       let report =
         check("@wire(w { 1 | Add(1) })\n@mesh(main)\n@schedule(main w)\n@run(main fps: 30)");
       assert!(report.ok(), "{}", report.to_json());
-      assert_eq!(
-        report.to_json(),
-        "{\"ok\":true,\"file\":\"t.shs\",\"diagnostics\":[]}"
-      );
+      assert!(report.to_json().starts_with("{\"ok\":true,\"file\":\"t.shs\",\"diagnostics\":[],\"wires\":["));
+      assert_eq!(report.wires[0].occurrences.len(), 2);
+      assert_eq!(report.wires[0].occurrences[1].occurrence.output, shards_core::Type::int());
     }
   };
 }

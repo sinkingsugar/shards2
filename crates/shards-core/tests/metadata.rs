@@ -26,6 +26,41 @@ macro_rules! metadata_tests {
       }
     }
 
+    #[test]
+    fn analysis_tracks_mesh_access_effects_and_cached_spawn_occurrences() {
+      use shards_core::diagnostic::PathStep;
+      use shards_core::signature::{Effects, Lifetime};
+      let mut mesh = Mesh::new();
+      mesh.declare_var("read", Var::Int(1), false);
+      mesh.declare_var("write", Var::Int(0), true);
+      mesh.declare_var("counter", Var::Int(0), true);
+      mesh.add_wire(WireDef { name: "child".into(), looped: false, flow: vec![
+        get("read"), update("write"), inc("counter"), pause(),
+      ] });
+      let child = mesh.compile("child", Type::none()).unwrap();
+      let a = &child.flow.analysis;
+      assert_eq!(a.effects, Effects::WAIT);
+      assert_eq!(a.uses.iter().map(|a| a.name.as_str()).collect::<Vec<_>>(), ["counter", "read"]);
+      assert_eq!(a.mutates.iter().map(|a| a.name.as_str()).collect::<Vec<_>>(), ["counter", "write"]);
+      mesh.add_wire(wire(vec![spawn("child"), spawn("child")]));
+      let root = mesh.compile("test", Type::none()).unwrap();
+      let a = &root.flow.analysis;
+      assert!(a.effects.suspends && a.effects.time && a.effects.io && !a.effects.unknown);
+      assert_eq!(a.lifetime, Lifetime::Stateless);
+      assert_eq!(root.signature().lifetime, Lifetime::Stateful);
+      let pauses: Vec<_> = a.occurrences.iter().filter(|o| matches!(o.path.last(), Some(PathStep::Shard { name, .. }) if name == "Pause")).collect();
+      assert_eq!(pauses.len(), 2);
+      assert_ne!(pauses[0].path, pauses[1].path);
+      assert_eq!(a.uses, child.flow.analysis.uses);
+      assert_eq!(a.mutates, child.flow.analysis.mutates);
+      assert_eq!(root.signature().effects, a.effects);
+      // Compiling again reuses all inferred metadata without running compose.
+      let hits = mesh.cache_stats().hits;
+      let again = mesh.compile("test", Type::none()).unwrap();
+      assert!(mesh.cache_stats().hits > hits);
+      assert_eq!(again.flow.analysis, *a);
+    }
+
     fn compile_error(flow: Vec<ShardDef>, input: Type) -> Diagnostic {
       let mut mesh = Mesh::new();
       mesh.add_wire(wire(flow));
@@ -1094,5 +1129,53 @@ fn the_catalog_rejects_uppercase_parameter_names() {
   assert_eq!(
     err,
     "Host.Upper: parameter `Target` must be a lowercase label (`target`)"
+  );
+}
+
+#[test]
+fn signatures_classify_every_core_shard_and_support_owned_metadata() {
+  use shards_core::signature::{Effects, Lifetime, Signature, SignatureInput, SignatureOutput};
+  for shard in CATALOG {
+    assert!(!shard.desc.effects.unknown, "{}", shard.name());
+    assert_ne!(shard.desc.lifetime, Lifetime::Unknown, "{}", shard.name());
+  }
+  assert_eq!(
+    shards_core::ShardDesc::undocumented("Host.Unknown", 1).effects,
+    Effects::UNKNOWN
+  );
+  assert!(shards_core::shards::values::TIME_NOW.desc.effects.time);
+  assert_eq!(shards_core::shards::ADD.desc.effects, Effects::NONE);
+  assert_eq!(
+    shards_core::shards::SPAWN.desc.lifetime,
+    Lifetime::Stateless
+  );
+  assert_eq!(
+    shards_core::shards::PROBE.desc.lifetime,
+    Lifetime::Stateless
+  );
+  assert_eq!(shards_core::shards::KEEP.desc.lifetime, Lifetime::Stateful);
+  assert_eq!(shards_core::shards::ONCE.desc.lifetime, Lifetime::Stateful);
+  // Owned dynamic names require no leaked allocations or static descriptions.
+  let sig: Signature<'static> = Signature {
+    name: String::from("Script.Scale").into(),
+    revision: 2,
+    input: SignatureInput::Type(shards_core::Type::float()),
+    output: SignatureOutput::Type(shards_core::Type::float()),
+    params: Some(vec![]),
+    lifetime: Lifetime::Stateless,
+    effects: Effects::NONE,
+    uses: vec![],
+    mutates: vec![],
+    source: None,
+    summary: String::from("Scale a value").into(),
+    help: String::new().into(),
+  };
+  assert!(sig.to_json().contains("Script.Scale"));
+  assert!(
+    Catalog::new(&[CATALOG])
+      .unwrap()
+      .describe_json("Pause")
+      .unwrap()
+      .contains("\"suspends\":true")
   );
 }

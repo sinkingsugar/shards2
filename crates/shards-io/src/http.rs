@@ -125,6 +125,8 @@ pub const GET_DESC: ShardDesc = ShardDesc {
   output: OutputDesc::Fixed(TypeName::String),
   targets: Targets::NativeOnly,
   aliases: &[],
+  effects: shards_core::signature::Effects::IO_WAIT,
+  lifetime: shards_core::signature::Lifetime::Stateless,
 };
 
 fn compose_error(code: &'static str, message: String, param: &str, index: usize) -> Error {

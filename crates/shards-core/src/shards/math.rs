@@ -246,6 +246,8 @@ const fn binary_desc(
     )),
     targets: Targets::All,
     aliases,
+    effects: crate::signature::Effects::NONE,
+    lifetime: crate::signature::Lifetime::Stateless,
   }
 }
 
@@ -318,6 +320,8 @@ pub const DEC_DESC: ShardDesc = ShardDesc {
   output: OutputDesc::Fixed(TypeName::Int),
   targets: Targets::All,
   aliases: &["Dec"],
+  effects: crate::signature::Effects::NONE,
+  lifetime: crate::signature::Lifetime::Stateless,
 };
 
 pub struct Dec;
@@ -378,6 +382,8 @@ const fn unary_desc(
     output: OutputDesc::SameAsInput,
     targets: Targets::All,
     aliases,
+    effects: crate::signature::Effects::NONE,
+    lifetime: crate::signature::Lifetime::Stateless,
   }
 }
 
@@ -523,6 +529,8 @@ pub const LENGTH_DESC: ShardDesc = ShardDesc {
   output: OutputDesc::Fixed(TypeName::Float),
   targets: Targets::All,
   aliases: &[],
+  effects: crate::signature::Effects::NONE,
+  lifetime: crate::signature::Lifetime::Stateless,
 };
 
 pub struct Length;

@@ -221,6 +221,8 @@ pub const REQUEST_DESC: ShardDesc = ShardDesc {
   output: OutputDesc::Fixed(TypeName::Int),
   targets: Targets::All,
   aliases: &[],
+  effects: crate::signature::Effects::IO_WAIT,
+  lifetime: crate::signature::Lifetime::Stateless,
 };
 
 impl AsyncShard for Request {

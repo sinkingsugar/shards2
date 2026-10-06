@@ -137,13 +137,15 @@ fn aliases_json(s: &ShardType) -> String {
 
 fn summary_json(s: &ShardType) -> String {
   format!(
-    "{{\"name\":{}{},\"summary\":{},\"documented\":{},\"backends\":{},\"targets\":{}}}",
+    "{{\"name\":{}{},\"summary\":{},\"documented\":{},\"backends\":{},\"targets\":{},\"effects\":{},\"lifetime\":{}}}",
     json_str(s.name()),
     aliases_json(s),
     json_str(s.desc.summary),
     s.desc.is_documented(),
     strings_json(&s.backends()),
     json_str(s.desc.targets.name()),
+    s.desc.effects.to_json(),
+    json_str(s.desc.lifetime.name()),
   )
 }
 
@@ -159,6 +161,7 @@ fn default_json(d: DefaultValue) -> String {
 
 fn describe_json(s: &ShardType) -> String {
   let d = &s.desc;
+  let signature = d.signature();
   let input = match d.input {
     InputDesc::Any => "{\"kind\":\"any\"}".to_string(),
     InputDesc::Ignored => "{\"kind\":\"ignored\"}".to_string(),
@@ -223,7 +226,7 @@ fn describe_json(s: &ShardType) -> String {
     }
   };
   format!(
-    "{{\"schema\":{},\"name\":{}{},\"version\":{},\"summary\":{},\"help\":{},\"documented\":{},\"backends\":{},\"targets\":{},\"input\":{input},\"output\":{output},\"params\":{params}}}",
+    "{{\"schema\":{},\"name\":{}{},\"version\":{},\"summary\":{},\"help\":{},\"documented\":{},\"backends\":{},\"targets\":{},\"input\":{input},\"output\":{output},\"params\":{params},\"effects\":{},\"lifetime\":{},\"uses\":[],\"mutates\":[],\"signature\":{}}}",
     json_str(SCHEMA),
     json_str(d.name),
     aliases_json(s),
@@ -233,6 +236,9 @@ fn describe_json(s: &ShardType) -> String {
     d.is_documented(),
     strings_json(&s.backends()),
     json_str(d.targets.name()),
+    signature.effects.to_json(),
+    json_str(signature.lifetime.name()),
+    signature.to_json(),
   )
 }
 

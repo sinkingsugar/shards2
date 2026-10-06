@@ -56,6 +56,8 @@ pub const TAKE_DESC: ShardDesc = ShardDesc {
   output: OutputDesc::Dynamic(crate::shard_doc!("the element's type")),
   targets: Targets::All,
   aliases: &[],
+  effects: crate::signature::Effects::NONE,
+  lifetime: crate::signature::Lifetime::Stateless,
 };
 
 pub struct Take;
@@ -215,6 +217,8 @@ pub const PUSH_DESC: ShardDesc = ShardDesc {
   output: OutputDesc::Passthrough,
   targets: Targets::All,
   aliases: &[],
+  effects: crate::signature::Effects::NONE,
+  lifetime: crate::signature::Lifetime::Stateless,
 };
 
 pub struct Push;
@@ -228,6 +232,7 @@ impl LeafShard for Push {
     let name = variable(args, "variable");
     let input = ctx.input();
     let info = super::assignable(args, ctx, "Push")?;
+    ctx.read_var(name, "Push")?;
     let problem = match info.ty.desc() {
       TypeDesc::Seq(e) if e.accepts(input) => None,
       TypeDesc::Seq(_) => Some(format!("{name} is {}, cannot push {input}", info.ty)),
@@ -298,6 +303,8 @@ pub const SEQ_MAKE_DESC: ShardDesc = ShardDesc {
   output: OutputDesc::Dynamic(crate::shard_doc!("a sequence of the items' types")),
   targets: Targets::All,
   aliases: &[],
+  effects: crate::signature::Effects::NONE,
+  lifetime: crate::signature::Lifetime::Stateless,
 };
 
 /// Composes variadic literal-or-variable operands.
@@ -389,6 +396,8 @@ pub const TABLE_MAKE_DESC: ShardDesc = ShardDesc {
   )),
   targets: Targets::All,
   aliases: &[],
+  effects: crate::signature::Effects::NONE,
+  lifetime: crate::signature::Lifetime::Stateless,
 };
 
 pub struct TableMake;
@@ -479,6 +488,8 @@ pub const STRING_FORMAT_DESC: ShardDesc = ShardDesc {
   output: OutputDesc::Fixed(TypeName::String),
   targets: Targets::All,
   aliases: &[],
+  effects: crate::signature::Effects::NONE,
+  lifetime: crate::signature::Lifetime::Stateless,
 };
 
 pub struct StringFormat;

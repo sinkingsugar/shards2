@@ -309,6 +309,8 @@ pub const CONST_DESC: ShardDesc = ShardDesc {
   output: OutputDesc::Dynamic(crate::shard_doc!("the type of Value")),
   targets: Targets::All,
   aliases: &[],
+  effects: crate::signature::Effects::NONE,
+  lifetime: crate::signature::Lifetime::Stateless,
 };
 
 pub(crate) fn compose_const(args: &Args) -> Result<Composed<Var>> {
@@ -438,6 +440,8 @@ pub const VAR_DESC: ShardDesc = ShardDesc {
   output: OutputDesc::Passthrough,
   targets: Targets::All,
   aliases: &[],
+  effects: crate::signature::Effects::NONE,
+  lifetime: crate::signature::Lifetime::Stateless,
 };
 
 /// `Var`: declares a mutable local holding the input.
@@ -476,6 +480,8 @@ pub const BIND_DESC: ShardDesc = ShardDesc {
   output: OutputDesc::Passthrough,
   targets: Targets::All,
   aliases: &[],
+  effects: crate::signature::Effects::NONE,
+  lifetime: crate::signature::Lifetime::Stateless,
 };
 
 /// `= name`: declares an immutable local holding the input.
@@ -527,6 +533,8 @@ pub const KEEP_DESC: ShardDesc = ShardDesc {
   output: OutputDesc::Passthrough,
   targets: Targets::All,
   aliases: &[],
+  effects: crate::signature::Effects::NONE,
+  lifetime: crate::signature::Lifetime::Stateful,
 };
 
 /// `Keep`: the slot and its initial value.
@@ -577,6 +585,8 @@ pub const UPDATE_DESC: ShardDesc = ShardDesc {
   output: OutputDesc::Passthrough,
   targets: Targets::All,
   aliases: &[],
+  effects: crate::signature::Effects::NONE,
+  lifetime: crate::signature::Lifetime::Stateless,
 };
 
 /// `Update`: assigns the input to an existing mutable variable.
@@ -624,6 +634,8 @@ pub const GET_DESC: ShardDesc = ShardDesc {
   output: OutputDesc::Dynamic(crate::shard_doc!("the variable's type")),
   targets: Targets::All,
   aliases: &[],
+  effects: crate::signature::Effects::NONE,
+  lifetime: crate::signature::Lifetime::Stateless,
 };
 
 pub(crate) fn compose_get<B: Backend>(
@@ -660,6 +672,8 @@ pub const INC_DESC: ShardDesc = ShardDesc {
   output: OutputDesc::Fixed(TypeName::Int),
   targets: Targets::All,
   aliases: &["Inc"],
+  effects: crate::signature::Effects::NONE,
+  lifetime: crate::signature::Lifetime::Stateless,
 };
 
 /// `Math.Inc`: increments an Int variable and outputs the new value.
@@ -694,6 +708,7 @@ pub(crate) fn compose_counter<B: Backend>(
       ),
     ));
   }
+  ctx.mark_initialized(info.binding);
   Ok(Composed {
     compiled: info.binding,
     output: Type::int(),
@@ -738,6 +753,8 @@ pub const ADD_DESC: ShardDesc = ShardDesc {
   )),
   targets: Targets::All,
   aliases: &["Add"],
+  effects: crate::signature::Effects::NONE,
+  lifetime: crate::signature::Lifetime::Stateless,
 };
 
 pub static IS_LESS_PARAMS: &[ParamDecl] = &[decl(
@@ -762,6 +779,8 @@ pub const IS_LESS_DESC: ShardDesc = ShardDesc {
   output: OutputDesc::Fixed(TypeName::Bool),
   targets: Targets::All,
   aliases: &[],
+  effects: crate::signature::Effects::NONE,
+  lifetime: crate::signature::Lifetime::Stateless,
 };
 
 pub static IS_MORE_EQUAL_PARAMS: &[ParamDecl] = &[decl(
@@ -786,6 +805,8 @@ pub const IS_MORE_EQUAL_DESC: ShardDesc = ShardDesc {
   output: OutputDesc::Fixed(TypeName::Bool),
   targets: Targets::All,
   aliases: &[],
+  effects: crate::signature::Effects::NONE,
+  lifetime: crate::signature::Lifetime::Stateless,
 };
 
 pub(crate) fn compose_compare<B: Backend>(
@@ -935,6 +956,8 @@ pub const WHILE_DESC: ShardDesc = ShardDesc {
   output: OutputDesc::Passthrough,
   targets: Targets::All,
   aliases: &[],
+  effects: crate::signature::Effects::NONE,
+  lifetime: crate::signature::Lifetime::Stateless,
 };
 
 pub(crate) fn compose_while<B: Backend>(
@@ -981,6 +1004,8 @@ pub const WHEN_DESC: ShardDesc = ShardDesc {
   output: OutputDesc::Passthrough,
   targets: Targets::All,
   aliases: &[],
+  effects: crate::signature::Effects::NONE,
+  lifetime: crate::signature::Lifetime::Stateless,
 };
 
 pub(crate) fn compose_when<B: Backend>(
@@ -1015,6 +1040,8 @@ pub const ONCE_DESC: ShardDesc = ShardDesc {
   output: OutputDesc::Passthrough,
   targets: Targets::All,
   aliases: &[],
+  effects: crate::signature::Effects::NONE,
+  lifetime: crate::signature::Lifetime::Stateful,
 };
 
 pub(crate) fn compose_once<B: Backend>(
@@ -1050,6 +1077,8 @@ pub const SUB_DESC: ShardDesc = ShardDesc {
   output: OutputDesc::Passthrough,
   targets: Targets::All,
   aliases: &[],
+  effects: crate::signature::Effects::NONE,
+  lifetime: crate::signature::Lifetime::Stateless,
 };
 
 /// `SubFlow` composes like `Once`: the flow always runs, in the caller's frame.
@@ -1132,6 +1161,8 @@ pub const REPEAT_DESC: ShardDesc = ShardDesc {
   output: OutputDesc::Passthrough,
   targets: Targets::All,
   aliases: &[],
+  effects: crate::signature::Effects::NONE,
+  lifetime: crate::signature::Lifetime::Stateless,
 };
 
 pub(crate) fn compose_repeat<B: Backend>(
@@ -1218,6 +1249,8 @@ pub const DO_DESC: ShardDesc = ShardDesc {
   output: OutputDesc::Dynamic(crate::shard_doc!("the wire's output")),
   targets: Targets::All,
   aliases: &[],
+  effects: crate::signature::Effects::NONE,
+  lifetime: crate::signature::Lifetime::Stateless,
 };
 
 /// Attributes an error from resolving a `wire` argument to the calling shard
@@ -1270,6 +1303,8 @@ pub const PAUSE_DESC: ShardDesc = ShardDesc {
   output: OutputDesc::Passthrough,
   targets: Targets::All,
   aliases: &[],
+  effects: crate::signature::Effects::WAIT,
+  lifetime: crate::signature::Lifetime::Stateless,
 };
 
 pub(crate) fn compose_pause<B: Backend>(
@@ -1316,6 +1351,8 @@ pub const SPAWN_DESC: ShardDesc = ShardDesc {
   output: OutputDesc::Passthrough,
   targets: Targets::All,
   aliases: &[],
+  effects: crate::signature::Effects::IO,
+  lifetime: crate::signature::Lifetime::Stateless,
 };
 
 pub(crate) fn compose_spawn<B: Backend>(
@@ -1419,6 +1456,8 @@ pub const PROBE_DESC: ShardDesc = ShardDesc {
   output: OutputDesc::Passthrough,
   targets: Targets::All,
   aliases: &[],
+  effects: crate::signature::Effects::IO,
+  lifetime: crate::signature::Lifetime::Stateless,
 };
 
 /// `Probe`: records its instantiate, activate and cleanup events (for tests).

@@ -9,6 +9,8 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use shards_core::diagnostic::{Diagnostic, Phase, json_str};
+use shards_core::diagnostic::{PathStep, path_json};
+use shards_core::signature::{Analysis, Occurrence};
 use shards_core::{Catalog, Error, InstanceId, Outcome, Type, Var, WireDef};
 
 use crate::lower::{Lowered, ROOT_WIRE, lower};
@@ -22,6 +24,7 @@ pub trait Host {
   fn create() -> Self;
   fn add_wire(&mut self, def: WireDef);
   fn compile(&mut self, name: &str) -> shards_core::Result<Self::Wire>;
+  fn analysis(wire: &Self::Wire) -> &Analysis;
   fn spawn(&mut self, wire: &Self::Wire) -> shards_core::Result<InstanceId>;
   fn tick(&mut self) -> usize;
   fn running(&self) -> usize;
@@ -42,6 +45,9 @@ macro_rules! host {
       }
       fn compile(&mut self, name: &str) -> shards_core::Result<Self::Wire> {
         <$mesh>::compile(self, name, Type::none())
+      }
+      fn analysis(wire: &Self::Wire) -> &Analysis {
+        &wire.flow.analysis
       }
       fn spawn(&mut self, wire: &Self::Wire) -> shards_core::Result<InstanceId> {
         <$mesh>::spawn(self, wire, Var::None)
@@ -76,6 +82,59 @@ pub struct Program {
 pub struct CheckReport {
   pub file: String,
   pub diagnostics: Vec<Diagnostic>,
+  /// Successful root composes, including nested occurrences. Failed roots
+  /// report diagnostics rather than presenting a partial analysis as complete.
+  pub wires: Vec<WireAnalysis>,
+}
+
+pub struct WireAnalysis {
+  pub name: String,
+  pub analysis: Analysis,
+  pub occurrences: Vec<LocatedOccurrence>,
+}
+
+pub struct LocatedOccurrence {
+  pub occurrence: Occurrence,
+  pub span: Option<crate::Span>,
+  pub line: Option<u32>,
+  pub column: Option<u32>,
+}
+
+impl WireAnalysis {
+  fn to_json(&self) -> String {
+    let occurrences = self
+      .occurrences
+      .iter()
+      .map(|o| {
+        let mut fields = vec![
+          format!("\"path\":{}", path_json(&o.occurrence.path)),
+          format!("\"input\":{}", json_str(&o.occurrence.input.to_string())),
+          format!("\"output\":{}", json_str(&o.occurrence.output.to_string())),
+          format!("\"effects\":{}", o.occurrence.effects.to_json()),
+          format!("\"lifetime\":{}", json_str(o.occurrence.lifetime.name())),
+        ];
+        if let Some(span) = o.span {
+          fields.push(format!(
+            "\"span\":{{\"start\":{},\"end\":{}}}",
+            span.start, span.end
+          ));
+        }
+        if let (Some(line), Some(column)) = (o.line, o.column) {
+          fields.push(format!("\"line\":{line},\"column\":{column}"));
+        }
+        format!("{{{}}}", fields.join(","))
+      })
+      .collect::<Vec<_>>()
+      .join(",");
+    format!(
+      "{{\"wire\":{},\"effects\":{},\"lifetime\":{},\"uses\":{},\"mutates\":{},\"occurrences\":[{occurrences}]}}",
+      json_str(&self.name),
+      self.analysis.effects.to_json(),
+      json_str(self.analysis.lifetime.name()),
+      Analysis::mesh_json(&self.analysis.uses),
+      Analysis::mesh_json(&self.analysis.mutates)
+    )
+  }
 }
 
 impl CheckReport {
@@ -86,10 +145,16 @@ impl CheckReport {
   pub fn to_json(&self) -> String {
     let diagnostics: Vec<String> = self.diagnostics.iter().map(Diagnostic::to_json).collect();
     format!(
-      "{{\"ok\":{},\"file\":{},\"diagnostics\":[{}]}}",
+      "{{\"ok\":{},\"file\":{},\"diagnostics\":[{}],\"wires\":[{}]}}",
       self.ok(),
       json_str(&self.file),
-      diagnostics.join(",")
+      diagnostics.join(","),
+      self
+        .wires
+        .iter()
+        .map(WireAnalysis::to_json)
+        .collect::<Vec<_>>()
+        .join(",")
     )
   }
 }
@@ -243,20 +308,57 @@ impl Program {
   /// Composes every wire: the entries (wires they reach through `Do` and
   /// `Spawn` compose with them), then one root per unreachable group.
   pub fn compose<H: Host>(&self) -> Vec<Diagnostic> {
+    self.analyze::<H>().diagnostics
+  }
+
+  pub fn analyze<H: Host>(&self) -> CheckReport {
     let mut mesh = H::create();
     for def in &self.lowered.wires {
       mesh.add_wire(def.clone());
     }
     let mut out: Vec<Diagnostic> = Vec::new();
+    let mut wires = Vec::new();
     for wire in self.entries().into_iter().chain(self.unreachable_roots()) {
-      if let Err(err) = mesh.compile(&wire) {
-        let d = self.diagnostic(&wire, err);
-        if !out.contains(&d) {
-          out.push(d);
+      match mesh.compile(&wire) {
+        Err(err) => {
+          let d = self.diagnostic(&wire, err);
+          if !out.contains(&d) {
+            out.push(d);
+          }
+        }
+        Ok(compiled) => {
+          let analysis = H::analysis(&compiled).clone();
+          let occurrences = analysis
+            .occurrences
+            .iter()
+            .cloned()
+            .map(|mut occurrence| {
+              occurrence.path.insert(0, PathStep::Wire(wire.clone()));
+              let mut d = Diagnostic::new(Phase::Compose, "", "", "");
+              d.path = occurrence.path.clone();
+              let span = self.lowered.map.locate(&d);
+              let position = span.map(|s| self.source.line_col(s.start));
+              LocatedOccurrence {
+                occurrence,
+                span,
+                line: position.map(|p| p.0),
+                column: position.map(|p| p.1),
+              }
+            })
+            .collect();
+          wires.push(WireAnalysis {
+            name: wire,
+            analysis,
+            occurrences,
+          });
         }
       }
     }
-    out
+    CheckReport {
+      file: self.source.name.clone(),
+      diagnostics: out,
+      wires,
+    }
   }
 
   /// Runs the program on `H`: the entry wires, ticked at the `@run` rate
@@ -362,10 +464,11 @@ pub fn check<H: Host>(
 ) -> CheckReport {
   let file = source.name.clone();
   match Program::load(source, catalog, defines) {
-    Err((_, diagnostics)) => CheckReport { file, diagnostics },
-    Ok(program) => CheckReport {
+    Err((_, diagnostics)) => CheckReport {
       file,
-      diagnostics: program.compose::<H>(),
+      diagnostics,
+      wires: Vec::new(),
     },
+    Ok(program) => program.analyze::<H>(),
   }
 }

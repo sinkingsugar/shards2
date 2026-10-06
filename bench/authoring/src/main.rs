@@ -183,10 +183,14 @@ fn run_with_timeout(mut cmd: Command, stdin: &str, timeout: Duration) -> Result<
 /// Kills what is left of the process group led by `pid`.
 fn kill_group(pid: u32) {
   #[cfg(unix)]
-  let _ = Command::new("kill")
-    .args(["-KILL", &format!("-{pid}")])
-    .stderr(Stdio::null())
-    .status();
+  if let Ok(pid) = libc::pid_t::try_from(pid) {
+    // SAFETY: kill(2) takes plain integers and touches no memory of ours.
+    // A negative pid addresses the group `run_with_timeout` created for
+    // the child; failure (the group is already gone) is ignored.
+    unsafe {
+      libc::kill(-pid, libc::SIGKILL);
+    }
+  }
   #[cfg(not(unix))]
   let _ = pid;
 }
@@ -839,6 +843,7 @@ mod tests {
   #[cfg(unix)]
   #[test]
   fn timeouts_and_exits_kill_descendants_holding_the_pipes() {
+    // Bounds stay under the 2 s reader grace, so a failed kill fails here.
     // The shell waits on a descendant: the timeout must not wait for it.
     let mut cmd = Command::new("sh");
     cmd.args(["-c", "sleep 30 & wait"]);
@@ -846,7 +851,7 @@ mod tests {
     let out = run_with_timeout(cmd, "", Duration::from_millis(100)).unwrap();
     assert!(out.timed_out);
     assert!(
-      start.elapsed() < Duration::from_secs(5),
+      start.elapsed() < Duration::from_millis(1500),
       "{:?}",
       start.elapsed()
     );
@@ -858,7 +863,7 @@ mod tests {
     assert!(!out.timed_out);
     assert_eq!((out.status, out.stdout.as_str()), (Some(0), "hi\n"));
     assert!(
-      start.elapsed() < Duration::from_secs(5),
+      start.elapsed() < Duration::from_millis(1500),
       "{:?}",
       start.elapsed()
     );

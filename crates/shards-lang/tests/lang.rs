@@ -1110,10 +1110,12 @@ If(Any(b {a}) {4} {5}) = z
       }
       // Spawn chains compose recursively too.
       let mut src = String::new();
-      for i in 0..200 {
+      let spawn_depth = if cfg!(target_os = "espidf") { 80 } else { 200 };
+      assert!(spawn_depth > shards_core::compose::MAX_FLOW_DEPTH);
+      for i in 0..spawn_depth {
         src.push_str(&format!("@wire(s{i} {{Spawn(s{})}})\n", i + 1));
       }
-      src.push_str("@wire(s200 {1})\nSpawn(s0)");
+      src.push_str(&format!("@wire(s{spawn_depth} {{1}})\nSpawn(s0)"));
       assert_eq!(check(&src).diagnostics[0].code, "too-deep");
     }
 

@@ -32,3 +32,16 @@ Five alternating process trials on Linux x86-64, Intel Core i9-14900KF, Rust 1.9
 | mixed | 110.10 | 164.10 | 119.60 |
 
 Both soft gates pass: pending is 0.313× stackful (limit 1.5×); mixed is 1.086× M3 stackless (limit 1.10×). The latter has limited margin and remains a useful regression workload. Frame ownership is more explicit but costs additional instance memory; consult the retained mixed-workload stdout for state/heap/creation measurements, rather than interpreting resume speed as a universal improvement. The initial and screening CSVs are superseded by this validated run.
+
+### Compact metadata follow-up
+
+The unchanged five-trial gate was repeated at `0692517c31a6bb46616bc758ecbdcb80395cb105` after replacing copied occurrence paths with shared trees. `2026-10-06-compact-gate.csv`, its raw log and metadata retain the exact evidence. Medians (ns/instance/tick):
+
+| Workload | M3 stackless | Stackful | Trampoline |
+|---|---:|---:|---:|
+| pending (depth 32) | 468.67 | 52.16 | 16.04 |
+| completion (depth 32) | 696.74 | 978.71 | 679.58 |
+| progress (depth 32) | 556.30 | 127.16 | 102.12 |
+| mixed | 107.80 | 140.70 | 118.20 |
+
+Both limits still pass: pending is 0.308× stackful, mixed is 1.0965× M3 stackless. Absolute baseline depth timings varied considerably between runs on the unpinned workstation; compare alternating samples within each run. The mixed-flow margin remains narrow.

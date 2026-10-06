@@ -1,0 +1,6 @@
+=== prompt
+Log the text `hello world`.
+=== expected
+hello world
+=== reference
+"hello world" | Log

@@ -1,0 +1,6 @@
+=== prompt
+Log the Euclidean length of the 2D float vector (3, 4).
+=== expected
+5
+=== reference
+[3.0 4.0] | ToFloat2 | Math.Length | Log

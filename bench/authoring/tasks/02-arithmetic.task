@@ -1,0 +1,6 @@
+=== prompt
+Compute (7 + 5) * 3 with integer arithmetic and log the result.
+=== expected
+36
+=== reference
+7 | Math.Add(5) | Math.Multiply(3) | Log

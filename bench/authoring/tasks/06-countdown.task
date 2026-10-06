@@ -1,0 +1,13 @@
+=== prompt
+Count down from 5 to 1, logging each number on its own line, then log `liftoff`.
+=== expected
+5
+4
+3
+2
+1
+liftoff
+=== reference
+6 >= n
+Repeat({ Dec(n) | Log } Times: 5)
+"liftoff" | Log

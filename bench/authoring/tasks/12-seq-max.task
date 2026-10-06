@@ -1,0 +1,14 @@
+=== prompt
+Log the largest element of the sequence [3 8 1 9 4]. Do not hard-code the answer; scan the sequence.
+=== expected
+9
+=== reference
+[3 8 1 9 4] = xs
+xs | Take(0) >= best
+0 >= i
+Repeat({
+  xs | Take(i) = x
+  When({x | IsMore(best)} {x > best})
+  Inc(i)
+} Times: 5)
+best | Log

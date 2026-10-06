@@ -1,0 +1,20 @@
+=== prompt
+Find the index (0-based) of a value in the sequence [10 20 30 40], or -1 when it is absent. Log the result for 30 and then for 99.
+=== expected
+2
+-1
+=== reference
+[10 20 30 40] = xs
+[30 99] = targets
+0 >= t
+Repeat({
+  targets | Take(t) = target
+  -1 >= found
+  0 >= i
+  Repeat({
+    When({All({found | Is(-1)} {xs | Take(i) | Is(target)})} {i > found})
+    Inc(i)
+  } Times: 4)
+  found | Log
+  Inc(t)
+} Times: 2)

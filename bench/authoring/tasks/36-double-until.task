@@ -1,0 +1,8 @@
+=== prompt
+Start from 1 and keep doubling while the value is not greater than 100. Log the first value greater than 100.
+=== expected
+128
+=== reference
+1 >= x
+Repeat({ x | Math.Multiply(2) > x } Until: {x | IsMore(100)})
+x | Log

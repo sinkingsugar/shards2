@@ -1,0 +1,18 @@
+=== prompt
+Define a reusable named routine `clamp` that clamps a value to a lower and an upper bound, and call it (do not copy its body) three times: 5 with bounds 0..3, -2 with bounds 0..3, and 2 with bounds 0..3. Log each result.
+=== expected
+3
+0
+2
+=== reference
+@wire(clamp {
+  If({value | IsLess(lo)} {lo} {If({value | IsMore(hi)} {hi} {value})})
+})
+0 = lo
+3 = hi
+5 >= value
+Do(clamp) | Log
+-2 > value
+Do(clamp) | Log
+2 > value
+Do(clamp) | Log

@@ -18,7 +18,7 @@ Checkpoint: 2026-10-06. Check `git log` and the working tree for later changes. 
 | Milestone | Status |
 |---|---|
 | M0 docs hygiene | done (this file, `history.md`, README) |
-| M0 authoring eval | **not started**: `bench/authoring` is a placeholder; no baseline run yet (needs a model CLI) |
+| M0 authoring eval | harness done: 38 tasks with references checked by `cargo test`, the `current` primer, a runner for any model CLI ([README](../bench/authoring/README.md)). **Baseline not run yet**: `baseline.csv` holds only the header |
 | M1 to M7 | not started |
 
 The current syntax (`>=`, `>`, `>>`, `Do`, uppercase labels) is what the code accepts until M2 and M5 land.

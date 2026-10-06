@@ -1,0 +1,10 @@
+=== prompt
+Parse each string in ["10" "20" "30"] as an integer and log their sum.
+=== expected
+60
+=== reference
+["10" "20" "30"] = xs
+0 >= total
+0 >= i
+Repeat({ xs | Take(i) | ParseInt | Math.Add(total) > total Inc(i) } Times: 3)
+total | Log

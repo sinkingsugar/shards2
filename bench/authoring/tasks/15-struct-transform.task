@@ -1,0 +1,9 @@
+=== prompt
+Start from the table {name: "ann" age: 41}. Build a new table with the same name, the age increased by one, and a Bool field `adult` that is true when the new age is at least 18. Log the new table.
+=== expected
+{adult: true age: 42 name: ann}
+=== reference
+{name: "ann" age: 41} = person
+person.age | Math.Add(1) = age
+age | IsMoreEqual(18) = adult
+{name: person.name age: age adult: adult} | Log

@@ -1,0 +1,10 @@
+=== prompt
+For each string in ["a" "shards" "hello"], log its length in characters, one per line.
+=== expected
+1
+6
+5
+=== reference
+["a" "shards" "hello"] = xs
+0 >= i
+Repeat({ xs | Take(i) | Count | Log Inc(i) } Times: 3)

@@ -1,0 +1,11 @@
+=== prompt
+Log the integers 1 to 5, one per line, using a loop.
+=== expected
+1
+2
+3
+4
+5
+=== reference
+0 >= n
+Repeat({ Inc(n) | Log } Times: 5)

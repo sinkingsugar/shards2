@@ -1,0 +1,13 @@
+=== prompt
+Count the Collatz steps for 6: while the number is not 1, halve it when even and otherwise replace it with 3n+1. Log the number of steps.
+=== expected
+8
+=== reference
+6 >= n
+0 >= steps
+While({n | IsNot(1)} {
+  n | Math.Divide(2) = half
+  If({half | Math.Multiply(2) | Is(n)} {half} {n | Math.Multiply(3) | Math.Add(1)}) > n
+  Inc(steps)
+})
+steps | Log

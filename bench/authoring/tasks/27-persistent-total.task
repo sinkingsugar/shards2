@@ -1,0 +1,13 @@
+=== prompt
+Write a looped process, run on a scheduler for exactly 3 iterations (one per tick). It keeps a running total that starts at 100 and survives across iterations. Each iteration adds 5 to the total and logs it.
+=== expected
+105
+110
+115
+=== reference
+@wire(acc {
+  Once({100 >= total})
+  total | Math.Add(5) > total
+  total | Log
+} Looped: true)
+@mesh(m) @schedule(m acc) @run(m Iterations: 3)

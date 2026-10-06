@@ -1,1 +1,1 @@
-Task,Model,Variant,SemanticSuccess,FirstPassSuccess,RepairRounds,Tokens,Latency
+Task,Model,Variant,SemanticSuccess,FirstPassSuccess,RepairRounds,Tokens,LatencyMs,Failure

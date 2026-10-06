@@ -13,6 +13,12 @@ mod acceptance {
   mod metadata {
     include!(concat!(env!("OUT_DIR"), "/metadata.rs"));
   }
+  mod host_contract {
+    include!(concat!(env!("OUT_DIR"), "/host_contract.rs"));
+  }
+  mod registry {
+    include!(concat!(env!("OUT_DIR"), "/registry.rs"));
+  }
   mod lang {
     include!(concat!(env!("OUT_DIR"), "/lang.rs"));
   }
@@ -26,7 +32,9 @@ mod acceptance {
     for (name, stack, run) in [
       ("prototype", 48 * 1024, prototype::run_suite as fn()),
       ("metadata", 48 * 1024, metadata::run_suite as fn()),
-      ("lang", 96 * 1024, lang::run_suite as fn()),
+      ("host_contract", 48 * 1024, host_contract::run_suite as fn()),
+      ("registry", 48 * 1024, registry::run_suite as fn()),
+      ("lang", 128 * 1024, lang::run_suite as fn()),
       ("trampoline", 96 * 1024, trampoline::run_suite as fn()),
     ] {
       std::thread::Builder::new()

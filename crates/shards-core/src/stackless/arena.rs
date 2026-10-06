@@ -26,6 +26,13 @@ impl<T> Default for Arena<T> {
 }
 
 impl<T> Arena<T> {
+  /// Reserve a known subtree without a transient doubling allocation.
+  pub fn reserve(&mut self, additional: usize) {
+    self
+      .slots
+      .reserve_exact(additional.saturating_sub(self.free.len()));
+  }
+
   pub fn insert(&mut self, value: T) -> Handle {
     let index = self.free.pop().unwrap_or_else(|| {
       self.slots.push(Slot {
@@ -89,6 +96,8 @@ mod tests {
     let mut arena = Arena::default();
     let old = arena.insert(String::from("old"));
     assert_eq!(arena.remove(old).as_deref(), Some("old"));
+    // Moving the backing allocation must not revive the removed handle.
+    arena.reserve(128);
     let new = arena.insert(String::from("new"));
     assert_eq!(old.index, new.index);
     assert!(arena.get(old).is_none());

@@ -1,7 +1,7 @@
 fn main() {
   embuild::espidf::sysenv::output();
   println!("cargo:rustc-check-cfg=cfg(stackful)");
-  println!("cargo:rustc-check-cfg=cfg(feature, values(\"docs\"))");
+  println!("cargo:rustc-check-cfg=cfg(feature, values(\"docs\", \"output-checks\"))");
   #[cfg(feature = "acceptance")]
   acceptance();
 }
@@ -26,6 +26,12 @@ fn acceptance() {
       "../../crates/shards-core/tests/metadata.rs",
       "metadata_tests",
     ),
+    (
+      "host_contract",
+      "../../crates/shards-core/tests/host_contract.rs",
+      "host_contract_tests",
+    ),
+    ("registry", "../../crates/shards-core/tests/registry.rs", ""),
     (
       "lang",
       "../../crates/shards-lang/tests/lang.rs",

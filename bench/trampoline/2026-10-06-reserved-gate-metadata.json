@@ -1,0 +1,21 @@
+{
+  "baseline": "c0aaa3961b1d2de4e9b7f9512b49c668c064d727",
+  "candidate": "81e18d5 + runtime changes retained in .agent-handoffs/reviews/2026-10-06-81e18d5-codex-37f01e.patch; exact source and binary hashes below",
+  "platform": "Linux-7.2.6-1-cachyos-x86_64-with-glibc2.44",
+  "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)",
+  "sha256": {
+    "crates/shards-core/src/signature.rs": "747856ba15141aee46685ba3668ac3da82264b265efba0049c1fc9ad72902fc6",
+    "crates/shards-core/src/stackless/engine.rs": "3b2a4e41c9e3d5807020ca63815facec2764023a84d5112e6a484c6ddc983911",
+    "crates/shards-core/src/stackless/arena.rs": "397ff36dd3e333d798eebb58c0cecdd3cbae9da749e277ce30f4cc506ee294b7",
+    "crates/shards-core/examples/bench_depth.rs": "282cf9e4634b4b2702bf27dc19e4cdd69573fd21efc4aa5246b0e8ffb600f294",
+    "crates/shards-core/examples/bench_instances.rs": "683c3deb474ee2e3b5f1250cf40ffc20f52665964a3651c8a45d6bfccd61b477",
+    "/tmp/shards2-m4-oracle/target/release/examples/bench_depth": "7d0d0d13c775e74e0fc56d8cd03441d15e538bc03bae6896eb64c7ef6f6bae65",
+    "/tmp/shards2-m4-oracle/target/release/examples/bench_instances": "2ecdee510901c310a8ec5557619ccf7cc05c2838b40911c53b1ef679bb55d827",
+    "target/release/examples/bench_depth": "f15c2d131f8747543e3d9a17fa38b1cca506b1ef66a933dc844f4fad78a2f069",
+    "target/release/examples/bench_instances": "7287fcd8b89397b1d20c9567a09b967453632448ad8363c6366e8a936a74b91b"
+  },
+  "trials": 5,
+  "instances": 1000,
+  "mixed_iterations": 500000,
+  "sampling": "All local verification and reviewer tests completed before this run. An earlier preliminary /tmp run overlapped verification and is not used for this gate."
+}

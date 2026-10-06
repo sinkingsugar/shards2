@@ -45,3 +45,16 @@ The unchanged five-trial gate was repeated at `0692517c31a6bb46616bc758ecbdcb803
 | mixed | 107.80 | 140.70 | 118.20 |
 
 Both limits still pass: pending is 0.308× stackful, mixed is 1.0965× M3 stackless. Absolute baseline depth timings varied considerably between runs on the unpinned workstation; compare alternating samples within each run. The mixed-flow margin remains narrow.
+
+### Exact frame reservation follow-up
+
+`2026-10-06-reserved-gate.csv`, its raw log and metadata repeat the unchanged five-trial workloads after exact arena/state/child reservation. All verification processes completed before sampling. An earlier preliminary run overlapped local checks and is not used for this gate. Medians (ns/instance/tick):
+
+| Workload | M3 stackless | Stackful | Trampoline |
+|---|---:|---:|---:|
+| pending (depth 32) | 854.32 | 54.17 | 16.41 |
+| completion (depth 32) | 984.57 | 1314.27 | 708.17 |
+| progress (depth 32) | 980.78 | 132.78 | 104.13 |
+| mixed | 112.70 | 166.00 | 118.90 |
+
+Both limits pass: pending is 0.303× stackful; mixed is 1.055× M3 stackless. This run supersedes the compact-metadata run for the current runtime implementation.

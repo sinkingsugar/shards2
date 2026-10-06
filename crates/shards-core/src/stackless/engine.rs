@@ -115,8 +115,8 @@ struct Frame {
 impl Frame {
   fn new(code: Code) -> Self {
     Self {
+      states: Vec::with_capacity(code.flow().nodes.len()),
       code,
-      states: Vec::new(),
       pc: 0,
       value: Var::None,
       parent: None,
@@ -149,6 +149,26 @@ impl Engine {
 
   /// Depth-first initialization, preserving source order without Rust recursion.
   fn build(&mut self, code: Code, ctx: &mut InstanceCtx) -> Result<Handle> {
+    // The immutable graph gives the exact eagerly instantiated frame count.
+    // Reserve once: Vec growth at a deep branch otherwise briefly needs both
+    // the old and doubled arena, and wastes scarce device heap after growth.
+    let mut count = 0;
+    let mut pending = vec![code.clone()];
+    while let Some(code) = pending.pop() {
+      count += 1;
+      for node in &code.flow().nodes {
+        if let Some(control) = node.control() {
+          for i in 0..control.len() {
+            pending.push(match &control {
+              Control::Do(call) => Code::Call((*call).clone()),
+              _ => Code::Child(node.clone(), i),
+            });
+          }
+        }
+      }
+    }
+    drop(pending);
+    self.frames.reserve(count);
     let root = self.frames.insert(Frame::new(code));
     let mut work = vec![root];
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -161,7 +181,10 @@ impl Engine {
         }
         let node = frame.code.flow().nodes[index].clone();
         let state = if let Some(control) = node.control() {
-          let mut c = Continuation::default();
+          let mut c = Continuation {
+            children: Vec::with_capacity(control.len()),
+            ..Continuation::default()
+          };
           if let Control::Do(call) = &control {
             c.call = Some((*call).clone());
           }

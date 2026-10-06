@@ -162,6 +162,9 @@ impl<'a> Parser<'a> {
       }
     };
     self.open.pop();
+    // Completed syntax lists are immutable; spare capacity otherwise compounds
+    // across every small nested parameter/statement list.
+    items.shrink_to_fit();
     (items, Span::new(open_span.start, end))
   }
 
@@ -193,6 +196,7 @@ impl<'a> Parser<'a> {
         self.bump();
       }
     }
+    out.shrink_to_fit();
     out
   }
 
@@ -265,6 +269,7 @@ impl<'a> Parser<'a> {
         }
       }
     }
+    blocks.shrink_to_fit();
     Some(Pipe { blocks, span })
   }
 

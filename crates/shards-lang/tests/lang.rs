@@ -1152,6 +1152,8 @@ If(Any(b {a}) {4} {5}) = z
         let diagnostics = program.compose::<Mesh>();
         assert!(diagnostics.is_empty(), "{wrapper}: {diagnostics:?}");
         drop(program);
+        #[cfg(not(target_os = "espidf"))]
+        assert!(check(&src).ok(), "{wrapper}");
         assert!(run(&src, &no_defines()).succeeded(), "{wrapper}");
         // The chain is at the limit: one more wire is too deep. If compose's
         // level counting drifts, this fails instead of the test silently
@@ -1210,6 +1212,9 @@ If(Any(b {a}) {4} {5}) = z
       }
       let program = Program::load(Source::new("t.shs", &src), &catalog(), &no_defines()).unwrap_or_else(|(_, d)| panic!("{d:?}"));
       assert!(program.compose::<Mesh>().is_empty());
+      drop(program);
+      #[cfg(not(target_os = "espidf"))]
+      assert!(check(&src).ok());
     }
 
     #[test]

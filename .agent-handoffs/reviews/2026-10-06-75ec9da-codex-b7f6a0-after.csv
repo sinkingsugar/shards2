@@ -1,0 +1,15 @@
+fixture,phase,before_bytes,live_bytes,peak_bytes
+do80,parse,8048,79792,161832
+do80,load,8048,65679,161832
+do80,compose,65679,76199,246004
+do80,analyze,65859,76209,246004
+when30,parse,4780,25700,47668
+when30,load,4780,33029,122669
+when30,compose,33029,33161,195678
+when30,analyze,33161,200529,240729
+when30,run,33161,33221,195678
+wrapped_when,parse,4262,41534,81026
+wrapped_when,load,4262,41775,91371
+wrapped_when,compose,41775,41775,178203
+wrapped_when,analyze,41775,377092,490415
+wrapped_when,run,41775,41835,195569

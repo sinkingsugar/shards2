@@ -32,15 +32,71 @@ pub const ROOT_WIRE: &str = "root";
 /// Where each emitted shard came from, by occurrence path.
 #[derive(Default, Debug)]
 pub struct SourceMap {
-  /// `(wire, steps below the wire)` to the span of the source construct.
-  shards: HashMap<(String, Vec<PathStep>), Span>,
+  /// Roots by wire name; child paths share prefixes instead of copying a
+  /// complete path into each descendant. Flat ownership keeps drop iterative.
+  roots: HashMap<String, usize>,
+  nodes: Vec<SourceNode>,
   /// Each wire's declaration.
   wires: HashMap<String, Span>,
 }
 
+#[derive(Default, Debug)]
+struct SourceNode {
+  children: Vec<(PathStep, usize)>,
+  span: Option<Span>,
+}
+
+// A borrowed ordering key keeps lookups allocation-free, including wide flows.
+fn source_step_key(step: &PathStep) -> (u8, usize, &str) {
+  match step {
+    PathStep::Wire(name) => (0, 0, name),
+    PathStep::Shard { index, name } => (1, *index, name),
+    PathStep::Param(name) => (2, 0, name),
+    PathStep::Item(index) => (3, *index, ""),
+  }
+}
+
+impl SourceNode {
+  fn search(&self, step: &PathStep) -> Result<usize, usize> {
+    self
+      .children
+      .binary_search_by(|(key, _)| source_step_key(key).cmp(&source_step_key(step)))
+  }
+}
+
 impl SourceMap {
+  fn insert(&mut self, wire: &str, path: Vec<PathStep>, span: Span) {
+    let mut node = if let Some(&root) = self.roots.get(wire) {
+      root
+    } else {
+      let root = self.nodes.len();
+      self.nodes.push(SourceNode::default());
+      self.roots.insert(wire.to_owned(), root);
+      root
+    };
+    for step in path {
+      node = match self.nodes[node].search(&step) {
+        Ok(i) => self.nodes[node].children[i].1,
+        Err(i) => {
+          let child = self.nodes.len();
+          self.nodes.push(SourceNode::default());
+          // Most source paths append siblings in source order. Keep compact
+          // sorted edges so wide flows still have logarithmic lookup.
+          let edges = &mut self.nodes[node].children;
+          if edges.is_empty() {
+            edges.reserve_exact(1);
+          }
+          edges.insert(i, (step, child));
+          child
+        }
+      };
+    }
+    self.nodes[node].span = Some(span);
+  }
+
   /// The source span for a compose diagnostic: the shard at the end of its
-  /// path, or the closest enclosing one that is known.
+  /// path, or the closest enclosing one that is known. A nested Wire resets
+  /// the lookup to that definition, independent of its calling occurrence.
   pub fn locate(&self, d: &Diagnostic) -> Option<Span> {
     let k = d
       .path
@@ -49,15 +105,20 @@ impl SourceMap {
     let PathStep::Wire(wire) = &d.path[k] else {
       return None;
     };
-    let mut steps = d.path[k + 1..].to_vec();
-    loop {
-      if let Some(span) = self.shards.get(&(wire.clone(), steps.clone())) {
-        return Some(*span);
-      }
-      if steps.pop().is_none() {
-        return self.wires.get(wire).copied();
-      }
+    let mut span = self.wires.get(wire).copied();
+    let Some(&root) = self.roots.get(wire) else {
+      return span;
+    };
+    let mut node = root;
+    span = self.nodes[node].span.or(span);
+    for step in &d.path[k + 1..] {
+      let Ok(i) = self.nodes[node].search(step) else {
+        break;
+      };
+      node = self.nodes[node].children[i].1;
+      span = self.nodes[node].span.or(span);
     }
+    span
   }
 }
 
@@ -168,6 +229,10 @@ pub fn lower(
       .help("add `@run(mesh)` to start the mesh, or remove the schedule"),
     );
   }
+  for node in &mut l.map.nodes {
+    node.children.shrink_to_fit();
+  }
+  l.map.nodes.shrink_to_fit();
   out.map = l.map;
   (out, l.problems)
 }
@@ -556,7 +621,7 @@ impl Lowerer<'_> {
       index: out.len(),
       name: def.ty.name().to_string(),
     });
-    self.map.shards.insert((self.wire.clone(), path), span);
+    self.map.insert(&self.wire, path, span);
     out.push(def);
   }
 
@@ -1295,4 +1360,58 @@ fn is_plain_var(pipe: &Pipe) -> bool {
 /// A literal or a plain variable: needs no computation.
 fn is_plain(pipe: &Pipe) -> bool {
   is_plain_var(pipe) || matches!(&pipe.blocks[..], [b] if is_constant(b))
+}
+
+#[cfg(test)]
+mod source_map_tests {
+  use super::*;
+  use shards_core::diagnostic::Phase;
+
+  #[test]
+  fn source_paths_share_prefixes_and_keep_nearest_locations() {
+    let mut map = SourceMap::default();
+    let parent = PathStep::Shard {
+      index: 0,
+      name: "When".into(),
+    };
+    let branch = PathStep::Param("then".into());
+    let leaf = |index| PathStep::Shard {
+      index,
+      name: "Const".into(),
+    };
+    map.wires.insert("w".into(), Span::new(0, 100));
+    map.insert("w", vec![parent.clone()], Span::new(1, 90));
+    // Insert siblings out of order to exercise sorted lookup and shared ancestry.
+    for i in [2, 0, 1] {
+      map.insert(
+        "w",
+        vec![parent.clone(), branch.clone(), leaf(i)],
+        Span::new(10 + i, 11 + i),
+      );
+    }
+    assert_eq!(map.nodes.len(), 6); // root, parent, branch, three leaves
+    let mut d = Diagnostic::new(Phase::Compose, "", "", "");
+    for i in 0..3 {
+      d.path = vec![
+        PathStep::Wire("w".into()),
+        parent.clone(),
+        branch.clone(),
+        leaf(i),
+      ];
+      assert_eq!(map.locate(&d), Some(Span::new(10 + i, 11 + i)));
+      d.path.push(PathStep::Item(17));
+      assert_eq!(map.locate(&d), Some(Span::new(10 + i, 11 + i)));
+    }
+    d.path = vec![PathStep::Wire("w".into()), parent.clone(), branch, leaf(9)];
+    assert_eq!(map.locate(&d), Some(Span::new(1, 90)));
+    // A nested wire starts a new definition; never fall back into its caller.
+    map.wires.insert("other".into(), Span::new(200, 220));
+    d.path.push(PathStep::Wire("other".into()));
+    d.path.push(parent.clone());
+    assert_eq!(map.locate(&d), Some(Span::new(200, 220)));
+    d.path.push(PathStep::Wire("missing".into()));
+    assert_eq!(map.locate(&d), None);
+    d.path = vec![parent];
+    assert_eq!(map.locate(&d), None);
+  }
 }

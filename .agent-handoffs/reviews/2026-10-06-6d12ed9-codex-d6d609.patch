@@ -1,0 +1,45 @@
+diff --git a/crates/shards-lang/tests/lang.rs b/crates/shards-lang/tests/lang.rs
+index 28e0847..418cd41 100644
+--- a/crates/shards-lang/tests/lang.rs
++++ b/crates/shards-lang/tests/lang.rs
+@@ -1208,7 +1208,8 @@ If(Any(b {a}) {4} {5}) = z
+       for _ in 0..30 {
+         src = format!("When({{true}} {{{src}}})");
+       }
+-      assert!(check(&src).ok());
++      let program = Program::load(Source::new("t.shs", &src), &catalog(), &no_defines()).unwrap_or_else(|(_, d)| panic!("{d:?}"));
++      assert!(program.compose::<Mesh>().is_empty());
+     }
+ 
+     #[test]
+@@ -1376,10 +1377,28 @@ fn and_or_point_to_all_and_any() {
+ 
+ #[test]
+ fn malformed_input_is_reported_not_crashed_on() {
+-  let deep = format!("{}1{}", "[".repeat(5000), "]".repeat(5000));
++  // Keep the parser's actual nesting boundary on devices without allocating
++  // thousands of tokens that the parser will never visit after rejecting it.
++  let arrays = if cfg!(target_os = "espidf") {
++    shards_lang::parser::MAX_DEPTH + 1
++  } else {
++    5000
++  };
++  assert!(arrays > shards_lang::parser::MAX_DEPTH);
++  let deep = format!("{}1{}", "[".repeat(arrays), "]".repeat(arrays));
+   let d = load_errors(&deep);
+   assert_eq!(d[0].code, "too-deep");
+-  let deep = format!("{}{}", "Repeat({".repeat(500), "} times: 1)".repeat(500));
++  let calls = if cfg!(target_os = "espidf") {
++    shards_lang::parser::MAX_DEPTH + 1
++  } else {
++    500
++  };
++  assert!(calls > shards_lang::parser::MAX_DEPTH);
++  let deep = format!(
++    "{}{}",
++    "Repeat({".repeat(calls),
++    "} times: 1)".repeat(calls)
++  );
+   assert_eq!(load_errors(&deep)[0].code, "too-deep");
+   assert_eq!(load_errors("{x: 1 y:}")[0].code, "missing-value");
+   let d = load_errors("Repeat(times: action: {})");

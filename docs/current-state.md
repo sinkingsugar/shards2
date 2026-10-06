@@ -8,7 +8,7 @@ Checkpoint: 2026-10-06. Check `git log` and the working tree for later changes. 
 - **Two schedulers:** stackless (default) and stackful, one per mesh. Leaf and async shards have one implementation; control-flow shards have two. Stackless runs on wasm (WASI) and ESP-IDF.
 - **VM:** compose-selected builtin instructions with a borrowed accumulator; arithmetic near 1.x parity, collections 3 to 4x slower ([runtime overview](runtime-performance-overview.md)).
 - **I/O** (`shards-io`): `Http.Get` on a shared Tokio runtime, with cancellation verified.
-- **Values and types:** Float2/3/4, string-keyed sorted tables (`Arc<BTreeMap>`, still public), fixed/open table types, unions, `Never`, one acceptance rule ([values-and-types.md](values-and-types.md)).
+- **Values and types:** Float2/3/4, string-keyed sorted tables (opaque `Table`, a `BTreeMap` inside), fixed/open table types, unions, `Never`, one acceptance rule ([values-and-types.md](values-and-types.md)).
 - **Metadata:** every catalog shard has a `ShardDesc`; structured diagnostics with occurrence paths; JSON catalog, describe and search.
 - **Frontend** (`shards-lang`, `shards-cli`): hand-written parser with spans and recovery, lowering to wire definitions, `check --json`, `run`, `watch`, state-preserving hot reload ([embedding.md §5](embedding.md#5-warm-sessions-and-hot-reload)).
 - **ESP32:** firmware example linked and booted in QEMU for three chips in CI; no physical-board run claimed.
@@ -19,7 +19,8 @@ Checkpoint: 2026-10-06. Check `git log` and the working tree for later changes. 
 |---|---|
 | M0 docs hygiene | done (this file, `history.md`, README) |
 | M0 authoring eval | done: 38 tasks with references checked by `cargo test`, the `current` primer, a runner for any model CLI ([README](../bench/authoring/README.md)). Baseline: Sonnet via Claude Code 2.1.291, 2026-10-06, at 40cb29b (`baseline.csv`, transcripts in `bench/authoring/transcripts/baseline-sonnet`). Other models not run yet |
-| M1 to M7 | not started |
+| M1 opaque collections | done: `Var::Table(Table)` with private storage, `as_table`/`as_seq`/`as_str`, `TableBuilder`, sorted iteration (`host_contract::hosts_use_opaque_collections`) |
+| M2 to M7 | not started |
 
 The current syntax (`>=`, `>`, `>>`, `Do`, uppercase labels) is what the code accepts until M2 and M5 land.
 
@@ -34,7 +35,7 @@ The current syntax (`>=`, `>`, `>>`, `Do`, uppercase labels) is what the code ac
 - The type registry never frees; scoped registries are needed for long `watch` sessions (golden path §7.4 adds a soak test).
 - The compose cache is unbounded.
 - Recursive types, objects, bytes; broader module ports; browser wasm; graphics and physics.
-- The external host is porting its shards to 2.0 ([embedding.md](embedding.md)); M1 changes the table API it uses.
+- The external host is porting its shards to 2.0 ([embedding.md](embedding.md)); it must move to the opaque `Table` API (M1).
 
 ## Verified
 

@@ -46,7 +46,7 @@ macro_rules! acceptance_tests {
       fn owners(value: &Var) -> usize {
         match value {
           Var::Seq(v) => Arc::strong_count(v),
-          Var::Table(v) => Arc::strong_count(v),
+          Var::Table(v) => v.storage_owners(),
           Var::String(v) => Arc::strong_count(v),
           _ => unreachable!(),
         }

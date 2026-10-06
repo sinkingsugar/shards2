@@ -21,7 +21,7 @@ Almost every 1.x test script also uses tables. Lowering source onto a model with
 |---|---|---|
 | `Float2` | `[f64; 2]` | 1.x layout: two 64-bit floats. |
 | `Float4` | `[f32; 4]` | 1.x layout: four 32-bit floats (`Float3` stays `[f32; 3]`). |
-| `Table` | `Arc<BTreeMap<Arc<str>, Var>>` | String keys only, in key order. |
+| `Table` | `Table` (opaque; an `Arc<BTreeMap<Arc<str>, Var>>` inside) | String keys only, in key order. Hosts use its accessors ([embedding.md](embedding.md) §2). |
 
 Decisions:
 

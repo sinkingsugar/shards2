@@ -185,7 +185,7 @@ pub(crate) fn take_value(input: &Var, key: &Var) -> Result<Var> {
     Var::Float3(v) => Var::Float(f64::from(v[index(3)?])),
     Var::Float4(v) => Var::Float(f64::from(v[index(4)?])),
     Var::Table(entries) => match &key {
-      Var::String(k) => entries.get(&**k).cloned().unwrap_or(Var::None),
+      Var::String(k) => entries.get(k).cloned().unwrap_or(Var::None),
       _ => return Err(Error::Activation("Take: the key must be a String".into())),
     },
     _ => return Err(Error::Activation("Take: input type mismatch".into())),
@@ -518,12 +518,12 @@ impl LeafShard for TableMake {
     ctx: &mut impl LeafCtx,
     _: &Var,
   ) -> Result<Flow> {
-    Ok(Flow::Next(Var::Table(Arc::new(
+    Ok(Flow::Next(Var::Table(
       entries
         .iter()
         .map(|(k, o)| (k.clone(), o.get(ctx)))
         .collect(),
-    ))))
+    )))
   }
 }
 

@@ -23,7 +23,7 @@ pub enum Var {
   String(Arc<str>),
   Seq(Arc<Vec<Var>>),
   /// String keys in sorted order (docs/values-and-types.md §2).
-  Table(Arc<BTreeMap<Arc<str>, Var>>),
+  Table(Table),
 }
 
 impl Var {
@@ -33,9 +33,31 @@ impl Var {
 
   /// A table from key/value pairs; a repeated key keeps the last value.
   pub fn table<K: Into<Arc<str>>>(entries: impl IntoIterator<Item = (K, Var)>) -> Var {
-    Var::Table(Arc::new(
-      entries.into_iter().map(|(k, v)| (k.into(), v)).collect(),
-    ))
+    Var::Table(entries.into_iter().collect())
+  }
+
+  /// The table, if this is one.
+  pub fn as_table(&self) -> Option<&Table> {
+    match self {
+      Var::Table(t) => Some(t),
+      _ => None,
+    }
+  }
+
+  /// The elements, if this is a sequence.
+  pub fn as_seq(&self) -> Option<&[Var]> {
+    match self {
+      Var::Seq(items) => Some(items),
+      _ => None,
+    }
+  }
+
+  /// The text, if this is a string.
+  pub fn as_str(&self) -> Option<&str> {
+    match self {
+      Var::String(s) => Some(s),
+      _ => None,
+    }
   }
 
   /// The value's type. A table is the fixed table of its keys; a sequence
@@ -65,9 +87,115 @@ impl Var {
         }
       }
       Var::Table(entries) => {
-        Type::fixed_table(entries.iter().map(|(k, v)| (k.clone(), v.type_of())))
+        Type::fixed_table(entries.map().iter().map(|(k, v)| (k.clone(), v.type_of())))
       }
     }
+  }
+}
+
+/// A table: string keys in sorted order, values shared copy-on-write
+/// (docs/values-and-types.md §2). Cloning is cheap. The storage is private
+/// so it can change (golden-path.md §7.3) without changing this API: build
+/// one with [`TableBuilder`] or `collect`, read it with [`get`](Table::get)
+/// and [`iter`](Table::iter).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct Table(Arc<BTreeMap<Arc<str>, Var>>);
+
+impl Table {
+  pub fn new() -> Table {
+    Table::default()
+  }
+
+  pub fn builder() -> TableBuilder {
+    TableBuilder::default()
+  }
+
+  pub fn len(&self) -> usize {
+    self.0.len()
+  }
+
+  pub fn is_empty(&self) -> bool {
+    self.0.is_empty()
+  }
+
+  pub fn get(&self, key: &str) -> Option<&Var> {
+    self.0.get(key)
+  }
+
+  pub fn contains_key(&self, key: &str) -> bool {
+    self.0.contains_key(key)
+  }
+
+  /// Entries in key order.
+  pub fn iter(&self) -> impl ExactSizeIterator<Item = (&str, &Var)> + DoubleEndedIterator {
+    self.0.iter().map(|(k, v)| (&**k, v))
+  }
+
+  /// Keys in sorted order.
+  pub fn keys(&self) -> impl ExactSizeIterator<Item = &str> + DoubleEndedIterator {
+    self.0.keys().map(|k| &**k)
+  }
+
+  /// Values in key order.
+  pub fn values(&self) -> impl ExactSizeIterator<Item = &Var> + DoubleEndedIterator {
+    self.0.values()
+  }
+
+  /// How many tables share this storage. For tests that check snapshot
+  /// sharing and release; not a stable API.
+  #[doc(hidden)]
+  pub fn storage_owners(&self) -> usize {
+    Arc::strong_count(&self.0)
+  }
+
+  pub(crate) fn from_map(map: BTreeMap<Arc<str>, Var>) -> Table {
+    Table(Arc::new(map))
+  }
+
+  pub(crate) fn map(&self) -> &BTreeMap<Arc<str>, Var> {
+    &self.0
+  }
+
+  /// The storage when no other table shares it.
+  pub(crate) fn into_unique(self) -> Option<BTreeMap<Arc<str>, Var>> {
+    Arc::try_unwrap(self.0).ok()
+  }
+}
+
+impl<K: Into<Arc<str>>> FromIterator<(K, Var)> for Table {
+  /// A repeated key keeps the last value.
+  fn from_iter<I: IntoIterator<Item = (K, Var)>>(entries: I) -> Table {
+    Table::from_map(entries.into_iter().map(|(k, v)| (k.into(), v)).collect())
+  }
+}
+
+impl From<Table> for Var {
+  fn from(t: Table) -> Var {
+    Var::Table(t)
+  }
+}
+
+/// Builds a [`Table`]; a repeated key keeps the last value.
+#[derive(Debug, Default)]
+pub struct TableBuilder(BTreeMap<Arc<str>, Var>);
+
+impl TableBuilder {
+  pub fn new() -> TableBuilder {
+    TableBuilder::default()
+  }
+
+  pub fn insert(&mut self, key: impl Into<Arc<str>>, value: Var) -> &mut TableBuilder {
+    self.0.insert(key.into(), value);
+    self
+  }
+
+  pub fn with(mut self, key: impl Into<Arc<str>>, value: Var) -> TableBuilder {
+    self.insert(key, value);
+    self
+  }
+
+  pub fn build(self) -> Table {
+    Table::from_map(self.0)
   }
 }
 

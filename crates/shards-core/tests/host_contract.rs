@@ -205,3 +205,50 @@ mod stackful {
 mod stackless {
   host_contract_tests!(shards_core::Mesh);
 }
+
+/// Hosts read and build collections through `Var` accessors and `Table`,
+/// never through the storage type (golden-path.md §7.1).
+#[test]
+fn hosts_use_opaque_collections() {
+  use shards_core::{Table, TableBuilder};
+  let built = TableBuilder::new()
+    .with("b", Var::Int(2))
+    .with("a", Var::string("x"))
+    .with("b", Var::Int(3))
+    .build();
+  let collected: Table = [("a", Var::string("x")), ("b", Var::Int(3))]
+    .into_iter()
+    .collect();
+  assert_eq!(built, collected);
+  assert_eq!(
+    Var::from(built.clone()),
+    Var::table([("b", Var::Int(3)), ("a", Var::string("x"))])
+  );
+  let mut b = Table::builder();
+  b.insert("only", Var::None);
+  assert_eq!(b.build().len(), 1);
+
+  let value = Var::Table(built);
+  let table = value.as_table().unwrap();
+  assert_eq!(table.len(), 2);
+  assert!(!table.is_empty() && Table::new().is_empty());
+  assert_eq!(table.get("a").and_then(Var::as_str), Some("x"));
+  assert_eq!(table.get("missing"), None);
+  assert!(table.contains_key("b"));
+  // Sorted iteration, whatever the insertion order.
+  assert_eq!(table.keys().collect::<Vec<_>>(), ["a", "b"]);
+  assert_eq!(
+    table.iter().map(|(k, _)| k).rev().collect::<Vec<_>>(),
+    ["b", "a"]
+  );
+  assert_eq!(
+    table.values().cloned().collect::<Vec<_>>(),
+    [Var::string("x"), Var::Int(3)]
+  );
+
+  let seq = Var::Seq(std::sync::Arc::new(vec![Var::Int(1), value.clone()]));
+  assert_eq!(seq.as_seq().map(<[Var]>::len), Some(2));
+  assert_eq!(seq.as_table(), None);
+  assert_eq!(value.as_seq(), None);
+  assert_eq!(Var::Int(1).as_str(), None);
+}

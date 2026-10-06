@@ -45,6 +45,7 @@ Compose runs once per wire shape, and its result is shared by every instance. It
 - **Leaf shards** return `Flow::Next(value)`. Runtime failures are `Error::Activation(message)`. `Maybe` can catch them; otherwise they end the instance.
 - **Async shards** start one operation per activation from owned inputs: no borrows of frames or of `ctx`. The adapter polls it on later ticks.
 - **Blocking work cannot be interrupted from outside.** `spawn_blocking` passes a cancellation token: check it at safe points or wire it to the library's own cancel hook. Cancelling the instance cancels the token. Never leave external state half-changed when stopping early.
+- **Read and build values through the accessors**, not the storage: `Var::as_str`, `Var::as_seq` (a `&[Var]`) and `Var::as_table` give borrowed views; a `Table` has `get`, `len`, `contains_key` and `iter`/`keys`/`values` in sorted key order. Build tables with `Table::builder().with("key", value).build()`, `collect()` from `(key, Var)` pairs, or `Var::table([...])`. The table storage is private and will change (struct tables, golden-path.md §7.3), so nothing outside `shards-core` can depend on it.
 - **Keep per-instance state in `State`**, not in `Compiled`. Session-wide resources (an open process handle, a connection) belong to the host's own services, looked up at activation by a key the script passes.
 
 ## 3. The catalog and scripts

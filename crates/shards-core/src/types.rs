@@ -224,12 +224,12 @@ impl Type {
         t.keys
           .iter()
           .all(|(k, kt)| entries.get(k).is_some_and(|v| kt.admits(v)))
-          && entries.iter().all(
-            |(k, v)| match t.keys.binary_search_by(|(name, _)| name.cmp(k)) {
+          && entries.iter().all(|(k, v)| {
+            match t.keys.binary_search_by(|(name, _)| (**name).cmp(k)) {
               Ok(_) => true,
               Err(_) => t.rest.is_some_and(|r| r.admits(v)),
-            },
-          )
+            }
+          })
       }
       _ => false,
     }

@@ -42,4 +42,4 @@ pub use shard::{Composed, Flow, ParamValue, Shard, ShardDef, ShardType, Stackful
 pub use stackless::Mesh;
 pub use stackless::Stackless;
 pub use types::{Type, TypeDesc};
-pub use var::Var;
+pub use var::{Table, TableBuilder, Var};

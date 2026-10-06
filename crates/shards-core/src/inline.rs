@@ -477,7 +477,7 @@ pub(crate) fn construct(
       }
       Op::TableMake(..) => {
         let mut output = match std::mem::take(&mut value) {
-          Var::Table(entries) => Arc::try_unwrap(entries).unwrap_or_default(),
+          Var::Table(entries) => entries.into_unique().unwrap_or_default(),
           _ => std::collections::BTreeMap::new(),
         };
         let mut table_shape = None;
@@ -505,11 +505,11 @@ pub(crate) fn construct(
           leaf::check_output(
             instruction.check.0,
             instruction.check.1,
-            &Var::Table(Arc::new(output.clone())),
+            &Var::Table(crate::var::Table::from_map(output.clone())),
           )?;
           index += 1;
         }
-        value = Var::Table(Arc::new(output));
+        value = Var::Table(crate::var::Table::from_map(output));
       }
       _ => break,
     }

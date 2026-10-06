@@ -86,8 +86,10 @@ The script merges bootloader, partition table and app into a flash image, boots
 it, prints the serial log and fails unless the success line appears before a
 crash or the timeout (60 s by default; a third argument changes it).
 
-The example reserves 96 KiB for the ESP-IDF main task stack because parsing
-and composing still use the native stack. The success line reports the main
+The example reserves 16 KiB for its shallow main task. Acceptance suites run
+sequentially on temporary tasks: 48 KiB for core and metadata, 96 KiB for
+frontend and trampoline depth tests. Each suite prints its stack low-water
+mark and frees the task before the next suite. The success line reports the main
 task's stack and heap low-water marks. Stack depth follows the code path, so
 the emulator measures it as a board would; heap figures depend on the chip's
 RAM layout and enabled components. Measured in QEMU on 2026-10-05 (commit
@@ -129,4 +131,6 @@ and Rust's [ESP-IDF target documentation](https://doc.rust-lang.org/rustc/platfo
 
 CI builds with `--features acceptance`. The example build script derives a direct runner from `shards-core/tests/{prototype,metadata,trampoline}.rs` and `shards-lang/tests/lang.rs`, preserving test cfg attributes and using the default mesh. The regular smoke example remains available without this feature. Device tests omit panic-unwind-only behavior (ESP-IDF aborts on panic), native filesystem watching and host allocator instrumentation. Deep-call tests obey the device's default invocation limit of 32 and use a smaller over-limit source to fit the heap. The success marker is printed only after all enabled suites finish; a panic or missing marker fails QEMU.
 
-The M4 shared-suite gate exposed two limits hidden by the smoke script: a 64 KiB task stack overflowed in recursive compose on Xtensa, and the 200-wire rejection fixture exhausted the C3 lexer heap. The task stack is now 96 KiB; ESP rejection fixtures use 80 wires (still beyond the unchanged compose limit of 48), while native stress inputs remain unchanged. Exact-limit control-flow and trampoline depth tests are unchanged. The table above predates this expanded suite; new low-water marks require its QEMU success output.
+The M4 shared-suite gate exposed two limits hidden by the smoke script: a 64 KiB task stack overflowed in recursive compose on Xtensa, and the 200-wire rejection fixture exhausted the C3 lexer heap. A 96 KiB main stack was tried first (superseded by the per-suite tasks below); ESP rejection fixtures use 80 wires (still beyond the unchanged compose limit of 48), while native stress inputs remain unchanged. Exact-limit control-flow and trampoline depth tests are unchanged. The table above predates this expanded suite; new low-water marks require its QEMU success output.
+
+The first 96 KiB main-stack attempt exhausted heap in the 100-instance case; temporary suite tasks avoid reserving that stack during heap-heavy tests. Nesting acceptance uses diagnostics-only `Program::compose`, which no longer builds a full tooling occurrence report only to discard it. Dedicated analysis tests still exercise those reports. The smoke program and catalog are released before acceptance begins.

@@ -307,11 +307,17 @@ impl Program {
 
   /// Composes every wire: the entries (wires they reach through `Do` and
   /// `Spawn` compose with them), then one root per unreachable group.
+  /// Returns diagnostics without materializing tooling occurrence reports;
+  /// use `analyze` when those source-located reports are needed.
   pub fn compose<H: Host>(&self) -> Vec<Diagnostic> {
-    self.analyze::<H>().diagnostics
+    self.compose_report::<H>(false).diagnostics
   }
 
   pub fn analyze<H: Host>(&self) -> CheckReport {
+    self.compose_report::<H>(true)
+  }
+
+  fn compose_report<H: Host>(&self, include_analysis: bool) -> CheckReport {
     let mut mesh = H::create();
     for def in &self.lowered.wires {
       mesh.add_wire(def.clone());
@@ -326,7 +332,7 @@ impl Program {
             out.push(d);
           }
         }
-        Ok(compiled) => {
+        Ok(compiled) if include_analysis => {
           let analysis = H::analysis(&compiled).clone();
           let occurrences = analysis
             .occurrences
@@ -351,6 +357,7 @@ impl Program {
             occurrences,
           });
         }
+        Ok(_) => {}
       }
     }
     CheckReport {

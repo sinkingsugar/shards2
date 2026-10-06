@@ -19,9 +19,10 @@ use shards_io::runtime::spawn_blocking;
 /// its cancellation token fire.
 static STARTED: [AtomicBool; 3] = [const { AtomicBool::new(false) }; 3];
 static SAW_CANCEL: [AtomicBool; 3] = [const { AtomicBool::new(false) }; 3];
+static RELEASE: [AtomicBool; 3] = [const { AtomicBool::new(false) }; 3];
 
-/// Input 0: returns 42 after a short sleep. Input 1 or 2 (a test slot):
-/// blocks until cancelled, checking its token as blocking host code must.
+/// Positive slots block until cancelled; negative slots wait for the test
+/// to release them after tick returns. No wall-clock scheduling assumption.
 struct Block;
 
 const BLOCK_DESC: ShardDesc = ShardDesc {
@@ -51,21 +52,27 @@ impl AsyncShard for Block {
   }
 
   fn start(_: &(), _: &mut impl LeafCtx, input: &Var) -> Result<IoTask> {
-    let slot = match input {
-      Var::Int(s @ 1..=2) => Some(*s as usize),
-      _ => None,
+    let Var::Int(input) = input else {
+      unreachable!()
     };
-    Ok(spawn_blocking(move |token| match slot {
-      Some(slot) => {
+    let slot = input.unsigned_abs() as usize;
+    let cancel = *input > 0;
+    Ok(spawn_blocking(move |token| {
+      if cancel {
         STARTED[slot].store(true, Ordering::SeqCst);
         while !token.is_cancelled() {
           std::thread::sleep(Duration::from_millis(1));
         }
         SAW_CANCEL[slot].store(true, Ordering::SeqCst);
         Err("cancelled".into())
-      }
-      None => {
-        std::thread::sleep(Duration::from_millis(20));
+      } else {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !RELEASE[slot].load(Ordering::SeqCst) {
+          if token.is_cancelled() || Instant::now() >= deadline {
+            return Err("test did not release blocking operation".into());
+          }
+          std::thread::sleep(Duration::from_millis(1));
+        }
         // Logged on a blocking-pool thread.
         shards_core::log::emit("scanned".into());
         Ok(Var::Int(42))
@@ -95,14 +102,16 @@ macro_rules! blocking_tests {
     #[test]
     fn blocking_work_completes_without_blocking_the_mesh() {
       let mut mesh = <$mesh>::new();
-      mesh.add_wire(wire(0));
+      mesh.add_wire(wire(-($slot as i64)));
       let w = mesh.compile("w", Type::none()).unwrap();
       let id = mesh.spawn(&w, Var::None).unwrap();
       let ((), lines) = shards_core::log::capture(|| {
         let start = Instant::now();
         mesh.tick();
-        // The 20 ms sleep runs on the blocking pool, not in the tick.
-        assert!(start.elapsed() < Duration::from_millis(15), "tick blocked");
+        // Completion cannot happen until the ticking thread releases the
+        // worker. A busy CI host may deschedule this thread for any duration.
+        assert!(mesh.outcome(id).is_none(), "tick waited for blocking work");
+        RELEASE[$slot].store(true, Ordering::SeqCst);
         while mesh.outcome(id).is_none() {
           assert!(start.elapsed() < Duration::from_secs(5), "timed out");
           mesh.tick();

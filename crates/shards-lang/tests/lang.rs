@@ -1146,7 +1146,12 @@ If(Any(b {a}) {4} {5}) = z
       ] {
         let n = (shards_core::compose::MAX_FLOW_DEPTH - 2) / levels;
         let src = wrapped_chain(n, wrapper);
-        assert!(check(&src).ok(), "{wrapper}: {}", check(&src).to_json());
+        // This test needs diagnostics, not the full tooling report of every
+        // occurrence and its expanded source path.
+        let program = Program::load(Source::new("t.shs", &src), &catalog(), &no_defines()).unwrap_or_else(|(_, d)| panic!("{d:?}"));
+        let diagnostics = program.compose::<Mesh>();
+        assert!(diagnostics.is_empty(), "{wrapper}: {diagnostics:?}");
+        drop(program);
         assert!(run(&src, &no_defines()).succeeded(), "{wrapper}");
         // The chain is at the limit: one more wire is too deep. If compose's
         // level counting drifts, this fails instead of the test silently

@@ -730,16 +730,10 @@ impl Match {
   ) -> Result<Step> {
     let case = match state.resume {
       Some(case) => case,
-      None => match c.find(input) {
-        Some(case) => case,
-        None => return Ok(Step::Next(input.clone())),
-      },
+      None => c.find(input)?,
     };
     state.resume = Some(case);
-    match c.flows[case].activate(&mut state.flows[case], ctx, input)? {
-      Step::Next(v) => Ok(Step::Next(if c.passthrough { input.clone() } else { v })),
-      other => Ok(other),
-    }
+    c.flows[case].activate(&mut state.flows[case], ctx, input)
   }
 }
 

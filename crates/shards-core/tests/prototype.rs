@@ -821,7 +821,7 @@ macro_rules! acceptance_tests {
       );
       cancel_while_suspended(
         "match",
-        vec![probe("outer"), konst(Var::Int(1)), match_(vec![(Var::Int(1), vec![probe("case"), pause()])])],
+        vec![probe("outer"), konst(Var::Int(1)), match_(vec![(Var::Int(1), vec![probe("case"), pause()])], vec![])],
         &["outer", "case"],
       );
       cancel_while_suspended(

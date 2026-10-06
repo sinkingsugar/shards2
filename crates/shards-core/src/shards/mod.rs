@@ -1536,8 +1536,11 @@ pub mod defs {
     params.extend(els.map(ParamValue::Flow));
     ShardDef::new(&IF, params)
   }
-  pub fn match_(cases: Vec<(Var, Vec<ShardDef>)>) -> ShardDef {
-    ShardDef::new(&MATCH, vec![ParamValue::Cases(cases)])
+  pub fn match_(cases: Vec<(Var, Vec<ShardDef>)>, default: Vec<ShardDef>) -> ShardDef {
+    ShardDef::new(
+      &MATCH,
+      vec![ParamValue::Cases(cases), ParamValue::Flow(default)],
+    )
   }
   pub fn maybe(action: Vec<ShardDef>, els: Option<Vec<ShardDef>>) -> ShardDef {
     let mut args = vec![Arg::pos(ParamValue::Flow(action))];

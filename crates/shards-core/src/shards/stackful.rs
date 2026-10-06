@@ -589,13 +589,8 @@ impl Match {
     ctx: &mut ActivationCtx<'_>,
     input: &Var,
   ) -> Result<Flow> {
-    let Some(i) = c.find(input) else {
-      return Ok(Flow::Next(input.clone()));
-    };
-    match c.flows[i].activate(&mut states[i], ctx, input)? {
-      Flow::Next(v) => Ok(Flow::Next(if c.passthrough { input.clone() } else { v })),
-      other => Ok(other),
-    }
+    let i = c.find(input)?;
+    c.flows[i].activate(&mut states[i], ctx, input)
   }
 }
 

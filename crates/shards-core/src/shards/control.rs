@@ -161,19 +161,19 @@ pub(crate) fn compose_if<B: Backend>(
 pub static MATCH_PARAMS: &[ParamDecl] = &[
   decl(
     "cases",
-    crate::shard_doc!(
-      "Value-flow pairs, `[value {flow} value {flow}]`; a `none` value matches anything."
-    ),
+    crate::shard_doc!("Value-flow pairs, `[value {flow} value {flow}]`."),
     Forms::CASES,
     NONE_TYPES,
     Requirement::Required,
   ),
   decl(
-    "passthrough",
-    crate::shard_doc!("Output the input instead of the matched case's output."),
-    Forms::LITERAL,
-    &[TypeName::Bool],
-    Requirement::Default(DefaultValue::Bool(true)),
+    "default",
+    crate::shard_doc!(
+      "The flow to run when no case matches. Required unless the cases cover every value of the input type; `default: {}` outputs the input."
+    ),
+    FLOW,
+    NONE_TYPES,
+    Requirement::Optional,
   ),
 ];
 
@@ -182,20 +182,22 @@ pub const MATCH_DESC: ShardDesc = ShardDesc {
   version: 1,
   summary: crate::shard_doc!("Runs the flow of the first case equal to the input."),
   help: crate::shard_doc!(
-    "Cases are tried in order and compare as in Is; a `none` case matches anything. The matched flow receives the input. By default Match passes its input through; with `passthrough: false` it outputs the matched flow's output (the input when nothing matched)."
+    "Cases are tried in order and compare as in Is; `none` matches only none. The matched flow receives the input, and Match outputs that flow's output (an empty flow `{}` outputs its input). Match must be exhaustive: either the cases cover every value of the input type (true and false for a Bool, none for None, all of them for a union of those), or `default:` runs when nothing matched."
   ),
   params: Params::Declared(MATCH_PARAMS),
   input: InputDesc::Any,
-  output: OutputDesc::Dynamic(crate::shard_doc!("the input, or the matched case's output")),
+  output: OutputDesc::Dynamic(crate::shard_doc!(
+    "the union of the case and default outputs"
+  )),
   targets: Targets::All,
   aliases: &[],
 };
 
 pub struct MatchCompiled<B: Backend> {
-  /// One value per flow; `None` matches anything.
+  /// One value per case flow.
   pub(crate) values: Vec<Var>,
+  /// The case flows, then the default flow if there is one.
   pub(crate) flows: Vec<CompiledFlow<B>>,
-  pub(crate) passthrough: bool,
 }
 
 impl<B: Backend> ControlFlows<B> for MatchCompiled<B> {
@@ -205,12 +207,32 @@ impl<B: Backend> ControlFlows<B> for MatchCompiled<B> {
 }
 
 impl<B: Backend> MatchCompiled<B> {
-  /// The index of the first case matching `input`.
-  pub(crate) fn find(&self, input: &Var) -> Option<usize> {
+  /// The flow to run for `input`: the first equal case, else the default.
+  /// Compose proved one of them exists for every input of its type.
+  pub(crate) fn find(&self, input: &Var) -> Result<usize> {
     self
       .values
       .iter()
-      .position(|v| matches!(v, Var::None) || super::values::values_equal(v, input))
+      .position(|v| super::values::values_equal(v, input))
+      .or((self.flows.len() > self.values.len()).then_some(self.values.len()))
+      .ok_or_else(|| Error::Activation(format!("Match: no case matches {input}")))
+  }
+}
+
+/// The values a type has, when there are finitely many and Match can prove
+/// coverage of them: Bool, None and unions of those.
+fn finite_values(ty: Type) -> Option<Vec<Var>> {
+  match ty.desc() {
+    TypeDesc::Bool => Some(vec![Var::Bool(false), Var::Bool(true)]),
+    TypeDesc::None => Some(vec![Var::None]),
+    TypeDesc::Union(members) => {
+      let mut all = Vec::new();
+      for m in members.iter() {
+        all.extend(finite_values(*m)?);
+      }
+      Some(all)
+    }
+    _ => None,
   }
 }
 
@@ -221,11 +243,10 @@ pub(crate) fn compose_match<B: Backend>(
   let input = ctx.input();
   let cases = args.cases("cases").expect("decoded Cases");
   let mut values = Vec::with_capacity(cases.len());
-  let mut flows = Vec::with_capacity(cases.len());
+  let mut flows = Vec::with_capacity(cases.len() + 1);
   for (value, flow) in cases {
     let ty = value.type_of();
-    let can_match = matches!(value, Var::None) || super::values::comparable(input, ty);
-    if !can_match {
+    if !super::values::comparable(input, ty) {
       return Err(compose_error(
         "Match",
         "cases",
@@ -237,23 +258,44 @@ pub(crate) fn compose_match<B: Backend>(
     values.push(value.clone());
     flows.push(ctx.compose_flow_conditional(flow, input)?);
   }
-  let passthrough = args.bool("passthrough").unwrap_or(true);
-  let output = if passthrough || flows.is_empty() {
-    input
-  } else {
-    let default = values.iter().any(|v| matches!(v, Var::None));
-    let mut members: Vec<Type> = flows.iter().map(|f| f.output).collect();
-    if !default {
-      members.push(input);
+  match args.flow("default") {
+    Some(flow) => flows.push(ctx.compose_flow_conditional(flow, input)?),
+    None => {
+      let missing: Option<Vec<Var>> = finite_values(input).map(|all| {
+        all
+          .into_iter()
+          .filter(|v| !values.iter().any(|c| super::values::values_equal(c, v)))
+          .collect()
+      });
+      let message = match missing {
+        Some(missing) if missing.is_empty() => None,
+        Some(missing) => {
+          let names: Vec<String> = missing.iter().map(|v| v.to_string()).collect();
+          Some(format!(
+            "Match does not cover {} of its {input} input: add those cases, or `default: {{...}}`",
+            names.join(" and ")
+          ))
+        }
+        None => Some(format!(
+          "Match on {input} cannot list every value: add `default: {{...}}` (`default: {{}}` outputs the input)"
+        )),
+      };
+      if let Some(message) = message {
+        return Err(Error::Diagnostic(Box::new(
+          Diagnostic::new(
+            Phase::Compose,
+            "compose-error",
+            "non-exhaustive-match",
+            message,
+          )
+          .shard("Match"),
+        )));
+      }
     }
-    Type::union(members)
-  };
+  }
+  let output = Type::union(flows.iter().map(|f| f.output).collect::<Vec<_>>());
   Ok(Composed {
-    compiled: MatchCompiled {
-      values,
-      flows,
-      passthrough,
-    },
+    compiled: MatchCompiled { values, flows },
     output,
   })
 }

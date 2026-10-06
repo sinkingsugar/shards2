@@ -792,9 +792,9 @@ Time.Now | Math.Subtract(t0) | IsMoreEqual(0.0) = later
         "5 = n
 n | If({IsMore(3)} {\"big\"} {\"small\"}) = a
 n | If({IsMore(10)} {\"big\"}) = b
-\"gone\" | Match([\"biting\" {\"hook\"} \"gone\" {\"despawned\"} none {\"other\"}] passthrough: false) = c
-\"x\" | Match([\"biting\" {\"hook\"} none {\"other\"}] passthrough: false) = d
-3 | Match([1 {\"one\"}]) = e
+\"gone\" | Match([\"biting\" {\"hook\"} \"gone\" {\"despawned\"}] default: {\"other\"}) = c
+\"x\" | Match([\"biting\" {\"hook\"}] default: {\"other\"}) = d
+3 | Match([1 {\"one\"}] default: {}) = e
 Maybe({[1 2] | Take(5)} {\"fallback\"} silent: true) = f
 Maybe({\"fine\"} {\"fallback\"}) = g
 true = far
@@ -827,6 +827,27 @@ Repeat({Inc(count)} until: {count | IsMoreEqual(100)} times: 2)
       );
     }
 
+    /// Golden path test F: Match is exhaustive or has `default:`.
+    #[test]
+    fn match_is_exhaustive_or_has_a_default() {
+      // Bool and None cases can cover their type.
+      let report = run("true | Match([true {1} false {2}]) = a\nnone | Match([none {3}]) = b\n[a b]", &no_defines());
+      assert_eq!(completed(&report, "root"), Var::Seq(std::sync::Arc::new(vec![Var::Int(1), Var::Int(3)])));
+      let report = check("2 | Match([1 {10}])");
+      let d = &report.diagnostics[0];
+      assert_eq!((d.code, at(d)), ("non-exhaustive-match", (1, 5)));
+      assert!(d.message.contains("`default: {...}`"), "{}", d.message);
+      let report = check("true | Match([true {1}])");
+      assert_eq!(report.diagnostics[0].code, "non-exhaustive-match");
+      assert!(report.diagnostics[0].message.contains("does not cover false"), "{}", report.diagnostics[0].message);
+      // `default: {}` passes the input through.
+      let (_, lines) = shards_core::log::capture(|| run("2 | Match([1 {10}] default: {}) | Log", &no_defines()));
+      assert_eq!(lines, ["2"]);
+      // `none` matches only none, so on an Int it can never match.
+      let report = check("5 | Match([none {1}] default: {2})");
+      assert_eq!(report.diagnostics[0].code, "unmatchable-case");
+    }
+
     #[test]
     fn control_flow_resumes_after_suspending_inside() {
       // Each control shard suspends (Pause) inside a nested flow and must
@@ -836,7 +857,7 @@ Repeat({Inc(count)} until: {count | IsMoreEqual(100)} times: 2)
           "0 | Var(ticks)
 If({true} {Pause Inc(ticks)})
 All({Pause true} {Inc(ticks) true})
-1 | Match([1 {Pause Inc(ticks)}])
+1 | Match([1 {Pause Inc(ticks)}] default: {})
 Maybe({Pause [1] | Take(3)} {Inc(ticks)})
 Repeat({Pause Inc(ticks)} until: {ticks | IsMoreEqual(7)})
 ticks",
@@ -853,7 +874,7 @@ ticks",
     fn control_flow_compose_errors() {
       let report = check("Repeat({})");
       assert_eq!(report.diagnostics[0].code, "missing-argument");
-      let report = check("1 | Match([\"a\" {}])");
+      let report = check("1 | Match([\"a\" {}] default: {})");
       assert_eq!(report.diagnostics[0].code, "unmatchable-case");
       let report = check("All({1})");
       assert_eq!(report.diagnostics[0].code, "predicate-not-bool");
@@ -1112,7 +1133,7 @@ If(Any(b {a}) {4} {5}) = z
         ("If(All({true} {{next} true}) {1} {2})", 3),
         ("When({true} {{next}})", 2),
         ("Repeat({{next}} times: 1)", 2),
-        ("1 | Match([1 {{next}}])", 2),
+        ("1 | Match([1 {{next}}] default: {{}})", 2),
         ("Maybe({{next}} {2})", 2),
         ("Any({false} {{next} false})", 2),
       ] {

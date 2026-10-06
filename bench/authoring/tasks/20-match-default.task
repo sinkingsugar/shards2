@@ -8,6 +8,6 @@ other
 [1 2 5] = xs
 0 | Var(i)
 Repeat({
-  xs | Take(i) | Match([1 {"one"} 2 {"two"} none {"other"}] passthrough: false) | Log
+  xs | Take(i) | Match([1 {"one"} 2 {"two"}] default: {"other"}) | Log
   Inc(i)
 } times: 3)

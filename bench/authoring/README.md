@@ -29,4 +29,4 @@ The prompt goes to the command's stdin, from an empty temporary directory, so th
 
 One CSV row per (task, model, variant): `SemanticSuccess` (the log matched), `FirstPassSuccess` (the first reply checked clean), `RepairRounds`, `Tokens` (summed over rounds; `claude-json` only, and it includes the CLI's own system prompt, about 20k tokens a call), `LatencyMs` (model time only) and `Failure`: `syntax` (parse errors), `missing-shard` (an unknown shard), `compose` (other check errors), `runtime`, `wrong-output`, `timeout` or `model-error`.
 
-`baseline.csv` holds the pre-M2 baseline. Commit rows from real runs only, never mock or placeholder data. Small samples are evidence, not proof.
+`baseline.csv` holds the pre-M2 baseline, with its transcripts in `transcripts/baseline-sonnet/`. Commit rows from real runs only, never mock or placeholder data. Small samples are evidence, not proof.

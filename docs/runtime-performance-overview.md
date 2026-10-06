@@ -26,16 +26,16 @@ below are unchanged; no later scheduler/HTTP rerun is implied.
 
 ## M4 direct-resume update (2026-10-06)
 
-The new trampoline replaces the recursive stackless engine. [Five alternating trials and raw data](../bench/trampoline/README.md#exact-frame-reservation-follow-up) compare it with the M3 stackless baseline and stackful using identical workloads, 1,000 instances, Rust 1.98.1 release:
+The new trampoline replaces the recursive stackless engine. [Five alternating trials and raw data](../bench/trampoline/README.md#shared-reload-metadata-follow-up) compare it with the M3 stackless baseline and stackful using identical workloads, 1,000 instances, Rust 1.98.1 release:
 
 | Workload | M3 stackless | Stackful | Trampoline (current stackless) |
 |---|---:|---:|---:|
-| Pending leaf re-poll, depth 32 | 854.32 ns | 54.17 ns | 16.41 ns |
-| Full completion/unwind, depth 32 | 984.57 ns | 1314.27 ns | 708.17 ns |
-| Original depth benchmark (Pause completes each tick), depth 32 | 980.78 ns | 132.78 ns | 104.13 ns |
-| Short mixed entity flow | 112.70 ns | 166.00 ns | 118.90 ns |
+| Pending leaf re-poll, depth 32 | 846.22 ns | 54.49 ns | 16.64 ns |
+| Full completion/unwind, depth 32 | 990.90 ns | 774.19 ns | 682.82 ns |
+| Original depth benchmark (Pause completes each tick), depth 32 | 990.74 ns | 131.48 ns | 102.45 ns |
+| Short mixed entity flow | 112.80 ns | 165.40 ns | 118.00 ns |
 
-The M4 soft gate passes: pending re-polls cost 0.303× stackful, and short mixed flows regress 5.5% against M3 (limit 10%). Structural tests prove zero ancestor dispatches during pending re-polls and one per parent during completion at depths 1/4/16/32. Measured state in the mixed workload is 1,306 bytes per instance versus 978 for M3 stackless (down from 1,930 before exact reservation). Instance state and creation cost still increase with the explicit arena; the raw log retains those measurements. Historical tables below retain their original snapshots, and their old recursive-stackless depth numbers no longer describe the current engine.
+The M4 soft gate passes: pending re-polls cost 0.305× stackful, and short mixed flows regress 4.61% against M3 (limit 10%). Structural tests prove zero ancestor dispatches during pending re-polls and one per parent during completion at depths 1/4/16/32. Measured state in the mixed workload is 1,306 bytes per instance versus 978 for M3 stackless (down from 1,930 before exact reservation). Instance state and creation cost still increase with the explicit arena; the raw log retains those measurements. Historical tables below retain their original snapshots, and their old recursive-stackless depth numbers no longer describe the current engine.
 
 ## Lessons from the VM optimization work
 

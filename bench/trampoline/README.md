@@ -58,3 +58,16 @@ Both limits still pass: pending is 0.308× stackful, mixed is 1.0965× M3 stackl
 | mixed | 112.70 | 166.00 | 118.90 |
 
 Both limits pass: pending is 0.303× stackful; mixed is 1.055× M3 stackless. This run supersedes the compact-metadata run for the current runtime implementation.
+
+### Shared reload metadata follow-up
+
+The unchanged five-trial run at `ab4bc6b744701b503e0524a2e1783b02dc14455c` is retained in `2026-10-06-shared-gate.csv`, its raw log and metadata. Verification processes finished before sampling. Medians (ns/instance/tick):
+
+| Workload | M3 stackless | Stackful | Trampoline |
+|---|---:|---:|---:|
+| pending (depth 32) | 846.22 | 54.49 | 16.64 |
+| completion (depth 32) | 990.90 | 774.19 | 682.82 |
+| progress (depth 32) | 990.74 | 131.48 | 102.45 |
+| mixed | 112.80 | 165.40 | 118.00 |
+
+Both soft limits pass: pending is 0.305× stackful; mixed regresses 4.61%. This supersedes the exact-reservation run for the current snapshot. It does not clear the device acceptance gate.

@@ -1,0 +1,38 @@
+{
+  "baseline": "c0aaa3961b1d2de4e9b7f9512b49c668c064d727",
+  "candidate": "ab4bc6b744701b503e0524a2e1783b02dc14455c",
+  "provenance": "Implementation-session five-trial run, retained during handoff publication; not a new independent benchmark.",
+  "platform": "Linux x86-64, Intel Core i9-14900KF",
+  "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)",
+  "trials": 5,
+  "instances": 1000,
+  "mixed_iterations": 500000,
+  "sampling": "Local verification completed before sampling; no affinity pinning.",
+  "reproduction": "Follow README: build baseline with candidate bench_depth.rs and unchanged bench_instances.rs, then run run.py with five trials.",
+  "sha256": {
+    "2026-10-06-shared-gate.csv": "2003a9e415048648cc6b7876405ee77f109600a6c467aa017d40febfa8b2ce79",
+    "2026-10-06-shared-gate.log": "19844b1964f21741da9219a514127cdd00198122c599b0a8b9f0dc11f0250849"
+  },
+  "medians": {
+    "pending": {
+      "old-stackless": 846.22,
+      "stackful": 54.49,
+      "trampoline": 16.64
+    },
+    "completion": {
+      "old-stackless": 990.9,
+      "stackful": 774.19,
+      "trampoline": 682.82
+    },
+    "progress": {
+      "old-stackless": 990.74,
+      "stackful": 131.48,
+      "trampoline": 102.45
+    },
+    "mixed": {
+      "old-stackless": 112.8,
+      "stackful": 165.4,
+      "trampoline": 118.0
+    }
+  }
+}

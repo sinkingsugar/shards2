@@ -1,4 +1,11 @@
 #[cfg(feature = "acceptance")]
+// Generated token streams lose source newlines and macro lint exemptions.
+// These style lints run on the original suites in the workspace instead.
+#[allow(
+  clippy::possible_missing_else,
+  clippy::type_complexity,
+  clippy::missing_const_for_thread_local
+)]
 mod acceptance {
   mod prototype {
     include!(concat!(env!("OUT_DIR"), "/prototype.rs"));

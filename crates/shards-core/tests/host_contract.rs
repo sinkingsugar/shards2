@@ -147,7 +147,17 @@ macro_rules! host_contract_tests {
       });
       let wire = mesh.compile("unknown", Type::none()).unwrap();
       assert!(wire.flow.analysis.effects.unknown);
-      assert!(wire.flow.analysis.occurrences[0].effects.unknown);
+      assert!(
+        wire
+          .flow
+          .analysis
+          .occurrences
+          .iter()
+          .next()
+          .unwrap()
+          .effects
+          .unknown
+      );
       assert_eq!(
         wire.flow.analysis.lifetime,
         shards_core::signature::Lifetime::Unknown

@@ -77,7 +77,7 @@ fn acceptance() {
               .collect();
             let name = &f.sig.ident;
             calls.push(
-              quote! { #(#cfgs)* { println!("acceptance: {}", stringify!(#name)); #name(); } },
+              quote! { #(#cfgs)* { println!("acceptance: {}", stringify!(#name)); #name(); std::thread::sleep(std::time::Duration::from_millis(10)); } },
             );
           }
           Item::Mod(m) => {

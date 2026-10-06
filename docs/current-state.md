@@ -49,4 +49,6 @@ M2 notes for later milestones:
 
 ## Verified
 
+M4 commit `e2c5dad` passed Linux/macOS and WASI CI. Its expanded ESP32 acceptance gate failed: both Xtensa targets exhausted heap in the deep-call case, and the RISC-V target hit generated-source lint errors. The follow-up stores occurrence metadata as shared relative-path trees instead of copying descendants into every ancestor, preserves source-report paths with a regression test, and fixes generated-runner lint handling and watchdog yielding. Full local checks pass again; the device gate remains pending until the follow-up CI run succeeds. Stackful is retained.
+
 Locally on Linux x86-64 for M4 before stackful deletion: the full check set in `AGENTS.md` (fmt, clippy native, rustls and wasm, workspace tests on both schedulers in debug and release, docs-off, release nesting, WASI suites including trampoline, Python benchmark-runner tests, targeted arena Miri). M2 review findings are independently closed in [.agent-handoffs/verifications/2026-10-06-cd7a56e-codex-af86ad.md](../.agent-handoffs/verifications/2026-10-06-cd7a56e-codex-af86ad.md). CI results come from the draft pull request for `golden-path`; macOS and the ESP32 build are verified only there. Re-run the check set before relying on any status above.

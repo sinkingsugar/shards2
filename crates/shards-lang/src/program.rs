@@ -331,7 +331,6 @@ impl Program {
           let occurrences = analysis
             .occurrences
             .iter()
-            .cloned()
             .map(|mut occurrence| {
               occurrence.path.insert(0, PathStep::Wire(wire.clone()));
               let mut d = Diagnostic::new(Phase::Compose, "", "", "");

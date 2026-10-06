@@ -192,8 +192,8 @@ fn watch_reloads_atomic_saves_and_keeps_running_after_rejected_edits() {
     let live = |body| {
       format!(
         r#"@wire(inner {{{body}}})
-@wire(main {{Once({{0 >= n}}) Inc(n) Do(inner)}} Looped: true)
-@mesh(m) @schedule(m main) @run(m FPS: 10)"#
+@wire(main {{Once({{0 >= n}}) Inc(n) Do(inner)}} looped: true)
+@mesh(m) @schedule(m main) @run(m fps: 10)"#
       )
     };
     std::fs::write(&file, live(r#"f"old {n}" Log"#)).unwrap();

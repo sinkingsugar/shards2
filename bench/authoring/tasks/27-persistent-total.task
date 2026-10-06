@@ -9,5 +9,5 @@ Write a looped process, run on a scheduler for exactly 3 iterations (one per tic
   Once({100 >= total})
   total | Math.Add(5) > total
   total | Log
-} Looped: true)
-@mesh(m) @schedule(m acc) @run(m Iterations: 3)
+} looped: true)
+@mesh(m) @schedule(m acc) @run(m iterations: 3)

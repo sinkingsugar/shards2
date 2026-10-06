@@ -81,8 +81,8 @@ Two declarations of a requirement must not drift. For a simple accepted-type set
 
 Describe the current prototype's actual contract:
 
-- `URL`: required; String literal or variable reference resolving to String.
-- `Timeout`: optional; Int literal, default 10 seconds. Compose checks that it is positive. Variable timeouts are not currently supported.
+- `url`: required; String literal or variable reference resolving to String.
+- `timeout`: optional; Int literal, default 10 seconds. Compose checks that it is positive. Variable timeouts are not currently supported.
 - Input is ignored; output is String. Help explains non-success responses, timeout, and cancellation behavior.
 - Native implementation on both backends; browser support remains separate work.
 
@@ -110,7 +110,7 @@ Start a structured diagnostic envelope with phase, stable error code, shard, opt
 
 Source context must belong to the program use site: reusing a compiled artifact must not report the first caller's filename or location. Cache semantic results separately from use-site diagnostic context.
 
-**Occurrence paths (implemented 2026-10-04).** A compose diagnostic carries `path`, root first: `{"wire": name}` starts a wire definition (the composed root, a `Do` sub-wire, a spawned wire), `{"shard": index, "name": ...}` indexes the current flow, and `{"param": name}` enters the preceding shard's nested flow or wire reference (for example `caller/1:Do/Wire/sub/1:Add`). Compose adds the steps as the error leaves each flow and wire (`ComposeCtx::compose_flow`, `compose_inline`, `compose_wire`); the parameter is found by the identity of the nested flow or the name of the referenced wire in the decoded arguments. The steps index wire definitions, not source, so the same definition reached from two call sites has the same steps below its `Wire` step. The frontend keeps the spans in its own table, keyed by wire and steps. Compose errors are not cached, so a path never belongs to an earlier caller.
+**Occurrence paths (implemented 2026-10-04).** A compose diagnostic carries `path`, root first: `{"wire": name}` starts a wire definition (the composed root, a `Do` sub-wire, a spawned wire), `{"shard": index, "name": ...}` indexes the current flow, and `{"param": name}` enters the preceding shard's nested flow or wire reference (for example `caller/1:Do/wire/sub/1:Add`). Compose adds the steps as the error leaves each flow and wire (`ComposeCtx::compose_flow`, `compose_inline`, `compose_wire`); the parameter is found by the identity of the nested flow or the name of the referenced wire in the decoded arguments. The steps index wire definitions, not source, so the same definition reached from two call sites has the same steps below its `Wire` step. The frontend keeps the spans in its own table, keyed by wire and steps. Compose errors are not cached, so a path never belongs to an earlier caller.
 
 **Input provenance (implemented 2026-10-04).** A mismatch on a shard's own input (kind `input-type-mismatch`, or code `variable-type-mismatch`) carries `input_from`: the shard in the same flow that produced the value, or `"flow-input"` for the first shard of a flow, plus the shards in between that pass their input through (`OutputDesc::Passthrough`). The message ends with the same information, e.g. "(the input comes from 0:Const, through 1:Set, 2:When, which pass their input through unchanged)". This is fix 5 of [surface-syntax-review.md](surface-syntax-review.md) §7.
 

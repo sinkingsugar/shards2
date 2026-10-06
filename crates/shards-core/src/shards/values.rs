@@ -115,7 +115,7 @@ pub(crate) fn comparable(a: Type, b: Type) -> bool {
 // --- Log ---
 
 pub static LOG_PARAMS: &[ParamDecl] = &[decl(
-  "Prefix",
+  "prefix",
   crate::shard_doc!("Text written before the value, as `prefix: value`."),
   Forms::LITERAL,
   &[TypeName::String],
@@ -127,7 +127,7 @@ pub const LOG_DESC: ShardDesc = ShardDesc {
   version: 1,
   summary: crate::shard_doc!("Writes the input to the log and passes it through."),
   help: crate::shard_doc!(
-    "Values print as text: strings as they are, whole floats without `.0`, other floats exact. With a Prefix the line is `prefix: value`."
+    "Values print as text: strings as they are, whole floats without `.0`, other floats exact. With a `prefix` the line is `prefix: value`."
   ),
   params: Params::Declared(LOG_PARAMS),
   input: InputDesc::Any,
@@ -148,7 +148,7 @@ impl LeafShard for Log {
     ctx: &mut ComposeCtx<'_, B>,
   ) -> Result<Composed<Self::Compiled>> {
     Ok(Composed {
-      compiled: args.string("Prefix").map(Arc::from),
+      compiled: args.string("prefix").map(Arc::from),
       output: ctx.input(),
     })
   }
@@ -217,7 +217,7 @@ impl LeafShard for Stop {
 // --- Is, IsNot ---
 
 pub static EQUALITY_PARAMS: &[ParamDecl] = &[decl(
-  "Operand",
+  "operand",
   crate::shard_doc!("The value to compare with: a literal, or a variable read at activation."),
   OPERAND,
   &[],
@@ -272,7 +272,7 @@ impl<S: EqualitySpec> LeafShard for Equality<S> {
   const DESC: ShardDesc = S::DESC;
 
   fn compose<B: Backend>(args: &Args, ctx: &mut ComposeCtx<'_, B>) -> Result<Composed<Operand>> {
-    let (operand, ty) = Operand::compose_arg(args, "Operand", S::DESC.name, ctx)?;
+    let (operand, ty) = Operand::compose_arg(args, "operand", S::DESC.name, ctx)?;
     let input = ctx.input();
     if !comparable(input, ty) {
       return Err(Error::Diagnostic(Box::new(
@@ -283,7 +283,7 @@ impl<S: EqualitySpec> LeafShard for Equality<S> {
           format!("{input} and {ty} can never be equal"),
         )
         .shard(S::DESC.name)
-        .param("Operand", Some(0))
+        .param("operand", Some(0))
         .types(Some(TypeRef::of(input)), vec![TypeRef::of(ty)]),
       )));
     }
@@ -307,7 +307,7 @@ impl<S: EqualitySpec> LeafShard for Equality<S> {
 // --- IsMore, IsLessEqual ---
 
 pub static ORDERED_PARAMS: &[ParamDecl] = &[decl(
-  "Operand",
+  "operand",
   crate::shard_doc!(
     "The value to compare the input with: a literal, or a variable read at activation."
   ),
@@ -386,7 +386,7 @@ impl<S: OrderedSpec> LeafShard for Ordered<S> {
 // --- IsAny ---
 
 pub static IS_ANY_PARAMS: &[ParamDecl] = &[decl(
-  "Values",
+  "values",
   crate::shard_doc!("The sequence to look in: a literal, or a variable read at activation."),
   OPERAND,
   &[TypeName::Seq],
@@ -413,7 +413,7 @@ impl LeafShard for IsAny {
   const DESC: ShardDesc = IS_ANY_DESC;
 
   fn compose<B: Backend>(args: &Args, ctx: &mut ComposeCtx<'_, B>) -> Result<Composed<Operand>> {
-    let (operand, ty) = Operand::compose_arg(args, "Values", "IsAny", ctx)?;
+    let (operand, ty) = Operand::compose_arg(args, "values", "IsAny", ctx)?;
     let input = ctx.input();
     let element = match ty.desc() {
       TypeDesc::Seq(e) => *e,
@@ -421,7 +421,7 @@ impl LeafShard for IsAny {
         return Err(param_error(
           args,
           "IsAny",
-          "Values",
+          "values",
           "compose-error",
           "wrong-variable-type",
           format!("Values must be a sequence, got {ty}"),
@@ -432,7 +432,7 @@ impl LeafShard for IsAny {
       return Err(param_error(
         args,
         "IsAny",
-        "Values",
+        "values",
         "input-type-mismatch",
         "input-type-mismatch",
         format!("{input} can never equal an element of {ty}"),
@@ -461,7 +461,7 @@ impl LeafShard for IsAny {
 // --- ParseInt ---
 
 pub static PARSE_INT_PARAMS: &[ParamDecl] = &[decl(
-  "Base",
+  "base",
   crate::shard_doc!("The base, 2 to 36."),
   Forms::LITERAL,
   &[TypeName::Int],
@@ -473,7 +473,7 @@ pub const PARSE_INT_DESC: ShardDesc = ShardDesc {
   version: 1,
   summary: crate::shard_doc!("Parses a string as an Int."),
   help: crate::shard_doc!(
-    "Surrounding whitespace is ignored. Text that is not a number in Base is an activation error."
+    "Surrounding whitespace is ignored. Text that is not a number in `base` is an activation error."
   ),
   params: Params::Declared(PARSE_INT_PARAMS),
   input: InputDesc::Types(&[TypeName::String]),
@@ -494,12 +494,12 @@ impl LeafShard for ParseInt {
     if input != Type::string() {
       return Err(mismatch("ParseInt", input, &[TypeName::String]));
     }
-    let base = args.int("Base").unwrap_or(10);
+    let base = args.int("base").unwrap_or(10);
     if !(2..=36).contains(&base) {
       return Err(param_error(
         args,
         "ParseInt",
-        "Base",
+        "base",
         "compose-error",
         "invalid-value",
         format!("Base must be between 2 and 36, got {base}"),

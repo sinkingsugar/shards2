@@ -71,7 +71,7 @@ and other system activity can affect the result despite affinity.
 - `push-shared-seq`: each iteration resets a destination from a retained
   64-element seed, then appends `width` ones. Full contents are checked. The
   first 2.0 push must detach shared storage; later pushes can grow in place.
-  `Clear: false` avoids the documented 1.x/2.0 clearing-semantic difference.
+  `clear: false` avoids the documented 1.x/2.0 clearing-semantic difference.
   Reset, result retention, copy-on-write and capacity growth are part of this
   workload. It is not a unique-buffer-only push benchmark.
 - `make-seq`, `make-table`: repeatedly construct four-element values from a

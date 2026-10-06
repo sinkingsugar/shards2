@@ -9,5 +9,5 @@ Count down from 5 to 1, logging each number on its own line, then log `liftoff`.
 liftoff
 === reference
 6 >= n
-Repeat({ Dec(n) | Log } Times: 5)
+Repeat({ Dec(n) | Log } times: 5)
 "liftoff" | Log

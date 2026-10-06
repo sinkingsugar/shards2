@@ -81,8 +81,8 @@ macro_rules! http_tests {
         "named",
         false,
         vec![http::get_args(vec![
-          shards_core::Arg::named("Timeout", shards_core::ParamValue::Value(Var::Int(5))),
-          shards_core::Arg::named("URL", shards_core::ParamValue::Value(Var::string(&server.url("/ok")))),
+          shards_core::Arg::named("timeout", shards_core::ParamValue::Value(Var::Int(5))),
+          shards_core::Arg::named("url", shards_core::ParamValue::Value(Var::string(&server.url("/ok")))),
         ])],
       ));
       let named = mesh.compile("named", Type::none()).unwrap();
@@ -94,7 +94,7 @@ macro_rules! http_tests {
       mesh.add_wire(wire("bad-timeout", false, vec![http::get_with_timeout(&server.url("/ok"), 0)]));
       let err = mesh.compile("bad-timeout", Type::none()).err().unwrap();
       let d = err.diagnostic().unwrap();
-      assert_eq!((d.phase.name(), d.code, d.param.as_deref()), ("compose", "invalid-argument-value", Some("Timeout")));
+      assert_eq!((d.phase.name(), d.code, d.param.as_deref()), ("compose", "invalid-argument-value", Some("timeout")));
 
       mesh.declare_var("n", Var::Int(1), false);
       mesh.add_wire(wire(
@@ -109,11 +109,11 @@ macro_rules! http_tests {
       mesh.add_wire(wire(
         "missing-url-var",
         false,
-        vec![http::get_args(vec![shards_core::Arg::named("URL", shards_core::ParamValue::Var("nowhere".into()))])],
+        vec![http::get_args(vec![shards_core::Arg::named("url", shards_core::ParamValue::Var("nowhere".into()))])],
       ));
       let err = mesh.compile("missing-url-var", Type::none()).err().unwrap();
       let d = err.diagnostic().unwrap();
-      assert_eq!((d.code, d.param.as_deref(), d.param_index), ("unknown-variable", Some("URL"), Some(0)));
+      assert_eq!((d.code, d.param.as_deref(), d.param_index), ("unknown-variable", Some("url"), Some(0)));
     }
 
     #[test]

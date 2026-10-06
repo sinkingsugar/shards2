@@ -56,7 +56,7 @@ Build one catalog from the core list and the host's list:
 Catalog::new(&[shards_core::shards::CATALOG, HOST_CATALOG])
 ```
 
-Add `shards_io::CATALOG` if scripts use `Http.Get`. Then:
+Add `shards_io::CATALOG` if scripts use `Http.Get`. then:
 
 - **Check without running:** `shards_lang::check::<shards_core::Mesh>(Source::new(path, text), &catalog, &defines)`. It returns the 1.x `{ok, file, diagnostics}` JSON envelope (`to_json()`), and `shards_lang::render` prints a diagnostic for humans.
 - **Run:** `Program::load(source, &catalog, &defines)`, then `program.run::<shards_core::Mesh>()`. The default is the stackless scheduler; `StackfulMesh` is the other one. The report has each entry wire's outcome, plus failures of spawned instances.
@@ -69,8 +69,8 @@ The language is the 1.x syntax with the changes in [surface-syntax-review.md](su
 - `;` comments are rejected.
 - Int and Float mix in arithmetic and comparisons.
 - `f"..."` strings and `t.key` / `s.0` paths are supported.
-- `Maybe` without `Else` passes its input through.
-- Code goes in wires on a mesh run by `@run(mesh FPS: n)`; loose code runs as the `root` wire when there is no `@run`.
+- `Maybe` without `else` passes its input through.
+- Code goes in wires on a mesh run by `@run(mesh fps: n)`; loose code runs as the `root` wire when there is no `@run`.
 
 ## 4. Testing a host
 
@@ -105,10 +105,10 @@ host loop on that thread.
   Once({ 0 >= counter })
   Inc(counter) | Log
   Do(step)
-} Looped: true)
+} looped: true)
 @mesh(m)
 @schedule(m main)
-@run(m FPS: 30)
+@run(m fps: 30)
 ```
 
 Changing `10` to `20` in `step` keeps `main` running: its counter continues,
@@ -203,8 +203,8 @@ default empty mesh schema.
 
 `tick` returns every newly finished entry and child outcome once and retires
 the records. A session keeps no outcome history, only bounded entry status.
-At `Iterations`, remaining work is cancelled and reported in that tick.
-An accepted reload resets the revision's tick budget and updates its `FPS`;
+At `iterations`, remaining work is cancelled and reported in that tick.
+An accepted reload resets the revision's tick budget and updates its `fps`;
 `frame_interval()` exposes the suggested delay, with pacing owned by the host.
 `stop` cancels everything and releases the mesh. Dropping the session also
 cancels work, but cannot return cleanup errors.
@@ -244,7 +244,7 @@ incompatible changes or read errors preserve the current execution and are
 reported once until observed contents/error change. A watcher stays alive
 after completion, the iteration limit or runtime failure; failed wires are
 explicitly reported as stopped until the next successful reload/restart.
-`FPS` controls ticking; without it the watcher uses a 16 ms interval and
+`fps` controls ticking; without it the watcher uses a 16 ms interval and
 continues checking edits even when the script requests a very low frame rate.
 
 Enter `r` to validate the current file and explicitly restart all script

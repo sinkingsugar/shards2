@@ -10,5 +10,5 @@ ready
   Inc(reading)
   If({reading | IsLess(3)} {"waiting" | Log} {"ready" | Log Stop})
   Pause
-} Looped: true)
+} looped: true)
 @mesh(m) @schedule(m poll) @run(m)

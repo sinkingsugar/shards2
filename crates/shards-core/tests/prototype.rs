@@ -597,26 +597,26 @@ macro_rules! acceptance_tests {
       ));
       let d = diagnostic(&mut mesh, "nested");
       assert_eq!(d.code, "input-type-mismatch");
-      assert_eq!(d.path_string(), "nested/2:When/Action/1:Math.Add");
+      assert_eq!(d.path_string(), "nested/2:When/action/1:Math.Add");
 
       // Through Do: the sub-wire starts its own steps, under the Wire parameter.
       mesh.add_wire(wire("sub", false, bad_add()));
       mesh.add_wire(wire("caller", false, vec![konst(Var::Int(0)), do_("sub")]));
       let d = diagnostic(&mut mesh, "caller");
-      assert_eq!(d.path_string(), "caller/1:Do/Wire/sub/1:Math.Add");
+      assert_eq!(d.path_string(), "caller/1:Do/wire/sub/1:Math.Add");
       assert_eq!(d.shard.as_deref(), Some("Math.Add"), "the failing shard keeps ownership");
 
       // Through Spawn, which composes the wire through the cache.
       mesh.add_wire(wire("spawner", false, vec![spawn("sub")]));
       let d = diagnostic(&mut mesh, "spawner");
-      assert_eq!(d.path_string(), "spawner/0:Spawn/Wire/sub/1:Math.Add");
+      assert_eq!(d.path_string(), "spawner/0:Spawn/wire/sub/1:Math.Add");
 
       // A bad reference ends at the referencing shard.
       mesh.add_wire(wire("dangling", false, vec![do_("missing")]));
       let d = diagnostic(&mut mesh, "dangling");
       assert_eq!(d.code, "unknown-wire");
       assert_eq!(d.path_string(), "dangling/0:Do");
-      assert_eq!(d.param.as_deref(), Some("Wire"));
+      assert_eq!(d.param.as_deref(), Some("wire"));
 
       // Argument decoding errors have a path too.
       mesh.add_wire(wire(
@@ -626,10 +626,10 @@ macro_rules! acceptance_tests {
       ));
       let d = diagnostic(&mut mesh, "decode");
       assert_eq!(d.code, "missing-argument");
-      assert_eq!(d.path_string(), "decode/0:Once/Action/0:Math.Add");
+      assert_eq!(d.path_string(), "decode/0:Once/action/0:Math.Add");
       assert!(
         d.to_json().contains(
-          "\"path\":[{\"wire\":\"decode\"},{\"shard\":0,\"name\":\"Once\"},{\"param\":\"Action\"},{\"shard\":0,\"name\":\"Math.Add\"}]"
+          "\"path\":[{\"wire\":\"decode\"},{\"shard\":0,\"name\":\"Once\"},{\"param\":\"action\"},{\"shard\":0,\"name\":\"Math.Add\"}]"
         ),
         "{}",
         d.to_json()
@@ -684,7 +684,7 @@ macro_rules! acceptance_tests {
         ],
       ));
       let d = diagnostic(&mut mesh, "nested");
-      assert_eq!(d.path_string(), "nested/1:When/Action/0:Math.Add");
+      assert_eq!(d.path_string(), "nested/1:When/action/0:Math.Add");
       assert_eq!(d.input_from, Some(InputSource { origin: None, via: vec![] }));
       assert!(d.message.ends_with("(the input is the flow's own input)"), "{}", d.message);
 

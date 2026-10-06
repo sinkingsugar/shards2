@@ -546,7 +546,7 @@ impl<'a> Parser<'a> {
   fn param(&mut self) -> Option<Param> {
     let t = self.peek().clone();
     let name = match (&t.tok, &self.peek_at(1).tok) {
-      (Tok::Upper(n), Tok::Colon) => {
+      (Tok::Ident(n), Tok::Colon) => {
         let n = n.clone();
         self.bump();
         self.bump();
@@ -555,17 +555,17 @@ impl<'a> Parser<'a> {
           span: t.span,
         })
       }
-      (Tok::Ident(n), Tok::Colon) => {
-        // A lowercase parameter name: parameters are capitalized.
+      (Tok::Upper(n), Tok::Colon) => {
+        // Uppercase names a shard; a label names a value, so it is lowercase.
         let n = n.clone();
         self.bump();
         self.bump();
-        let fixed = capitalize(&n);
+        let fixed = n.to_lowercase();
         self.problem(
           Problem::syntax(
             t.span,
             "parameter-name",
-            format!("parameter names start with an uppercase letter: `{fixed}:`"),
+            format!("parameter labels are lowercase: `{fixed}:`"),
           )
           .fix(fixed.clone()),
         );
@@ -576,7 +576,7 @@ impl<'a> Parser<'a> {
       }
       _ => None,
     };
-    // `Times: Action: ...`: the next thing is another parameter name.
+    // `times: action: ...`: the next thing is another parameter name.
     let next_is_name =
       matches!(self.peek().tok, Tok::Upper(_) | Tok::Ident(_)) && self.peek_at(1).tok == Tok::Colon;
     if name.is_some() && (Self::is_closer(&self.peek().tok) || next_is_name) {
@@ -833,12 +833,4 @@ fn match_brace(bytes: &[u8], open: usize, end: usize) -> Option<usize> {
     i += 1;
   }
   None
-}
-
-fn capitalize(s: &str) -> String {
-  let mut c = s.chars();
-  match c.next() {
-    Some(f) => f.to_uppercase().chain(c).collect(),
-    None => String::new(),
-  }
 }

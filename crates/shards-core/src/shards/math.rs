@@ -179,7 +179,7 @@ pub(crate) fn compose_binary<B: Backend>(
   name: &'static str,
   op: BinOp,
 ) -> Result<Composed<Operand>> {
-  let (operand, ty) = Operand::compose_arg(args, "Operand", name, ctx)?;
+  let (operand, ty) = Operand::compose_arg(args, "operand", name, ctx)?;
   let input = ctx.input();
   let mixed = match (Shape::of_type(input), Shape::of_type(ty)) {
     (Some(a), Some(b)) => Shape::mix(a, b),
@@ -194,7 +194,7 @@ pub(crate) fn compose_binary<B: Backend>(
         op.mismatch(ty, input),
       )
       .shard(name)
-      .param("Operand", Some(args.param_index("Operand")))
+      .param("operand", Some(args.param_index("operand")))
       .types(
         Some(TypeRef::of(input)),
         ARITHMETIC.iter().copied().map(TypeRef::named).collect(),
@@ -208,7 +208,7 @@ pub(crate) fn compose_binary<B: Backend>(
 }
 
 pub static BINARY_PARAMS: &[ParamDecl] = &[decl(
-  "Operand",
+  "operand",
   crate::shard_doc!(
     "The right-hand value: a number or float vector that mixes with the input, as a literal or a variable read at activation."
   ),
@@ -299,7 +299,7 @@ impl<S: BinarySpec> LeafShard for Binary<S> {
 // --- Math.Dec ---
 
 pub static DEC_PARAMS: &[ParamDecl] = &[decl(
-  "Variable",
+  "variable",
   crate::shard_doc!("The mutable Int variable to decrement."),
   Forms::VARIABLE,
   NONE_TYPES,
@@ -311,7 +311,7 @@ pub const DEC_DESC: ShardDesc = ShardDesc {
   version: 1,
   summary: crate::shard_doc!("Decrements an Int variable and outputs the new value."),
   help: crate::shard_doc!(
-    "Ignores its input. Variable must be a mutable Int; overflow is an activation error."
+    "Ignores its input. `variable` must be a mutable Int; overflow is an activation error."
   ),
   params: Params::Declared(DEC_PARAMS),
   input: InputDesc::Ignored,

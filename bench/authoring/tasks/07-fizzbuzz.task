@@ -27,4 +27,4 @@ Repeat({
       If({by5} {"Buzz" | Log} {n | Log})
     })
   })
-} Times: 15)
+} times: 15)

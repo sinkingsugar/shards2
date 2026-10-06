@@ -5,5 +5,5 @@ Compute the sum of the integers from 1 to 100 with a loop (not a closed formula)
 === reference
 0 >= i
 0 >= total
-Repeat({ Inc(i) total | Math.Add(i) > total } Times: 100)
+Repeat({ Inc(i) total | Math.Add(i) > total } times: 100)
 total | Log

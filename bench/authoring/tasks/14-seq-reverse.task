@@ -6,5 +6,5 @@ Reverse the sequence [1 2 3 4 5] into a new sequence and log it (as one value).
 [1 2 3 4 5] = xs
 [] >= out
 5 >= i
-Repeat({ Dec(i) xs | Take(i) | Push(out Clear: false) } Times: 5)
+Repeat({ Dec(i) xs | Take(i) | Push(out clear: false) } times: 5)
 out | Log

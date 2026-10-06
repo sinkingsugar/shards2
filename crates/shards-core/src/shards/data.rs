@@ -29,7 +29,7 @@ fn compose_error(shard: &str, kind: &'static str, code: &'static str, message: S
 // --- Take ---
 
 pub static TAKE_PARAMS: &[ParamDecl] = &[decl(
-  "Key",
+  "key",
   crate::shard_doc!(
     "An Int index into a sequence or vector, or a String key into a table: a literal, or a variable read at activation."
   ),
@@ -66,7 +66,7 @@ impl LeafShard for Take {
   const DESC: ShardDesc = TAKE_DESC;
 
   fn compose<B: Backend>(args: &Args, ctx: &mut ComposeCtx<'_, B>) -> Result<Composed<Operand>> {
-    let (key, key_ty) = Operand::compose_arg(args, "Key", "Take", ctx)?;
+    let (key, key_ty) = Operand::compose_arg(args, "key", "Take", ctx)?;
     let input = ctx.input();
     let literal = match &key {
       Operand::Const(v) => Some(v.clone()),
@@ -83,7 +83,7 @@ impl LeafShard for Take {
             expected.name()
           ),
         )
-        .with_param("Key", 0),
+        .with_param("key", 0),
       )
     };
     let output = match input.desc() {
@@ -118,7 +118,7 @@ impl LeafShard for Take {
                   format!("{input} has no key `{k}` (keys: {})", keys.join(", ")),
                 )
                 .shard("Take")
-                .param("Key", Some(0));
+                .param("key", Some(0));
                 d.did_you_mean = closest(&k, keys, 3);
                 return Err(Error::Diagnostic(Box::new(d)));
               }
@@ -197,7 +197,7 @@ pub(crate) fn take_value(input: &Var, key: &Var) -> Result<Var> {
 
 pub static PUSH_PARAMS: &[ParamDecl] = &[
   decl(
-    "Variable",
+    "variable",
     crate::shard_doc!(
       "The mutable sequence variable to append to. Declared as an empty sequence of the input's type if it does not exist yet."
     ),
@@ -206,7 +206,7 @@ pub static PUSH_PARAMS: &[ParamDecl] = &[
     Requirement::Required,
   ),
   decl(
-    "Clear",
+    "clear",
     crate::shard_doc!(
       "When this Push declares the variable: its first run in each iteration of a looped wire starts the sequence over, so later pushes in the same iteration (in a Repeat, say) grow it. 1.x clears on every run of the declaring Push instead. A Push that does not run in an iteration (inside Once, a branch) leaves the sequence as it is."
     ),
@@ -248,13 +248,13 @@ impl LeafShard for Push {
     args: &Args,
     ctx: &mut ComposeCtx<'_, B>,
   ) -> Result<Composed<PushCompiled>> {
-    let name = variable(args, "Variable");
+    let name = variable(args, "variable");
     let input = ctx.input();
     // Clearing applies only to the Push that declares the variable.
     let mut clear = false;
     let binding = match ctx.var(name) {
       None => {
-        clear = args.bool("Clear").unwrap_or(true);
+        clear = args.bool("clear").unwrap_or(true);
         ctx.declare_local(name, Type::seq(input), true).binding
       }
       Some(info) => {
@@ -281,7 +281,7 @@ impl LeafShard for Push {
           return Err(param_error(
             args,
             "Push",
-            "Variable",
+            "variable",
             "compose-error",
             code,
             message,
@@ -341,7 +341,7 @@ impl LeafShard for Push {
 // --- Seq.Make and Table.Make ---
 
 pub static SEQ_MAKE_PARAMS: &[ParamDecl] = &[decl(
-  "Items",
+  "items",
   crate::shard_doc!("The elements: literals, or variables read at activation."),
   OPERAND,
   &[],
@@ -397,7 +397,7 @@ impl LeafShard for SeqMake {
     args: &Args,
     ctx: &mut ComposeCtx<'_, B>,
   ) -> Result<Composed<Vec<Operand>>> {
-    let items = compose_operands(args, "Items", "Seq.Make", ctx)?;
+    let items = compose_operands(args, "items", "Seq.Make", ctx)?;
     let element = if items.is_empty() {
       Type::any()
     } else {
@@ -422,14 +422,14 @@ impl LeafShard for SeqMake {
 
 pub static TABLE_MAKE_PARAMS: &[ParamDecl] = &[
   decl(
-    "Keys",
+    "keys",
     crate::shard_doc!("The keys, as a literal sequence of distinct strings."),
     Forms::LITERAL,
     &[TypeName::Seq],
     Requirement::Required,
   ),
   decl(
-    "Values",
+    "values",
     crate::shard_doc!("One value per key, in order: literals, or variables read at activation."),
     OPERAND,
     &[],
@@ -468,13 +468,13 @@ impl LeafShard for TableMake {
       Err(param_error(
         args,
         "Table.Make",
-        "Keys",
+        "keys",
         "compose-error",
         "invalid-keys",
         "Keys must be a sequence of distinct strings".into(),
       ))
     };
-    let keys: Vec<Arc<str>> = match args.literal("Keys") {
+    let keys: Vec<Arc<str>> = match args.literal("keys") {
       Some(Var::Seq(items)) => {
         let mut keys = Vec::with_capacity(items.len());
         for item in items.iter() {
@@ -487,12 +487,12 @@ impl LeafShard for TableMake {
       }
       _ => return bad_keys(),
     };
-    let values = compose_operands(args, "Values", "Table.Make", ctx)?;
+    let values = compose_operands(args, "values", "Table.Make", ctx)?;
     if values.len() != keys.len() {
       return Err(param_error(
         args,
         "Table.Make",
-        "Values",
+        "values",
         "compose-error",
         "value-count",
         format!("{} keys but {} values", keys.len(), values.len()),

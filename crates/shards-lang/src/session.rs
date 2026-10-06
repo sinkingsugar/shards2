@@ -193,7 +193,7 @@ impl<H: SessionHost> Session<H> {
     self.active.as_ref().map_or(0, |a| a.ticks)
   }
 
-  /// Suggested pacing from `@run(FPS:)`. The host chooses when to call tick;
+  /// Suggested pacing from `@run(fps:)`. The host chooses when to call tick;
   /// `None` means no rate was requested. Reload can change this value.
   pub fn frame_interval(&self) -> Option<Duration> {
     self.active.as_ref().and_then(|a| a.frame_interval)

@@ -48,37 +48,37 @@ macro_rules! metadata_tests {
     #[test]
     fn argument_decoding_diagnostics() {
       let cases: Vec<(Vec<Arg>, &str, Option<&str>, Option<i32>)> = vec![
-        (vec![], "missing-argument", Some("Operand"), Some(0)),
+        (vec![], "missing-argument", Some("operand"), Some(0)),
         (
-          vec![Arg::named("Value", val(Var::Int(1)))],
+          vec![Arg::named("value", val(Var::Int(1)))],
           "unknown-argument",
-          Some("Value"),
+          Some("value"),
           None,
         ),
         (
           vec![
             Arg::pos(val(Var::Int(1))),
-            Arg::named("Operand", val(Var::Int(2))),
+            Arg::named("operand", val(Var::Int(2))),
           ],
           "duplicate-argument",
-          Some("Operand"),
+          Some("operand"),
           Some(0),
         ),
         (
           vec![Arg::pos(ParamValue::Wire("w".into()))],
           "wrong-argument-form",
-          Some("Operand"),
+          Some("operand"),
           Some(0),
         ),
         (
           vec![Arg::pos(val(Var::string("one")))],
           "wrong-argument-type",
-          Some("Operand"),
+          Some("operand"),
           Some(0),
         ),
         (
           vec![
-            Arg::named("Operand", val(Var::Int(1))),
+            Arg::named("operand", val(Var::Int(1))),
             Arg::pos(val(Var::Int(2))),
           ],
           "positional-after-named",
@@ -117,7 +117,7 @@ macro_rules! metadata_tests {
       // A shard that does not describe its parameters rejects named arguments.
       let err = decode(
         &shards_core::ShardDesc::undocumented("Undescribed", 1),
-        &[Arg::named("Variable", var("x"))],
+        &[Arg::named("variable", var("x"))],
       )
       .err()
       .unwrap();
@@ -149,7 +149,7 @@ macro_rules! metadata_tests {
       let d = compile_error(vec![when(vec![konst(Var::Int(1))], vec![])], Type::none());
       assert_eq!(
         (d.code, d.shard.as_deref(), d.param.as_deref()),
-        ("predicate-not-bool", Some("When"), Some("Predicate"))
+        ("predicate-not-bool", Some("When"), Some("predicate"))
       );
     }
 
@@ -157,7 +157,7 @@ macro_rules! metadata_tests {
     fn named_and_positional_arguments_are_equivalent() {
       let positional = run(vec![add(val(Var::Int(2)))], Var::Int(40));
       let named = run(
-        vec![add_with(vec![Arg::named("Operand", val(Var::Int(2)))])],
+        vec![add_with(vec![Arg::named("operand", val(Var::Int(2)))])],
         Var::Int(40),
       );
       assert_eq!(positional, Outcome::Completed(Var::Int(42)));
@@ -168,10 +168,10 @@ macro_rules! metadata_tests {
         &WHEN,
         vec![
           Arg::named(
-            "Action",
+            "action",
             ParamValue::Flow(vec![konst(Var::Int(0)), update("x")]),
           ),
-          Arg::named("Predicate", ParamValue::Flow(vec![konst(Var::Bool(true))])),
+          Arg::named("predicate", ParamValue::Flow(vec![konst(Var::Bool(true))])),
         ],
       );
       let flow = vec![konst(Var::Int(7)), set("x"), named_when, get("x")];
@@ -182,7 +182,7 @@ macro_rules! metadata_tests {
         konst(Var::Int(5)),
         set("k"),
         konst(Var::Int(1)),
-        add_with(vec![Arg::named("Operand", var("k"))]),
+        add_with(vec![Arg::named("operand", var("k"))]),
       ];
       assert_eq!(run(flow, Var::None), Outcome::Completed(Var::Int(6)));
     }
@@ -193,7 +193,7 @@ macro_rules! metadata_tests {
       let d = compile_error(
         vec![
           konst(Var::Int(1)),
-          add_with(vec![Arg::named("Operand", var("missing"))]),
+          add_with(vec![Arg::named("operand", var("missing"))]),
         ],
         Type::none(),
       );
@@ -207,7 +207,7 @@ macro_rules! metadata_tests {
         (
           "unknown-variable",
           Some("Math.Add"),
-          Some("Operand"),
+          Some("operand"),
           Some(0)
         )
       );
@@ -246,14 +246,14 @@ macro_rules! metadata_tests {
           ],
           "variable-type-mismatch",
           "Set",
-          Some("Variable"),
+          Some("variable"),
         ),
         (
           "update-unknown",
           vec![konst(Var::Int(1)), update("nope")],
           "unknown-variable",
           "Update",
-          Some("Variable"),
+          Some("variable"),
         ),
         (
           "update-type",
@@ -265,21 +265,21 @@ macro_rules! metadata_tests {
           ],
           "variable-type-mismatch",
           "Update",
-          Some("Variable"),
+          Some("variable"),
         ),
         (
           "inc-type",
           vec![konst(Var::Float(1.0)), set("f"), inc("f")],
           "wrong-variable-type",
           "Math.Inc",
-          Some("Variable"),
+          Some("variable"),
         ),
         (
           "get-unknown",
           vec![get("nope")],
           "unknown-variable",
           "Get",
-          Some("Variable"),
+          Some("variable"),
         ),
         (
           "repeat-times-var",
@@ -290,41 +290,41 @@ macro_rules! metadata_tests {
               &REPEAT,
               vec![
                 Arg::pos(ParamValue::Flow(vec![])),
-                Arg::named("Times", var("t")),
+                Arg::named("times", var("t")),
               ],
             ),
           ],
           "wrong-variable-type",
           "Repeat",
-          Some("Times"),
+          Some("times"),
         ),
         (
           "pause-negative",
           vec![pause_secs(-1.0)],
           "invalid-argument-value",
           "Pause",
-          Some("Seconds"),
+          Some("seconds"),
         ),
         (
           "pause-nan",
           vec![pause_secs(f64::NAN)],
           "invalid-argument-value",
           "Pause",
-          Some("Seconds"),
+          Some("seconds"),
         ),
         (
           "pause-infinite",
           vec![pause_secs(f64::INFINITY)],
           "invalid-argument-value",
           "Pause",
-          Some("Seconds"),
+          Some("seconds"),
         ),
         (
           "pause-too-large",
           vec![pause_secs(1e100)],
           "invalid-argument-value",
           "Pause",
-          Some("Seconds"),
+          Some("seconds"),
         ),
         (
           "do-unknown",
@@ -334,7 +334,7 @@ macro_rules! metadata_tests {
           )],
           "unknown-wire",
           "Do",
-          Some("Wire"),
+          Some("wire"),
         ),
         (
           "spawn-unknown",
@@ -344,7 +344,7 @@ macro_rules! metadata_tests {
           )],
           "unknown-wire",
           "Spawn",
-          Some("Wire"),
+          Some("wire"),
         ),
         (
           "probe-mode",
@@ -352,19 +352,19 @@ macro_rules! metadata_tests {
             &PROBE,
             vec![
               Arg::pos(val(Var::string("p"))),
-              Arg::named("Mode", val(Var::string("explode"))),
+              Arg::named("mode", val(Var::string("explode"))),
             ],
           )],
           "invalid-argument-value",
           "Probe",
-          Some("Mode"),
+          Some("mode"),
         ),
         (
           "request-delay",
           vec![request(-1, false, true)],
           "invalid-argument-value",
           "Request",
-          Some("Delay"),
+          Some("delay"),
         ),
       ];
       for (label, flow, code, shard, param) in cases {
@@ -431,7 +431,7 @@ macro_rules! metadata_tests {
     #[test]
     fn defaults_behave_like_the_documented_behavior() {
       // Pause's default (0 seconds) suspends exactly once: completes on the
-      // second tick, like an explicit Pause(Seconds: 0.0).
+      // second tick, like an explicit Pause(seconds: 0.0).
       for flow in [
         vec![pause(), konst(Var::Int(1))],
         vec![pause_secs(0.0), konst(Var::Int(1))],
@@ -468,7 +468,7 @@ macro_rules! metadata_tests {
       );
       assert_eq!(
         (d.code, d.param.as_deref(), d.param_index),
-        ("wrong-argument-form", Some("Action"), Some(1))
+        ("wrong-argument-form", Some("action"), Some(1))
       );
     }
   };
@@ -558,12 +558,12 @@ fn when_description_and_decoder_use_the_same_declarations() {
   let decoded = decode(
     &WHEN.desc,
     &[
-      Arg::named("Predicate", ParamValue::Flow(vec![])),
-      Arg::named("Action", ParamValue::Flow(vec![])),
+      Arg::named("predicate", ParamValue::Flow(vec![])),
+      Arg::named("action", ParamValue::Flow(vec![])),
     ],
   )
   .unwrap();
-  assert!(decoded.flow("Predicate").is_some() && decoded.flow("Action").is_some());
+  assert!(decoded.flow("predicate").is_some() && decoded.flow("action").is_some());
 
   let catalog = Catalog::new(&[CATALOG]).unwrap();
   let json = catalog.describe_json("When").unwrap();
@@ -598,7 +598,7 @@ fn catalog_index_detail_and_search() {
   }
 
   let add = catalog.describe_json("Add").unwrap();
-  assert!(add.contains("\"name\":\"Operand\",\"index\":0"));
+  assert!(add.contains("\"name\":\"operand\",\"index\":0"));
   assert!(add.contains("\"forms\":[\"literal\",\"variable\"]"));
   assert!(add.contains("{\"name\":\"Int\",\"basic_type\":4}"));
   assert!(add.contains("\"required\":true"));
@@ -622,7 +622,7 @@ fn diagnostic_json_keeps_1x_field_names() {
     "\"code\":\"missing-argument\"",
     "\"shard\":\"Math.Add\"",
     "\"param_index\":0",
-    "\"param\":\"Operand\"",
+    "\"param\":\"operand\"",
   ] {
     assert!(json.contains(field), "{field} missing in {json}");
   }
@@ -662,7 +662,7 @@ fn defaults_follow_the_declared_contract() {
   // An Int-only parameter with a String default: rejected by the shared
   // check (which ShardType::new runs at compile time) and by the decoder.
   static INVALID: &[ParamDecl] = &[ParamDecl {
-    name: "Operand",
+    name: "operand",
     help: "",
     forms: Forms::LITERAL,
     types: &[TypeName::Int],
@@ -825,7 +825,7 @@ fn table_seq_and_vector_parameters_decode_by_acceptance() {
       ty: None,
     },
     ParamDecl {
-      name: "Items",
+      name: "items",
       help: "",
       forms: Forms::LITERAL,
       types: &[TypeName::Seq],
@@ -851,7 +851,7 @@ fn table_seq_and_vector_parameters_decode_by_acceptance() {
     &desc,
     &[
       Arg::named("Shape", ParamValue::Value(table.clone())),
-      Arg::named("Items", ParamValue::Value(mixed)),
+      Arg::named("items", ParamValue::Value(mixed)),
       Arg::named("At", ParamValue::Value(Var::Float2([1.0, 2.0]))),
     ],
   )
@@ -916,19 +916,19 @@ fn variadic_parameters_take_the_remaining_positional_arguments() {
   )
   .unwrap();
   assert_eq!(
-    decoded.variadic("Items"),
+    decoded.variadic("items"),
     [ParamValue::Value(Var::Int(1)), ParamValue::Var("x".into())]
   );
   assert!(
     decode(&SEQ_MAKE.desc, &[])
       .unwrap()
-      .variadic("Items")
+      .variadic("items")
       .is_empty()
   );
 
   let err = decode(
     &SEQ_MAKE.desc,
-    &[Arg::named("Items", ParamValue::Value(Var::Int(1)))],
+    &[Arg::named("items", ParamValue::Value(Var::Int(1)))],
   )
   .err()
   .unwrap();
@@ -964,14 +964,14 @@ fn full_parameter_types_check_literals_and_are_documented() {
   static PARAMS: &[ParamDecl] = &[
     // No TypeName list: the full type is enough.
     ParamDecl::new_typed(
-      "Offsets",
+      "offsets",
       "",
       Forms::LITERAL.or(Forms::VARIABLE),
       Requirement::Optional,
       || Type::seq(Type::int()),
     ),
     ParamDecl::new(
-      "Ref",
+      "record",
       "",
       Forms::LITERAL,
       &[TypeName::Table],
@@ -987,7 +987,7 @@ fn full_parameter_types_check_literals_and_are_documented() {
   assert!(
     decode(
       &TYPED.desc,
-      &[Arg::named("Offsets", ParamValue::Value(ints))]
+      &[Arg::named("offsets", ParamValue::Value(ints))]
     )
     .is_ok()
   );
@@ -995,14 +995,14 @@ fn full_parameter_types_check_literals_and_are_documented() {
   let strings = Var::Seq(std::sync::Arc::new(vec![Var::string("a")]));
   let err = decode(
     &TYPED.desc,
-    &[Arg::named("Offsets", ParamValue::Value(strings))],
+    &[Arg::named("offsets", ParamValue::Value(strings))],
   )
   .err()
   .unwrap();
   let d = err.diagnostic().unwrap();
   assert_eq!(d.code, "wrong-argument-type");
   assert!(
-    d.message.contains("Offsets must be [Int], got [String]"),
+    d.message.contains("offsets must be [Int], got [String]"),
     "{}",
     d.message
   );
@@ -1012,12 +1012,18 @@ fn full_parameter_types_check_literals_and_are_documented() {
     ("addr", Var::Int(1)),
     ("guid", Var::Seq(std::sync::Arc::new(vec![Var::Int(2)]))),
   ]);
-  assert!(decode(&TYPED.desc, &[Arg::named("Ref", ParamValue::Value(record))]).is_ok());
+  assert!(
+    decode(
+      &TYPED.desc,
+      &[Arg::named("record", ParamValue::Value(record))]
+    )
+    .is_ok()
+  );
   let missing = Var::table([("addr", Var::Int(1))]);
   assert!(
     decode(
       &TYPED.desc,
-      &[Arg::named("Ref", ParamValue::Value(missing))]
+      &[Arg::named("record", ParamValue::Value(missing))]
     )
     .is_err()
   );
@@ -1033,5 +1039,29 @@ fn full_parameter_types_check_literals_and_are_documented() {
   assert!(
     json.contains("\"type\":\"{addr: Int guid: [Int]}\""),
     "{json}"
+  );
+}
+
+/// Parameter names are lowercase labels; a host shard declaring an
+/// uppercase one is rejected when the catalog is built.
+#[test]
+fn the_catalog_rejects_uppercase_parameter_names() {
+  use shards_core::describe::{Forms, ParamDecl, Requirement, ShardDesc};
+  use shards_core::{Catalog, ShardType};
+  static PARAMS: &[ParamDecl] = &[ParamDecl::new(
+    "Target",
+    "",
+    Forms::LITERAL,
+    &[TypeName::Int],
+    Requirement::Optional,
+  )];
+  static UPPER: ShardType = ShardType::new(ShardDesc {
+    params: Params::Declared(PARAMS),
+    ..ShardDesc::undocumented("Host.Upper", 1)
+  });
+  let err = Catalog::new(&[&[&UPPER]]).err().unwrap();
+  assert_eq!(
+    err,
+    "Host.Upper: parameter `Target` must be a lowercase label (`target`)"
   );
 }

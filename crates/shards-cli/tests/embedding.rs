@@ -22,7 +22,7 @@ use shards_lang::{Program, Source};
 
 static READING_PARAMS: &[ParamDecl] = &[
   ParamDecl {
-    name: "Sensor",
+    name: "sensor",
     help: "Which sensor to read: a literal, or an Int variable read at activation.",
     forms: Forms::LITERAL.or(Forms::VARIABLE),
     types: &[TypeName::Int],
@@ -30,7 +30,7 @@ static READING_PARAMS: &[ParamDecl] = &[
     ty: None,
   },
   ParamDecl {
-    name: "Unit",
+    name: "unit",
     help: "Override the unit (optional): a literal or a String variable.",
     forms: Forms::LITERAL.or(Forms::VARIABLE),
     types: &[TypeName::String],
@@ -71,10 +71,10 @@ impl LeafShard for Reading {
     // Compose reads only its arguments and declared context: never the host.
     // The declared types (Int) are checked by core, for a literal (by the
     // decoder) and for a variable (by compose_arg).
-    let (sensor, _) = Operand::compose_arg(args, "Sensor", READING_DESC.name, ctx)?;
+    let (sensor, _) = Operand::compose_arg(args, "sensor", READING_DESC.name, ctx)?;
     // An optional parameter: None when the script did not give it.
     let unit =
-      Operand::compose_optional_arg(args, "Unit", READING_DESC.name, ctx)?.map(|(op, _)| op);
+      Operand::compose_optional_arg(args, "unit", READING_DESC.name, ctx)?.map(|(op, _)| op);
     Ok(Composed {
       compiled: ReadingCompiled { sensor, unit },
       // A fixed record: `r.value` composes to `Float | None`, `r.typo` fails.
@@ -93,7 +93,7 @@ impl LeafShard for Reading {
   fn activate(c: &ReadingCompiled, _: &mut (), ctx: &mut impl LeafCtx, _: &Var) -> Result<Flow> {
     let Var::Int(id) = c.sensor.get(ctx) else {
       return Err(Error::Activation(
-        "Host.Reading: Sensor is not an Int".into(),
+        "Host.Reading: sensor is not an Int".into(),
       ));
     };
     // The host is read at activation; an unknown value is an explicit none.
@@ -174,7 +174,7 @@ fn catalog() -> Catalog {
 
 const SCRIPT: &str = r#"
 @sensor | ParseInt = id
-Host.Reading(Sensor: id) = r
+Host.Reading(sensor: id) = r
 If(r.value | IsNone {"unreadable"} {f"{r.id}: {r.value}{r.unit}"}) | Log
 1000 | Host.Scan
 "#;
@@ -238,17 +238,17 @@ fn a_host_checks_and_runs_a_script_with_its_own_shards() {
   // A variable of the wrong type for a declared parameter is reported by
   // core, located at the shard.
   let report = shards_lang::check::<shards_core::Mesh>(
-    Source::new("host.shs", "\"two\" = s\nHost.Reading(Sensor: s)"),
+    Source::new("host.shs", "\"two\" = s\nHost.Reading(sensor: s)"),
     &catalog(),
     &HashMap::new(),
   );
   let d = &report.diagnostics[0];
   assert_eq!(
     (d.code, d.param.as_deref(), d.line),
-    ("wrong-variable-type", Some("Sensor"), Some(2))
+    ("wrong-variable-type", Some("sensor"), Some(2))
   );
   assert!(
-    d.message.contains("Sensor must be Int, but s is String"),
+    d.message.contains("sensor must be Int, but s is String"),
     "{}",
     d.message
   );
@@ -256,9 +256,9 @@ fn a_host_checks_and_runs_a_script_with_its_own_shards() {
   // The optional parameter: absent (the default unit), and given as a
   // variable.
   for (src, unit) in [
-    ("Host.Reading(Sensor: 2) = r\nr.unit", "C"),
+    ("Host.Reading(sensor: 2) = r\nr.unit", "C"),
     (
-      "\"F\" = u\nHost.Reading(Sensor: 2 Unit: u) = r\nr.unit",
+      "\"F\" = u\nHost.Reading(sensor: 2 unit: u) = r\nr.unit",
       "F",
     ),
   ] {
@@ -402,7 +402,7 @@ fn preserving_reload_keeps_pending_host_operation_until_its_call_returns() {
     let load = |session: &mut shards_lang::Session<H>, input| {
       let source = format!(
         r#"@wire(inner {{{input} Host.Warm}})
-@wire(main {{Once({{0 >= n}}) Inc(n) Log Do(inner)}} Looped: true)
+@wire(main {{Once({{0 >= n}}) Inc(n) Log Do(inner)}} looped: true)
 @mesh(m) @schedule(m main) @run(m)"#
       );
       session

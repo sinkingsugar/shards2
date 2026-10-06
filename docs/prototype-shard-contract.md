@@ -47,7 +47,7 @@ instantiation and cleanup still run. See the [VM measurements](vm-execution-benc
 
 `getParam` exists today for serialization, the formatter round trip and tooling. In 2.0 those read the AST or the `Params` value instead of asking an instance.
 
-**Immutable parameters can still describe dynamic inputs.** A parameter that refers to a variable (e.g. `Take(waypoint)`, `Repeat(Times: n)`) compiles into a **binding** whose value is read during activation (§8). Updating that variable's value does not require recompilation. Changing *which* variable the parameter refers to does. This keeps the useful 1.x behavior of variable-valued parameters.
+**Immutable parameters can still describe dynamic inputs.** A parameter that refers to a variable (e.g. `Take(waypoint)`, `Repeat(times: n)`) compiles into a **binding** whose value is read during activation (§8). Updating that variable's value does not require recompilation. Changing *which* variable the parameter refers to does. This keeps the useful 1.x behavior of variable-valued parameters.
 
 **Commitment:** parameters are immutable inputs to compose. Changing a parameter means building a new compiled node. For live editing (roadmap §3.5), that is a replacement, not a mutation.
 

@@ -6,5 +6,5 @@ Log the sum of the elements of the sequence [3 8 1 9 4].
 [3 8 1 9 4] = xs
 0 >= total
 0 >= i
-Repeat({ xs | Take(i) | Math.Add(total) > total Inc(i) } Times: 5)
+Repeat({ xs | Take(i) | Math.Add(total) > total Inc(i) } times: 5)
 total | Log

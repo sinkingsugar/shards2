@@ -11,4 +11,4 @@ Repeat({
   xs | Take(i) = x
   All({x | IsMoreEqual(5)} {x | IsLessEqual(10)}) | Log
   Inc(i)
-} Times: 3)
+} times: 3)

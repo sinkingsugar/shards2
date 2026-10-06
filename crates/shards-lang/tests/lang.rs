@@ -75,7 +75,7 @@ macro_rules! lang_tests {
         ("[n n]", "[[1 1] [2 2] [3 3]]"),
         ("{a: n b: n}", "[{a: 1 b: 1} {a: 2 b: 2} {a: 3 b: 3}]"),
       ] {
-        let source = format!("0 >= n\n[] >= saved\nRepeat({{ Inc(n) {expression} | Push(saved Clear: false) }} Times: 3)\nsaved | Is({expected})");
+        let source = format!("0 >= n\n[] >= saved\nRepeat({{ Inc(n) {expression} | Push(saved clear: false) }} times: 3)\nsaved | Is({expected})");
         assert_eq!(completed(&run(&source, &no_defines()), "root"), Var::Bool(true));
       }
     }
@@ -94,7 +94,7 @@ macro_rules! lang_tests {
     fn preserving_reload_pins_suspended_do_and_keeps_caller_counter() {
       let source = |value| format!(r#"@wire(inner {{ Pause() {value} }})
 @wire(outer {{ Do(inner) }})
-@wire(main {{ Once({{0 >= n}}) Inc(n) Log Do(outer) Log }} Looped: true)
+@wire(main {{ Once({{0 >= n}}) Inc(n) Log Do(outer) Log }} looped: true)
 @mesh(m) @schedule(m main) @run(m)"#);
       let mut session = shards_lang::Session::<Mesh>::new();
       preserve(&mut session, &source(10));
@@ -114,7 +114,7 @@ macro_rules! lang_tests {
     #[test]
     fn preserving_reload_updates_deep_calls_inside_a_never_returning_parent() {
       let source = |value| format!(r#"@wire(inner {{ {value} Log Pause() }})
-@wire(outer {{ Once({{0 >= n}}) Repeat({{ Inc(n) Log Do(inner) }} Forever: true) }})
+@wire(outer {{ Once({{0 >= n}}) Repeat({{ Inc(n) Log Do(inner) }} forever: true) }})
 Do(outer)"#);
       let mut session = shards_lang::Session::<Mesh>::new();
       preserve(&mut session, &source(10));
@@ -130,8 +130,8 @@ Do(outer)"#);
 
     #[test]
     fn preserving_reload_keeps_unrelated_wires_and_mesh_values() {
-      let source = |value| format!(r#"@wire(main {{ Inc(shared) Log {value} Log }} Looped: true)
-@wire(ticker {{ Once({{100 >= n}}) Inc(n) Log }} Looped: true)
+      let source = |value| format!(r#"@wire(main {{ Inc(shared) Log {value} Log }} looped: true)
+@wire(ticker {{ Once({{100 >= n}}) Inc(n) Log }} looped: true)
 @mesh(m) @schedule(m main) @schedule(m ticker) @run(m)"#);
       let mut mesh = Mesh::new();
       mesh.declare_var("shared", Var::Int(0), true);
@@ -151,7 +151,7 @@ Do(outer)"#);
     #[test]
     fn preserving_reload_rejects_incompatible_do_interfaces_atomically() {
       let source = |body| format!(r#"@wire(inner {{ {body} }})
-@wire(main {{ Once({{0 >= n}}) Inc(n) Log Do(inner) ToString Log }} Looped: true)
+@wire(main {{ Once({{0 >= n}}) Inc(n) Log Do(inner) ToString Log }} looped: true)
 @mesh(m) @schedule(m main) @run(m)"#);
       let mut session = shards_lang::Session::<Mesh>::new();
       preserve(&mut session, &source("10"));
@@ -169,7 +169,7 @@ Do(outer)"#);
 
     #[test]
     fn preserving_reload_explains_and_locates_binding_changes() {
-      let source = |body| format!("@wire(step {{\n{body}\n}})\n@wire(outer {{ Do(step) }})\n@wire(main {{ Do(outer) }} Looped: true)\n@mesh(m) @schedule(m main) @run(m)");
+      let source = |body| format!("@wire(step {{\n{body}\n}})\n@wire(outer {{ Do(step) }})\n@wire(main {{ Do(outer) }} looped: true)\n@mesh(m) @schedule(m main) @run(m)");
       for (old, new, reason, line) in [
         ("10", "Once({\n  1 >= extra\n}) 10", "new local `extra`", 3),
         ("1 >= extra 10", "10", "local `extra` was removed", 1),
@@ -207,7 +207,7 @@ Do(outer)"#);
       struct Remove(std::path::PathBuf);
       impl Drop for Remove { fn drop(&mut self) { let _ = std::fs::remove_file(&self.0); } }
       let _remove = Remove(path.clone());
-      let source = |value| format!("@wire(step {{{value} Log}})\n@wire(main {{Once({{0 >= n}}) Inc(n) Log Do(step)}} Looped: true)\n@mesh(m) @schedule(m main) @run(m FPS: 0.1)");
+      let source = |value| format!("@wire(step {{{value} Log}})\n@wire(main {{Once({{0 >= n}}) Inc(n) Log Do(step)}} looped: true)\n@mesh(m) @schedule(m main) @run(m fps: 0.1)");
       std::fs::write(&path, source(10)).unwrap();
       let command = Cell::new(WatchControl::Continue);
       let mut revisions = 0;
@@ -257,7 +257,7 @@ Do(outer)"#);
     fn preserving_reload_keeps_unchanged_do_once_state_and_other_sessions() {
       let source = |value| format!(r#"@wire(stable {{Once({{0 >= n}}) Inc(n) Log}})
 @wire(changed {{{value} Log}})
-@wire(main {{Do(stable) Do(changed)}} Looped: true)
+@wire(main {{Do(stable) Do(changed)}} looped: true)
 @mesh(m) @schedule(m main) @run(m)"#);
       let mut first = shards_lang::Session::<Mesh>::new();
       let mut second = shards_lang::Session::<Mesh>::new();
@@ -276,7 +276,7 @@ Do(outer)"#);
     #[test]
     fn preserving_reload_retries_failed_nested_instantiation_after_maybe() {
       let source = |body| format!(r#"@wire(inner {{{body}}})
-@wire(main {{Once({{0 >= n}}) Inc(n) Log Maybe({{Do(inner)}} Silent: true)}} Looped: true)
+@wire(main {{Once({{0 >= n}}) Inc(n) Log Maybe({{Do(inner)}} silent: true)}} looped: true)
 @mesh(m) @schedule(m main) @run(m)"#);
       let mut session = shards_lang::Session::<Mesh>::new();
       preserve(&mut session, &source("10"));
@@ -296,7 +296,7 @@ Do(outer)"#);
     fn preserving_reload_keeps_old_call_sites_when_a_pinned_parent_body_changes() {
       let source = |outer: &str, value| format!(r#"@wire(inner {{{value}}})
 @wire(outer {{{outer}}})
-@wire(main {{Do(outer) Log}} Looped: true)
+@wire(main {{Do(outer) Log}} looped: true)
 @mesh(m) @schedule(m main) @run(m)"#);
       let mut session = shards_lang::Session::<Mesh>::new();
       preserve(&mut session, &source("Pause() Do(inner)", 10));
@@ -313,7 +313,7 @@ Do(outer)"#);
     #[test]
     fn preserving_reload_does_not_renumber_other_wires_temporaries() {
       let source = |body| format!(r#"@wire(changed {{{body}}})
-@wire(ticker {{Once({{0 >= n}}) Inc(n) Add(0 | Add(1)) Log}} Looped: true)
+@wire(ticker {{Once({{0 >= n}}) Inc(n) Add(0 | Add(1)) Log}} looped: true)
 @mesh(m) @schedule(m changed) @schedule(m ticker) @run(m)"#);
       let mut session = shards_lang::Session::<Mesh>::new();
       preserve(&mut session, &source("1"));
@@ -330,7 +330,7 @@ Do(outer)"#);
     fn preserving_reload_attempts_cleanup_once_when_boundary_cleanup_panics() {
       use shards_core::shards::{take_probe_events, ProbeEventKind};
       let source = |body| format!(r#"@wire(inner {{{body}}})
-@wire(main {{Probe("parent") Do(inner)}} Looped: true)
+@wire(main {{Probe("parent") Do(inner)}} looped: true)
 @mesh(m) @schedule(m main) @run(m)"#);
       take_probe_events();
       let mut session = shards_lang::Session::<Mesh>::new();
@@ -350,7 +350,7 @@ Do(outer)"#);
     #[test]
     fn preserving_reload_prepares_retained_spawned_input_specializations() {
       let source = |input, amount| format!(r#"@wire(inner {{Add({amount})}})
-@wire(child {{Do(inner) Log Pause()}} Looped: true)
+@wire(child {{Do(inner) Log Pause()}} looped: true)
 @wire(main {{{input} Spawn(child)}})
 @mesh(m) @schedule(m main) @run(m)"#);
       let mut session = shards_lang::Session::<Mesh>::new();
@@ -381,8 +381,8 @@ Do(outer)"#);
     #[test]
     fn preserving_reload_removes_scheduled_callers_before_checking_their_interface() {
       let source = |value, scheduled| format!(r#"@wire(inner {{{value}}})
-@wire(main {{Do(inner) Log Pause()}} Looped: true)
-@wire(other {{Pause()}} Looped: true)
+@wire(main {{Do(inner) Log Pause()}} looped: true)
+@wire(other {{Pause()}} looped: true)
 @mesh(m) @schedule(m {scheduled}) @run(m)"#);
       let mut session = shards_lang::Session::<Mesh>::new();
       preserve(&mut session, &source("10", "main"));
@@ -398,7 +398,7 @@ Do(outer)"#);
     fn preserving_reload_instantiates_restarted_roots_unchanged_children_once() {
       use shards_core::shards::{take_probe_events, ProbeEventKind};
       let source = |value| format!(r#"@wire(inner {{Probe("child")}})
-@wire(main {{{value} Do(inner)}} Looped: true)
+@wire(main {{{value} Do(inner)}} looped: true)
 @mesh(m) @schedule(m main) @run(m)"#);
       take_probe_events();
       let mut session = shards_lang::Session::<Mesh>::new();
@@ -416,7 +416,7 @@ Do(outer)"#);
     fn preserving_reload_does_not_repeat_unchanged_completed_effects() {
       let mut session = shards_lang::Session::<Mesh>::new();
       let source = r#"@wire(setup {"setup" Log})
-@wire(ticker {Pause()} Looped: true)
+@wire(ticker {Pause()} looped: true)
 @mesh(m) @schedule(m setup) @schedule(m ticker) @run(m)"#;
       preserve(&mut session, source);
       let (_, lines) = shards_core::log::capture(|| {
@@ -430,8 +430,8 @@ Do(outer)"#);
     #[test]
     fn reload_rejects_bad_edits_without_resetting_the_running_program() {
       let mut session = shards_lang::Session::<Mesh>::new();
-      reload(&mut session, r#"@wire(tick { Once({0 >= n}) Inc(n) Log } Looped: true)
-@mesh(m) @schedule(m tick) @run(m FPS: 30)"#);
+      reload(&mut session, r#"@wire(tick { Once({0 >= n}) Inc(n) Log } looped: true)
+@mesh(m) @schedule(m tick) @run(m fps: 30)"#);
       let (_, lines) = shards_core::log::capture(|| {
         session.tick();
         for bad in ["When({", "No.SuchShard", "1 | Take(0)",
@@ -487,8 +487,8 @@ Do(outer)"#);
       let mut session = shards_lang::Session::<Mesh>::new();
       for value in [10, 20, 30] {
         reload(&mut session, &format!(r#"@wire(value {{ {value} }})
-@wire(main {{ Once({{Do(value) >= n}}) Inc(n) Log }} Looped: true)
-@mesh(m) @schedule(m main) @run(m Iterations: 2)"#));
+@wire(main {{ Once({{Do(value) >= n}}) Inc(n) Log }} looped: true)
+@mesh(m) @schedule(m main) @run(m iterations: 2)"#));
         let (finished, lines) = shards_core::log::capture(|| {
           assert!(session.tick().is_empty());
           session.tick()
@@ -548,7 +548,7 @@ Do(outer)"#);
       let report = run(
         "// word forms and operators
 0 >= n
-Repeat({Inc(n)} Times: 3)
+Repeat({Inc(n)} times: 3)
 n | Add(10) = result
 When({result | IsMoreEqual(13)} {
   result | Add(1) > n
@@ -564,11 +564,11 @@ n",
       let report = run(
         "@wire(add-one { Add(1) })
 @wire(answer { 41 | Do(add-one) })
-@wire(ticker { Once({0 >= ticks}) Inc(ticks) } Looped: true)
+@wire(ticker { Once({0 >= ticks}) Inc(ticks) } looped: true)
 @mesh(main)
 @schedule(main answer)
 @schedule(main ticker)
-@run(main Iterations: 5)",
+@run(main iterations: 5)",
         &no_defines(),
       );
       assert_eq!(completed(&report, "answer"), Var::Int(42));
@@ -629,7 +629,7 @@ t",
       assert_eq!(at(d), (4, 11));
       assert_eq!(
         d.path_string(),
-        "main-wire/1:Do/Wire/helper/0:When/Action/3:Math.Add"
+        "main-wire/1:Do/wire/helper/0:When/action/3:Math.Add"
       );
       let json = report.to_json();
       assert!(
@@ -750,7 +750,7 @@ f\"n is {n}, next {n | Add(1)}, {{literal}}\" = text
       let (report, lines) = shards_core::log::capture(|| {
         run(
           "[\"a\" \"b\"] | Count | Log(\"count\")
-\"ff\" | ParseInt(Base: 16) | ToHex = hex
+\"ff\" | ParseInt(base: 16) | ToHex = hex
 \"gone\" | IsAny([\"gone\" \"unknown\"]) | Not = live
 none | IsNone = nothing
 42 | ToString | Log
@@ -783,10 +783,10 @@ Time.Now | Math.Subtract(t0) | IsMoreEqual(0.0) = later
         "5 = n
 n | If({IsMore(3)} {\"big\"} {\"small\"}) = a
 n | If({IsMore(10)} {\"big\"}) = b
-\"gone\" | Match([\"biting\" {\"hook\"} \"gone\" {\"despawned\"} none {\"other\"}] Passthrough: false) = c
-\"x\" | Match([\"biting\" {\"hook\"} none {\"other\"}] Passthrough: false) = d
+\"gone\" | Match([\"biting\" {\"hook\"} \"gone\" {\"despawned\"} none {\"other\"}] passthrough: false) = c
+\"x\" | Match([\"biting\" {\"hook\"} none {\"other\"}] passthrough: false) = d
 3 | Match([1 {\"one\"}]) = e
-Maybe({[1 2] | Take(5)} {\"fallback\"} Silent: true) = f
+Maybe({[1 2] | Take(5)} {\"fallback\"} silent: true) = f
 Maybe({\"fine\"} {\"fallback\"}) = g
 true = far
 false = close
@@ -794,8 +794,8 @@ All(far {n | IsMore(1)}) = h
 All(far close) = i
 Any(close {n | Is(5)}) = j
 0 >= count
-Repeat({Inc(count)} Until: {count | IsMoreEqual(3)})
-Repeat({Inc(count)} Until: {count | IsMoreEqual(100)} Times: 2)
+Repeat({Inc(count)} until: {count | IsMoreEqual(3)})
+Repeat({Inc(count)} until: {count | IsMoreEqual(100)} times: 2)
 [a b c d e f g h i j count]",
         &no_defines(),
       );
@@ -829,7 +829,7 @@ If({true} {Pause Inc(ticks)})
 All({Pause true} {Inc(ticks) true})
 1 | Match([1 {Pause Inc(ticks)}])
 Maybe({Pause [1] | Take(3)} {Inc(ticks)})
-Repeat({Pause Inc(ticks)} Until: {ticks | IsMoreEqual(7)})
+Repeat({Pause Inc(ticks)} until: {ticks | IsMoreEqual(7)})
 ticks",
           &no_defines(),
         )
@@ -851,7 +851,7 @@ ticks",
       // A failing shard inside the second condition flow: located there.
       let report = check("true = far\nAll(far {1 | Add(\"x\")})");
       let d = &report.diagnostics[0];
-      assert_eq!(d.path_string(), "root/2:All/Conditions/#1/1:Math.Add");
+      assert_eq!(d.path_string(), "root/2:All/conditions/#1/1:Math.Add");
       assert_eq!(at(d), (2, 14));
     }
 
@@ -869,8 +869,8 @@ Repeat({
   Maybe({
     Once({[10] | Take(k) >= x})
     x | Log(\"x\")
-  } {Math.Dec(k)} Silent: true)
-} Times: 2)",
+  } {Math.Dec(k)} silent: true)
+} times: 2)",
           &no_defines(),
         )
       });
@@ -941,10 +941,10 @@ If(Any(b {a}) {4} {5}) = z
     fn push_restarts_its_sequence_each_iteration() {
       let (_, lines) = shards_core::log::capture(|| {
         run(
-          "@wire(w {1 >> s  s | Count | Log(\"cleared\")  1 | Push(kept Clear: false)  kept | Count | Log(\"kept\")} Looped: true)
+          "@wire(w {1 >> s  s | Count | Log(\"cleared\")  1 | Push(kept clear: false)  kept | Count | Log(\"kept\")} looped: true)
 @mesh(m)
 @schedule(m w)
-@run(m Iterations: 3)",
+@run(m iterations: 3)",
           &no_defines(),
         )
       });
@@ -972,7 +972,7 @@ If(Any(b {a}) {4} {5}) = z
 
     #[test]
     fn until_may_assign_what_action_reads() {
-      let report = run("0 >= n\nRepeat({x | Log} Until: {n | ToString >= x  Inc(n) | IsMore(2)})\nn", &no_defines());
+      let report = run("0 >= n\nRepeat({x | Log} until: {n | ToString >= x  Inc(n) | IsMore(2)})\nn", &no_defines());
       assert_eq!(completed(&report, "root"), Var::Int(3));
     }
 
@@ -994,10 +994,10 @@ If(Any(b {a}) {4} {5}) = z
     fn push_initialized_in_once_keeps_its_sequence() {
       let (report, lines) = shards_core::log::capture(|| {
         run(
-          "@wire(w {Once({0 >> s})  s | Count | Log} Looped: true)
+          "@wire(w {Once({0 >> s})  s | Count | Log} looped: true)
 @mesh(m)
 @schedule(m w)
-@run(m Iterations: 3)",
+@run(m iterations: 3)",
           &no_defines(),
         )
       });
@@ -1007,10 +1007,10 @@ If(Any(b {a}) {4} {5}) = z
       // after it (here in a Repeat) grow it within the iteration.
       let (_, lines) = shards_core::log::capture(|| {
         run(
-          "@wire(w {0 >> s  Repeat({1 >> s} Times: 2)  s | Count | Log} Looped: true)
+          "@wire(w {0 >> s  Repeat({1 >> s} times: 2)  s | Count | Log} looped: true)
 @mesh(m)
 @schedule(m w)
-@run(m Iterations: 2)",
+@run(m iterations: 2)",
           &no_defines(),
         )
       });
@@ -1065,7 +1065,7 @@ If(Any(b {a}) {4} {5}) = z
       for (wrapper, levels) in [
         ("If(All({true} {{next} true}) {1} {2})", 3),
         ("When({true} {{next}})", 2),
-        ("Repeat({{next}} Times: 1)", 2),
+        ("Repeat({{next}} times: 1)", 2),
         ("1 | Match([1 {{next}}])", 2),
         ("Maybe({{next}} {2})", 2),
         ("Any({false} {{next} false})", 2),
@@ -1090,7 +1090,7 @@ If(Any(b {a}) {4} {5}) = z
     fn maybe_without_else_passes_its_input_through() {
       // As in 1.x: Action runs for its effects, on success or failure.
       let report = run(
-        "5 | Maybe({Add(1)}) = a\n5 | Maybe({[1] | Take(3)} Silent: true) = b\n[a b]",
+        "5 | Maybe({Add(1)}) = a\n5 | Maybe({[1] | Take(3)} silent: true) = b\n[a b]",
         &no_defines(),
       );
       assert_eq!(
@@ -1108,11 +1108,11 @@ If(Any(b {a}) {4} {5}) = z
       for i in 0..64 {
         src.push_str(&format!("@wire(e{i} {{{i}}})\n"));
       }
-      src.push_str("@wire(ticker {Pause} Looped: true)\n@mesh(m)\n");
+      src.push_str("@wire(ticker {Pause} looped: true)\n@mesh(m)\n");
       for i in 0..64 {
         src.push_str(&format!("@schedule(m e{i})\n"));
       }
-      src.push_str("@schedule(m ticker)\n@run(m Iterations: 3)");
+      src.push_str("@schedule(m ticker)\n@run(m iterations: 3)");
       let report = run(&src, &no_defines());
       assert_eq!(report.ticks, 3);
       for i in 0..64 {
@@ -1142,7 +1142,7 @@ If(Any(b {a}) {4} {5}) = z
     #[test]
     fn a_valid_program_checks_clean() {
       let report =
-        check("@wire(w { 1 | Add(1) })\n@mesh(main)\n@schedule(main w)\n@run(main FPS: 30)");
+        check("@wire(w { 1 | Add(1) })\n@mesh(main)\n@schedule(main w)\n@run(main fps: 30)");
       assert!(report.ok(), "{}", report.to_json());
       assert_eq!(
         report.to_json(),
@@ -1195,6 +1195,22 @@ fn syntax_errors_are_located_and_name_language_constructs() {
   assert!(d[2].message.contains("write 1.0"), "{}", d[2].message);
 }
 
+/// Labels are lowercase (golden-path.md D3): uppercase names a shard.
+#[test]
+fn uppercase_labels_are_rejected_with_the_lowercase_fix() {
+  let d = load_errors("Repeat({} Times: 3)");
+  assert_eq!((d[0].code, at(&d[0])), ("parameter-name", (1, 11)));
+  assert!(
+    d[0]
+      .message
+      .contains("parameter labels are lowercase: `times:`"),
+    "{}",
+    d[0].message
+  );
+  let d = load_errors("@wire(w {} Looped: true)");
+  assert_eq!(d[0].code, "parameter-name");
+}
+
 #[test]
 fn unknown_names_suggest_the_closest() {
   let d = load_errors("1 | Ad(1)");
@@ -1215,9 +1231,9 @@ fn unknown_names_suggest_the_closest() {
   );
   assert_eq!(d[0].did_you_mean[0], "Inc");
 
-  let d = load_errors("Repeat({} Tims: 3)");
+  let d = load_errors("Repeat({} tims: 3)");
   assert_eq!(d[0].code, "unknown-argument");
-  assert_eq!(d[0].did_you_mean, ["Times"]);
+  assert_eq!(d[0].did_you_mean, ["times"]);
   assert_eq!(at(&d[0]), (1, 11));
 
   let d = load_errors("@missing");
@@ -1260,20 +1276,20 @@ fn malformed_input_is_reported_not_crashed_on() {
   let deep = format!("{}1{}", "[".repeat(5000), "]".repeat(5000));
   let d = load_errors(&deep);
   assert_eq!(d[0].code, "too-deep");
-  let deep = format!("{}{}", "Repeat({".repeat(500), "} Times: 1)".repeat(500));
+  let deep = format!("{}{}", "Repeat({".repeat(500), "} times: 1)".repeat(500));
   assert_eq!(load_errors(&deep)[0].code, "too-deep");
   assert_eq!(load_errors("{x: 1 y:}")[0].code, "missing-value");
-  let d = load_errors("Repeat(Times: Action: {})");
+  let d = load_errors("Repeat(times: action: {})");
   assert_eq!((d[0].code, at(&d[0])), ("missing-value", (1, 8)));
   assert_eq!(load_errors("0x1g")[0].code, "number-form");
   assert_eq!(
-    load_errors("@run(m FPS: 1e-300)\n@mesh(m)")[0]
+    load_errors("@run(m fps: 1e-300)\n@mesh(m)")[0]
       .param
       .as_deref(),
-    Some("FPS")
+    Some("fps")
   );
   assert!(
-    load_errors("@mesh(m)\n@run(m Iterations: 0)")[0]
+    load_errors("@mesh(m)\n@run(m iterations: 0)")[0]
       .message
       .contains("positive whole number")
   );
@@ -1300,7 +1316,7 @@ fn constructs_not_supported_yet_are_rejected_explicitly() {
     ("[{1: x}]", "table keys are strings"),
     ("Type::Value", "enums"),
     ("#(1 | Add(1))", "evaluation while loading"),
-    ("Pause(1.0 | Add(1.0))", "Pause.Seconds takes a literal"),
+    ("Pause(1.0 | Add(1.0))", "Pause.seconds takes a literal"),
   ] {
     let d = load_errors(text);
     assert!(d[0].message.contains(needle), "{text}: {}", d[0].message);

@@ -165,7 +165,7 @@ impl Diagnostic {
     }
   }
 
-  /// The path as text, e.g. `main/2:When/Action/0:Add`.
+  /// The path as text, e.g. `main/2:When/action/0:Add`.
   pub fn path_string(&self) -> String {
     let steps: Vec<String> = self
       .path

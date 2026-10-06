@@ -55,7 +55,7 @@ pub trait Frames {
 pub trait LeafCtx: Frames {
   fn instance(&self) -> InstanceId;
   /// The instance's loop iteration: 0, then one more each time a looped
-  /// wire starts again (or a Restart). `Push` with `Clear` uses it.
+  /// wire starts again (or a Restart). `Push` with `clear` uses it.
   fn iteration(&self) -> u64;
 }
 

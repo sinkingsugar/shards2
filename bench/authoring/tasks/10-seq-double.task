@@ -7,5 +7,5 @@ Given the sequence [1 2 3 4], build a new sequence with every element doubled an
 [] >= out
 0 >= i
 xs | Count = n
-While({i | IsLess(n)} { xs | Take(i) | Math.Multiply(2) | Push(out Clear: false) Inc(i) })
+While({i | IsLess(n)} { xs | Take(i) | Math.Multiply(2) | Push(out clear: false) Inc(i) })
 out | Log

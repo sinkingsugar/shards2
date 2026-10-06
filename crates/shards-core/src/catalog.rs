@@ -20,7 +20,8 @@ pub struct Catalog {
 impl Catalog {
   /// Builds a catalog from per-crate lists of shard types, e.g.
   /// `Catalog::new(&[shards_core::shards::CATALOG, shards_io::CATALOG])`.
-  /// Fails on a duplicate shard name.
+  /// Fails on a duplicate shard name, or a parameter whose name is not a
+  /// lowercase label (golden-path.md D3: uppercase is a shard).
   pub fn new(lists: &[&[&'static ShardType]]) -> Result<Catalog, String> {
     let mut shards: Vec<&'static ShardType> = Vec::new();
     let names = |s: &ShardType| {
@@ -33,6 +34,16 @@ impl Catalog {
         if shards.iter().any(|s| names(s).contains(&name)) {
           return Err(format!("duplicate shard name in catalog: {name}"));
         }
+      }
+      if let crate::describe::Params::Declared(params) = ty.desc.params
+        && let Some(p) = params.iter().find(|p| !is_label(p.name))
+      {
+        return Err(format!(
+          "{}: parameter `{}` must be a lowercase label (`{}`)",
+          ty.name(),
+          p.name,
+          p.name.to_lowercase()
+        ));
       }
       shards.push(ty);
     }
@@ -223,4 +234,13 @@ fn describe_json(s: &ShardType) -> String {
     strings_json(&s.backends()),
     json_str(d.targets.name()),
   )
+}
+
+/// A parameter label: lowercase letters, digits and `-`, starting with a
+/// letter, as variable names are written.
+fn is_label(name: &str) -> bool {
+  name.starts_with(|c: char| c.is_ascii_lowercase())
+    && name
+      .chars()
+      .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }

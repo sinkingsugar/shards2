@@ -11,4 +11,4 @@ Repeat({
   xs | Take(i) = x
   If({x | IsLess(0)} {"negative"} {If({x | Is(0)} {"zero"} {"positive"})}) | Log
   Inc(i)
-} Times: 3)
+} times: 3)

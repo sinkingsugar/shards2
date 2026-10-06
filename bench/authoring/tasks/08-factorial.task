@@ -5,5 +5,5 @@ Compute 10! (the factorial of 10) as an integer and log it.
 === reference
 1 >= acc
 0 >= i
-Repeat({ Inc(i) acc | Math.Multiply(i) > acc } Times: 10)
+Repeat({ Inc(i) acc | Math.Multiply(i) > acc } times: 10)
 acc | Log

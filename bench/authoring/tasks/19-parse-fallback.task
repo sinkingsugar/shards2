@@ -8,6 +8,6 @@ Parse the strings "12" and "abc" as integers. When parsing fails, use -1 instead
 0 >= i
 Repeat({
   xs | Take(i) = s
-  Maybe({s | ParseInt} {-1} Silent: true) | Log
+  Maybe({s | ParseInt} {-1} silent: true) | Log
   Inc(i)
-} Times: 2)
+} times: 2)

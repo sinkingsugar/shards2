@@ -26,20 +26,20 @@
   Get(pos) | Add(@f3(0.1 0 0)) | Update(pos)
   Do(entity-think)
   Inc(iterations)
-} Looped: true)
+} looped: true)
 
 @wire(spawner {
   @instances | ParseInt | Set(n)
   @ticks | ParseInt | Set(k)
   0 | Set(ready-count Global: true)
   0 | Set(iterations Global: true)
-  Repeat({Spawn(entity Joint: true)} Times: n)
-  Repeat({Pause(0.0)} Until: {ready-count | IsMoreEqual(n)})
-  Repeat({Pause(0.0)} Times: 10)
+  Repeat({Spawn(entity Joint: true)} times: n)
+  Repeat({Pause(0.0)} until: {ready-count | IsMoreEqual(n)})
+  Repeat({Pause(0.0)} times: 10)
 
   iterations | Set(it0)
   Time.NowMs | Set(t0)
-  Repeat({Pause(0.0)} Times: k)
+  Repeat({Pause(0.0)} times: k)
   Time.NowMs | Sub(t0) | Set(total-ms)
   iterations | Sub(it0) | Set(done)
   ["BENCH instances=" n " ticks=" k " total_ms=" total-ms " iterations=" done] | String.Format | Log

@@ -8,6 +8,6 @@ Map colour names to codes: "red" is 1, "green" is 2, anything else is 0. For the
 ["green" "blue" "red"] = xs
 0 >= i
 Repeat({
-  xs | Take(i) | Match(["red" {1} "green" {2} none {0}] Passthrough: false) | Log
+  xs | Take(i) | Match(["red" {1} "green" {2} none {0}] passthrough: false) | Log
   Inc(i)
-} Times: 3)
+} times: 3)

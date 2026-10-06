@@ -290,7 +290,7 @@ impl Operand {
 // context (bindings, input types, flow outputs, values).
 
 pub static CONST_PARAMS: &[ParamDecl] = &[decl(
-  "Value",
+  "value",
   crate::shard_doc!("The constant value: any literal."),
   Forms::LITERAL,
   NONE_TYPES,
@@ -301,7 +301,7 @@ pub const CONST_DESC: ShardDesc = ShardDesc {
   name: "Const",
   version: 1,
   summary: crate::shard_doc!("Outputs a constant value."),
-  help: crate::shard_doc!("Ignores its input and outputs Value on every activation."),
+  help: crate::shard_doc!("Ignores its input and outputs `value` on every activation."),
   params: Params::Declared(CONST_PARAMS),
   input: InputDesc::Ignored,
   output: OutputDesc::Dynamic(crate::shard_doc!("the type of Value")),
@@ -310,7 +310,7 @@ pub const CONST_DESC: ShardDesc = ShardDesc {
 };
 
 pub(crate) fn compose_const(args: &Args) -> Result<Composed<Var>> {
-  let value = args.literal("Value").expect("decoded Value").clone();
+  let value = args.literal("value").expect("decoded Value").clone();
   Ok(Composed {
     output: value.type_of(),
     compiled: value,
@@ -318,7 +318,7 @@ pub(crate) fn compose_const(args: &Args) -> Result<Composed<Var>> {
 }
 
 pub static SET_PARAMS: &[ParamDecl] = &[decl(
-  "Variable",
+  "variable",
   crate::shard_doc!(
     "The variable to assign. Declared as a mutable local if it does not exist yet."
   ),
@@ -346,7 +346,7 @@ pub(crate) fn compose_set<B: Backend>(
   args: &Args,
   ctx: &mut ComposeCtx<'_, B>,
 ) -> Result<Composed<Binding>> {
-  let name = variable(args, "Variable");
+  let name = variable(args, "variable");
   let input = ctx.input();
   let binding = match ctx.var(name) {
     Some(info) if info.mutable && info.ty.accepts(input) => {
@@ -365,7 +365,7 @@ pub(crate) fn compose_set<B: Backend>(
       return Err(param_error(
         args,
         "Set",
-        "Variable",
+        "variable",
         "compose-error",
         code,
         message,
@@ -380,7 +380,7 @@ pub(crate) fn compose_set<B: Backend>(
 }
 
 pub static REF_PARAMS: &[ParamDecl] = &[decl(
-  "Variable",
+  "variable",
   crate::shard_doc!("The immutable local variable to declare."),
   Forms::VARIABLE,
   NONE_TYPES,
@@ -406,7 +406,7 @@ pub(crate) fn compose_ref<B: Backend>(
   args: &Args,
   ctx: &mut ComposeCtx<'_, B>,
 ) -> Result<Composed<Binding>> {
-  let name = variable(args, "Variable");
+  let name = variable(args, "variable");
   let input = ctx.input();
   // `%` names are frontend temporaries (source cannot name them): each
   // occurrence declares a fresh slot, shadowing an earlier one, so a wire
@@ -421,7 +421,7 @@ pub(crate) fn compose_ref<B: Backend>(
     return Err(param_error(
       args,
       "Ref",
-      "Variable",
+      "variable",
       "compose-error",
       "variable-exists",
       format!(
@@ -436,7 +436,7 @@ pub(crate) fn compose_ref<B: Backend>(
 }
 
 pub static UPDATE_PARAMS: &[ParamDecl] = &[decl(
-  "Variable",
+  "variable",
   crate::shard_doc!("The existing mutable variable to assign."),
   Forms::VARIABLE,
   NONE_TYPES,
@@ -448,7 +448,7 @@ pub const UPDATE_DESC: ShardDesc = ShardDesc {
   version: 1,
   summary: crate::shard_doc!("Assigns the input to an existing mutable variable."),
   help: crate::shard_doc!(
-    "Variable must exist, be mutable and have the input's type. Passes its input through."
+    "`variable` must exist, be mutable and have the input's type. Passes its input through."
   ),
   params: Params::Declared(UPDATE_PARAMS),
   input: InputDesc::Any,
@@ -462,13 +462,13 @@ pub(crate) fn compose_update<B: Backend>(
   args: &Args,
   ctx: &mut ComposeCtx<'_, B>,
 ) -> Result<Composed<Binding>> {
-  let name = variable(args, "Variable");
+  let name = variable(args, "variable");
   let input = ctx.input();
   let Some(info) = ctx.var(name) else {
     return Err(param_error(
       args,
       "Update",
-      "Variable",
+      "variable",
       "compose-error",
       "unknown-variable",
       format!("unknown variable {name}"),
@@ -478,7 +478,7 @@ pub(crate) fn compose_update<B: Backend>(
     return Err(param_error(
       args,
       "Update",
-      "Variable",
+      "variable",
       "compose-error",
       "immutable-variable",
       format!("{name} is immutable"),
@@ -488,7 +488,7 @@ pub(crate) fn compose_update<B: Backend>(
     return Err(param_error(
       args,
       "Update",
-      "Variable",
+      "variable",
       "compose-error",
       "variable-type-mismatch",
       format!("{name} is {}, cannot assign {input}", info.ty),
@@ -502,7 +502,7 @@ pub(crate) fn compose_update<B: Backend>(
 }
 
 pub static GET_PARAMS: &[ParamDecl] = &[decl(
-  "Variable",
+  "variable",
   crate::shard_doc!("The variable to read; it must be definitely assigned here."),
   Forms::VARIABLE,
   NONE_TYPES,
@@ -527,10 +527,10 @@ pub(crate) fn compose_get<B: Backend>(
   args: &Args,
   ctx: &mut ComposeCtx<'_, B>,
 ) -> Result<Composed<Binding>> {
-  let name = variable(args, "Variable");
+  let name = variable(args, "variable");
   let info = ctx
     .read_var(name, "Get")
-    .map_err(|e| e.with_param("Variable", args.param_index("Variable")))?;
+    .map_err(|e| e.with_param("variable", args.param_index("variable")))?;
   Ok(Composed {
     compiled: info.binding,
     output: info.ty,
@@ -538,7 +538,7 @@ pub(crate) fn compose_get<B: Backend>(
 }
 
 pub static INC_PARAMS: &[ParamDecl] = &[decl(
-  "Variable",
+  "variable",
   crate::shard_doc!("The mutable Int variable to increment."),
   Forms::VARIABLE,
   NONE_TYPES,
@@ -550,7 +550,7 @@ pub const INC_DESC: ShardDesc = ShardDesc {
   version: 1,
   summary: crate::shard_doc!("Increments an Int variable and outputs the new value."),
   help: crate::shard_doc!(
-    "Ignores its input. Variable must be a mutable Int; overflow is an activation error."
+    "Ignores its input. `variable` must be a mutable Int; overflow is an activation error."
   ),
   params: Params::Declared(INC_PARAMS),
   input: InputDesc::Ignored,
@@ -573,15 +573,15 @@ pub(crate) fn compose_counter<B: Backend>(
   ctx: &mut ComposeCtx<'_, B>,
   shard: &'static str,
 ) -> Result<Composed<Binding>> {
-  let name = variable(args, "Variable");
+  let name = variable(args, "variable");
   let info = ctx
     .read_var(name, shard)
-    .map_err(|e| e.with_param("Variable", args.param_index("Variable")))?;
+    .map_err(|e| e.with_param("variable", args.param_index("variable")))?;
   if !info.mutable || info.ty != Type::int() {
     return Err(param_error(
       args,
       shard,
-      "Variable",
+      "variable",
       "compose-error",
       "wrong-variable-type",
       format!(
@@ -611,7 +611,7 @@ pub(crate) fn activate_inc(binding: Binding, frames: &mut impl Frames) -> Result
 /// `Add`'s parameters. The decoder enforces these declarations and the
 /// catalog documents them.
 pub static ADD_PARAMS: &[ParamDecl] = &[ParamDecl {
-  name: "Operand",
+  name: "operand",
   help: crate::shard_doc!("The value to add: a literal, or a variable read at activation."),
   forms: Forms::LITERAL.or(Forms::VARIABLE),
   types: NUMERIC,
@@ -638,7 +638,7 @@ pub const ADD_DESC: ShardDesc = ShardDesc {
 };
 
 pub static IS_LESS_PARAMS: &[ParamDecl] = &[decl(
-  "Operand",
+  "operand",
   crate::shard_doc!(
     "The value to compare the input with: a literal, or a variable read at activation."
   ),
@@ -662,7 +662,7 @@ pub const IS_LESS_DESC: ShardDesc = ShardDesc {
 };
 
 pub static IS_MORE_EQUAL_PARAMS: &[ParamDecl] = &[decl(
-  "Operand",
+  "operand",
   crate::shard_doc!(
     "The value to compare the input with: a literal, or a variable read at activation."
   ),
@@ -690,7 +690,7 @@ pub(crate) fn compose_compare<B: Backend>(
   ctx: &mut ComposeCtx<'_, B>,
   shard: &str,
 ) -> Result<Composed<Operand>> {
-  let (operand, ty) = Operand::compose_arg(args, "Operand", shard, ctx)?;
+  let (operand, ty) = Operand::compose_arg(args, "operand", shard, ctx)?;
   let input = ctx.input();
   // Int and Float compare with each other by value.
   let number = |t: Type| matches!(t.desc(), TypeDesc::Int | TypeDesc::Float);
@@ -704,7 +704,7 @@ pub(crate) fn compose_compare<B: Backend>(
         format!("cannot compare {input} with {ty}"),
       )
       .shard(shard)
-      .param("Operand", Some(args.param_index("Operand")))
+      .param("operand", Some(args.param_index("operand")))
       .types(Some(TypeRef::of(input)), expected),
     )));
   }
@@ -784,7 +784,7 @@ fn compose_predicate_and_body<B: Backend>(
         format!("predicate must output Bool, got {}", pred.output),
       )
       .shard(shard)
-      .param("Predicate", Some(0))
+      .param("predicate", Some(0))
       .types(
         Some(TypeRef::of(pred.output)),
         vec![TypeRef::named(TypeName::Bool)],
@@ -801,7 +801,7 @@ fn compose_predicate_and_body<B: Backend>(
 
 pub static WHILE_PARAMS: &[ParamDecl] = &[
   decl(
-    "Predicate",
+    "predicate",
     crate::shard_doc!(
       "A flow that receives the input and must output a Bool; evaluated before each iteration."
     ),
@@ -810,7 +810,7 @@ pub static WHILE_PARAMS: &[ParamDecl] = &[
     Requirement::Required,
   ),
   decl(
-    "Action",
+    "action",
     crate::shard_doc!(
       "The flow to run while the predicate is true. It can run zero times, so variables it assigns are not definitely assigned after While."
     ),
@@ -823,9 +823,9 @@ pub static WHILE_PARAMS: &[ParamDecl] = &[
 pub const WHILE_DESC: ShardDesc = ShardDesc {
   name: "While",
   version: 1,
-  summary: crate::shard_doc!("Runs an Action flow while a predicate flow outputs true."),
+  summary: crate::shard_doc!("Runs an `action` flow while a predicate flow outputs true."),
   help: crate::shard_doc!(
-    "Both flows receive While's input. On normal completion While passes its input through. A Stop, Restart or Return inside either flow propagates. The Action flow may suspend; the loop resumes where it left off."
+    "Both flows receive While's input. On normal completion While passes its input through. A Stop, Restart or Return inside either flow propagates. The `action` flow may suspend; the loop resumes where it left off."
   ),
   params: Params::Declared(WHILE_PARAMS),
   input: InputDesc::Any,
@@ -838,8 +838,8 @@ pub(crate) fn compose_while<B: Backend>(
   args: &Args,
   ctx: &mut ComposeCtx<'_, B>,
 ) -> Result<Composed<Predicated<B>>> {
-  let pred = args.flow("Predicate").expect("decoded Predicate flow");
-  let body = args.flow("Action").expect("decoded Action flow");
+  let pred = args.flow("predicate").expect("decoded Predicate flow");
+  let body = args.flow("action").expect("decoded Action flow");
   compose_predicate_and_body(pred, body, ctx, "While")
 }
 
@@ -847,7 +847,7 @@ pub(crate) fn compose_while<B: Backend>(
 /// implementations, the decoder and the catalog.
 pub static WHEN_PARAMS: &[ParamDecl] = &[
   ParamDecl {
-    name: "Predicate",
+    name: "predicate",
     help: crate::shard_doc!("A flow that receives the input and must output a Bool."),
     forms: Forms::FLOW,
     types: &[],
@@ -855,7 +855,7 @@ pub static WHEN_PARAMS: &[ParamDecl] = &[
     ty: None,
   },
   ParamDecl {
-    name: "Action",
+    name: "action",
     help: crate::shard_doc!(
       "The flow to run when the predicate is true. Variables it assigns are not definitely assigned after When."
     ),
@@ -869,9 +869,9 @@ pub static WHEN_PARAMS: &[ParamDecl] = &[
 pub const WHEN_DESC: ShardDesc = ShardDesc {
   name: "When",
   version: 1,
-  summary: crate::shard_doc!("Runs an Action flow if a predicate flow outputs true."),
+  summary: crate::shard_doc!("Runs an `action` flow if a predicate flow outputs true."),
   help: crate::shard_doc!(
-    "Both flows receive When's input. On normal completion When passes its input through, whether or not the Action flow ran. A Stop, Restart or Return inside either flow propagates."
+    "Both flows receive When's input. On normal completion When passes its input through, whether or not the `action` flow ran. A Stop, Restart or Return inside either flow propagates."
   ),
   params: Params::Declared(WHEN_PARAMS),
   input: InputDesc::Any,
@@ -885,13 +885,13 @@ pub(crate) fn compose_when<B: Backend>(
   ctx: &mut ComposeCtx<'_, B>,
 ) -> Result<Composed<Predicated<B>>> {
   // The decoder guarantees both are present flows.
-  let pred = args.flow("Predicate").expect("decoded Predicate flow");
-  let body = args.flow("Action").expect("decoded Action flow");
+  let pred = args.flow("predicate").expect("decoded Predicate flow");
+  let body = args.flow("action").expect("decoded Action flow");
   compose_predicate_and_body(pred, body, ctx, "When")
 }
 
 pub static ONCE_PARAMS: &[ParamDecl] = &[decl(
-  "Action",
+  "action",
   crate::shard_doc!(
     "The flow to run on the first activation. Variables it assigns are definitely assigned after Once."
   ),
@@ -903,9 +903,9 @@ pub static ONCE_PARAMS: &[ParamDecl] = &[decl(
 pub const ONCE_DESC: ShardDesc = ShardDesc {
   name: "Once",
   version: 1,
-  summary: crate::shard_doc!("Runs an Action flow on the first activation only."),
+  summary: crate::shard_doc!("Runs an `action` flow on the first activation only."),
   help: crate::shard_doc!(
-    "The Action flow receives Once's input. Once passes its input through. If the Action flow suspends during the first run, it resumes there; it never runs again after completing. If it fails (an error caught by Maybe), it runs again on the next activation. A Stop, Restart or Return inside the Action flow propagates."
+    "The `action` flow receives Once's input. Once passes its input through. If the `action` flow suspends during the first run, it resumes there; it never runs again after completing. If it fails (an error caught by Maybe), it runs again on the next activation. A Stop, Restart or Return inside the `action` flow propagates."
   ),
   params: Params::Declared(ONCE_PARAMS),
   input: InputDesc::Any,
@@ -920,13 +920,13 @@ pub(crate) fn compose_once<B: Backend>(
 ) -> Result<Composed<CompiledFlow<B>>> {
   let input = ctx.input();
   Ok(Composed {
-    compiled: ctx.compose_flow(args.flow("Action").expect("decoded Action flow"), input)?,
+    compiled: ctx.compose_flow(args.flow("action").expect("decoded Action flow"), input)?,
     output: input,
   })
 }
 
 pub static SUBFLOW_PARAMS: &[ParamDecl] = &[decl(
-  "Action",
+  "action",
   crate::shard_doc!(
     "The flow to run on every activation. Variables it assigns are definitely assigned after SubFlow."
   ),
@@ -938,9 +938,9 @@ pub static SUBFLOW_PARAMS: &[ParamDecl] = &[decl(
 pub const SUB_DESC: ShardDesc = ShardDesc {
   name: "SubFlow",
   version: 1,
-  summary: crate::shard_doc!("Runs an Action flow and passes its input through."),
+  summary: crate::shard_doc!("Runs an `action` flow and passes its input through."),
   help: crate::shard_doc!(
-    "The Action flow receives SubFlow's input; its output is discarded (1.x `_SubFlow`; `Sub` is 1.x's alias for Math.Subtract). A Stop, Restart or Return inside the Action flow propagates; a suspension resumes inside it. The frontend computes parameter values and computed elements in a SubFlow before the shard that uses them."
+    "The `action` flow receives SubFlow's input; its output is discarded (1.x `_SubFlow`; `Sub` is 1.x's alias for Math.Subtract). A Stop, Restart or Return inside the `action` flow propagates; a suspension resumes inside it. The frontend computes parameter values and computed elements in a SubFlow before the shard that uses them."
   ),
   params: Params::Declared(SUBFLOW_PARAMS),
   input: InputDesc::Any,
@@ -980,7 +980,7 @@ impl<B: Backend> RepeatCompiled<B> {
 
 pub static REPEAT_PARAMS: &[ParamDecl] = &[
   decl(
-    "Action",
+    "action",
     crate::shard_doc!(
       "The flow to repeat. It can run zero times, so variables it assigns are not definitely assigned after Repeat."
     ),
@@ -989,23 +989,23 @@ pub static REPEAT_PARAMS: &[ParamDecl] = &[
     Requirement::Required,
   ),
   decl(
-    "Times",
+    "times",
     crate::shard_doc!(
-      "How many times to run the Action flow at most: an Int literal, or an Int variable read when the repeat starts. Negative counts run it zero times."
+      "How many times to run the `action` flow at most: an Int literal, or an Int variable read when the repeat starts. Negative counts run it zero times."
     ),
     OPERAND,
     &[TypeName::Int],
     Requirement::Optional,
   ),
   decl(
-    "Forever",
-    crate::shard_doc!("Repeat without a limit (Times is ignored); Until can still end it."),
+    "forever",
+    crate::shard_doc!("Repeat without a limit (`times` is ignored); `until` can still end it."),
     Forms::LITERAL,
     &[TypeName::Bool],
     Requirement::Default(DefaultValue::Bool(false)),
   ),
   decl(
-    "Until",
+    "until",
     crate::shard_doc!(
       "A flow that receives the input and outputs a Bool, checked before each iteration: true ends the repeat."
     ),
@@ -1019,10 +1019,10 @@ pub const REPEAT_DESC: ShardDesc = ShardDesc {
   name: "Repeat",
   version: 1,
   summary: crate::shard_doc!(
-    "Runs an Action flow a number of times, until a condition, or forever."
+    "Runs an `action` flow a number of times, until a condition, or forever."
   ),
   help: crate::shard_doc!(
-    "Needs Times, Until or Forever. Before each iteration, Until (if given) is checked and ends the repeat when true; Times limits the iterations unless Forever. The Action and Until flows receive Repeat's input. Repeat passes its input through. A Stop, Restart or Return inside a flow propagates. The flows may suspend; the repeat resumes where it left off."
+    "Needs `times`, `until` or `forever`. Before each iteration, `until` (if given) is checked and ends the repeat when true; `times` limits the iterations unless `forever`. The `action` and `until` flows receive Repeat's input. Repeat passes its input through. A Stop, Restart or Return inside a flow propagates. The flows may suspend; the repeat resumes where it left off."
   ),
   params: Params::Declared(REPEAT_PARAMS),
   input: InputDesc::Any,
@@ -1036,18 +1036,18 @@ pub(crate) fn compose_repeat<B: Backend>(
   ctx: &mut ComposeCtx<'_, B>,
 ) -> Result<Composed<RepeatCompiled<B>>> {
   let input = ctx.input();
-  // Until runs before each iteration, then Action: one region that might
+  // Until runs before each iteration, then action: one region that might
   // not run (Times 0), composed in run order, so a variable Until assigns is
   // usable in Action but not after the Repeat.
   let (until, body) = ctx.conditional_region(|ctx| {
-    let until = match args.flow("Until") {
+    let until = match args.flow("until") {
       Some(flow) => {
         let until = ctx.compose_flow(flow, input)?;
         if !Type::bool().accepts(until.output) {
           return Err(param_error(
             args,
             "Repeat",
-            "Until",
+            "until",
             "compose-error",
             "predicate-not-bool",
             format!("Until must output Bool, got {}", until.output),
@@ -1057,19 +1057,19 @@ pub(crate) fn compose_repeat<B: Backend>(
       }
       None => None,
     };
-    let body = ctx.compose_flow(args.flow("Action").expect("decoded Action flow"), input)?;
+    let body = ctx.compose_flow(args.flow("action").expect("decoded Action flow"), input)?;
     Ok((until, body))
   })?;
-  let forever = args.bool("Forever").unwrap_or(false);
-  let times = match args.get("Times") {
+  let forever = args.bool("forever").unwrap_or(false);
+  let times = match args.get("times") {
     Some(_) if !forever => {
-      let (times, ty) = Operand::compose_arg(args, "Times", "Repeat", ctx)?;
+      let (times, ty) = Operand::compose_arg(args, "times", "Repeat", ctx)?;
       // A literal is checked by the decoder; a variable's binding here.
       if ty != Type::int() {
         return Err(param_error(
           args,
           "Repeat",
-          "Times",
+          "times",
           "compose-error",
           "wrong-variable-type",
           format!("Times must be an Int, got {ty}"),
@@ -1083,7 +1083,7 @@ pub(crate) fn compose_repeat<B: Backend>(
     return Err(param_error(
       args,
       "Repeat",
-      "Times",
+      "times",
       "compose-error",
       "missing-argument",
       "Repeat needs Times, Until or Forever".into(),
@@ -1096,7 +1096,7 @@ pub(crate) fn compose_repeat<B: Backend>(
 }
 
 pub static DO_PARAMS: &[ParamDecl] = &[decl(
-  "Wire",
+  "wire",
   crate::shard_doc!("The wire to run inline. It shares the caller's variables."),
   Forms::WIRE,
   NONE_TYPES,
@@ -1117,14 +1117,14 @@ pub const DO_DESC: ShardDesc = ShardDesc {
   aliases: &[],
 };
 
-/// Attributes an error from resolving a `Wire` argument to the calling shard
-/// and its `Wire` parameter, but only when the error is about the reference
+/// Attributes an error from resolving a `wire` argument to the calling shard
+/// and its `wire` parameter, but only when the error is about the reference
 /// itself. Diagnostics from shards inside the called wire keep their owner.
 fn wire_ref_error(e: Error, args: &Args, shard: &str) -> Error {
   match e.diagnostic() {
     Some(d) if matches!(d.code, "unknown-wire" | "recursive-wire") => e
       .in_shard(shard)
-      .with_param("Wire", args.param_index("Wire")),
+      .with_param("wire", args.param_index("wire")),
     _ => e,
   }
 }
@@ -1133,7 +1133,7 @@ pub(crate) fn compose_do<B: Backend>(
   args: &Args,
   ctx: &mut ComposeCtx<'_, B>,
 ) -> Result<Composed<Arc<crate::reload::InlineCall<B>>>> {
-  let name = args.wire("Wire").expect("decoded Wire");
+  let name = args.wire("wire").expect("decoded Wire");
   let input = ctx.input();
   let flow = ctx
     .compose_reloadable_inline(name, input)
@@ -1146,7 +1146,7 @@ pub(crate) fn compose_do<B: Backend>(
 }
 
 pub static PAUSE_PARAMS: &[ParamDecl] = &[decl(
-  "Seconds",
+  "seconds",
   crate::shard_doc!(
     "The minimum time to wait, in seconds; 0 waits for the next tick. Must be finite, not negative and representable as a duration."
   ),
@@ -1160,7 +1160,7 @@ pub const PAUSE_DESC: ShardDesc = ShardDesc {
   version: 1,
   summary: crate::shard_doc!("Suspends until a later tick."),
   help: crate::shard_doc!(
-    "Always suspends at least once, then resumes on the first tick at least Seconds after it started waiting. Passes its input through."
+    "Always suspends at least once, then resumes on the first tick at least `seconds` after it started waiting. Passes its input through."
   ),
   params: Params::Declared(PAUSE_PARAMS),
   input: InputDesc::Any,
@@ -1173,7 +1173,7 @@ pub(crate) fn compose_pause<B: Backend>(
   args: &Args,
   ctx: &mut ComposeCtx<'_, B>,
 ) -> Result<Composed<Duration>> {
-  let Some(Var::Float(secs)) = args.literal("Seconds") else {
+  let Some(Var::Float(secs)) = args.literal("seconds") else {
     unreachable!("decoded Seconds")
   };
   // Rejects negative, NaN, infinite and too large values.
@@ -1181,7 +1181,7 @@ pub(crate) fn compose_pause<B: Backend>(
     return Err(param_error(
       args,
       "Pause",
-      "Seconds",
+      "seconds",
       "compose-error",
       "invalid-argument-value",
       format!("Seconds must be finite, not negative and representable as a duration, got {secs}"),
@@ -1194,7 +1194,7 @@ pub(crate) fn compose_pause<B: Backend>(
 }
 
 pub static SPAWN_PARAMS: &[ParamDecl] = &[decl(
-  "Wire",
+  "wire",
   crate::shard_doc!("The wire to start a new instance of."),
   Forms::WIRE,
   NONE_TYPES,
@@ -1219,7 +1219,7 @@ pub(crate) fn compose_spawn<B: Backend>(
   args: &Args,
   ctx: &mut ComposeCtx<'_, B>,
 ) -> Result<Composed<Arc<CompiledWire<B>>>> {
-  let name = args.wire("Wire").expect("decoded Wire");
+  let name = args.wire("wire").expect("decoded Wire");
   let input = ctx.input();
   Ok(Composed {
     compiled: ctx
@@ -1287,14 +1287,14 @@ pub struct ProbeCompiled {
 
 pub static PROBE_PARAMS: &[ParamDecl] = &[
   decl(
-    "Tag",
+    "tag",
     crate::shard_doc!("The tag recorded with each event."),
     Forms::LITERAL,
     &[TypeName::String],
     Requirement::Required,
   ),
   decl(
-    "Mode",
+    "mode",
     crate::shard_doc!(
       "A failure mode: fail-instantiate, panic-instantiate, panic-activate or panic-cleanup. Absent: normal."
     ),
@@ -1323,8 +1323,8 @@ pub(crate) fn compose_probe<B: Backend>(
   args: &Args,
   ctx: &mut ComposeCtx<'_, B>,
 ) -> Result<Composed<ProbeCompiled>> {
-  let tag: Arc<str> = Arc::from(args.string("Tag").expect("decoded Tag"));
-  let mode = match args.string("Mode") {
+  let tag: Arc<str> = Arc::from(args.string("tag").expect("decoded Tag"));
+  let mode = match args.string("mode") {
     None => ProbeMode::Normal,
     Some("fail-instantiate") => ProbeMode::FailInstantiate,
     Some("panic-instantiate") => ProbeMode::PanicInstantiate,
@@ -1334,7 +1334,7 @@ pub(crate) fn compose_probe<B: Backend>(
       return Err(param_error(
         args,
         "Probe",
-        "Mode",
+        "mode",
         "compose-error",
         "invalid-argument-value",
         format!("unknown mode {other}"),
@@ -1433,7 +1433,7 @@ pub mod defs {
   pub fn maybe(action: Vec<ShardDef>, els: Option<Vec<ShardDef>>) -> ShardDef {
     let mut args = vec![Arg::pos(ParamValue::Flow(action))];
     args.extend(els.map(|e| Arg::pos(ParamValue::Flow(e))));
-    args.push(Arg::named("Silent", val(Var::Bool(true))));
+    args.push(Arg::named("silent", val(Var::Bool(true))));
     ShardDef::with_args(&MAYBE, args)
   }
   pub fn all(conditions: Vec<ParamValue>) -> ShardDef {
@@ -1444,7 +1444,7 @@ pub mod defs {
       &REPEAT,
       vec![
         Arg::pos(ParamValue::Flow(body)),
-        Arg::named("Until", ParamValue::Flow(until)),
+        Arg::named("until", ParamValue::Flow(until)),
       ],
     )
   }

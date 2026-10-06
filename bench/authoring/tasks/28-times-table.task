@@ -15,5 +15,5 @@ Log the multiplication table for 1 to 3 with nested loops: one line per pair, fo
 Repeat({
   Inc(a)
   0 >= b
-  Repeat({ Inc(b) f"{a}x{b}={a | Math.Multiply(b)}" | Log } Times: 3)
-} Times: 3)
+  Repeat({ Inc(b) f"{a}x{b}={a | Math.Multiply(b)}" | Log } times: 3)
+} times: 3)

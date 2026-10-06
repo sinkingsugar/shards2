@@ -10,5 +10,5 @@ Repeat({
   xs | Take(i) = x
   When({x | IsMore(best)} {x > best})
   Inc(i)
-} Times: 5)
+} times: 5)
 best | Log

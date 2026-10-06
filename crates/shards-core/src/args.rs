@@ -168,7 +168,7 @@ impl Args {
 impl Args {
   /// The declared parameter that holds this nested flow (by identity) or
   /// references this wire, for diagnostic paths.
-  /// For a flow inside `Cases`, also the case's index.
+  /// For a flow inside `cases`, also the case's index.
   pub(crate) fn param_of(
     &self,
     child: &crate::compose::Child,
@@ -210,7 +210,7 @@ impl Args {
     })
   }
 
-  /// The value-flow pairs of a `Cases` parameter.
+  /// The value-flow pairs of a `cases` parameter.
   pub fn cases(&self, name: &str) -> Option<&[(Var, Vec<ShardDef>)]> {
     match self.get(name)? {
       ParamValue::Cases(cases) => Some(cases),

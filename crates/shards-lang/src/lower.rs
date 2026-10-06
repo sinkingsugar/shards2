@@ -305,7 +305,7 @@ impl Lowerer<'_> {
     positional: &[&Pipe],
     named: &[(&Name, &Pipe)],
   ) {
-    let usage = "`@wire(name { ... } Looped: true)`";
+    let usage = "`@wire(name { ... } looped: true)`";
     let Some(name) = positional.first().and_then(|p| name_of(p)) else {
       self.problem(Problem::construct(
         block.span,
@@ -318,26 +318,26 @@ impl Lowerer<'_> {
     let mut looped = false;
     for (pname, value) in named {
       match (pname.node.as_str(), &value.blocks[..]) {
-        ("Looped", [b]) if matches!(b.kind, BlockKind::Literal(Literal::Bool(_))) => {
+        ("looped", [b]) if matches!(b.kind, BlockKind::Literal(Literal::Bool(_))) => {
           looped = b.kind == BlockKind::Literal(Literal::Bool(true));
         }
-        ("Looped", _) => self.problem(
+        ("looped", _) => self.problem(
           Problem::construct(
             value.span,
             "generic",
             "declaration",
-            "`Looped` takes `true` or `false`".into(),
+            "`looped` takes `true` or `false`".into(),
           )
-          .param("Looped"),
+          .param("looped"),
         ),
         (other, _) => self.problem(
           Problem::construct(
             pname.span,
             "generic",
             "unsupported",
-            format!("wire option `{other}` is not supported (supported: Looped)"),
+            format!("wire option `{other}` is not supported (supported: looped)"),
           )
-          .did_you_mean(closest(other, ["Looped".to_string()], 1))
+          .did_you_mean(closest(other, ["looped".to_string()], 1))
           .param(other),
         ),
       }
@@ -404,7 +404,7 @@ impl Lowerer<'_> {
         block.span,
         "generic",
         "declaration",
-        "`@run` takes a mesh: `@run(main FPS: 30)`".into(),
+        "`@run` takes a mesh: `@run(main fps: 30)`".into(),
       ));
       return;
     };
@@ -434,24 +434,24 @@ impl Lowerer<'_> {
       };
       match (pname.node.as_str(), literal) {
         // The frame interval must be a representable duration.
-        ("FPS", Some(f)) if f > 0.0 && std::time::Duration::try_from_secs_f64(1.0 / f).is_ok() => {
+        ("fps", Some(f)) if f > 0.0 && std::time::Duration::try_from_secs_f64(1.0 / f).is_ok() => {
           run.fps = Some(f)
         }
         // Below 2^63, the exact Int range.
-        ("Iterations", Some(i))
+        ("iterations", Some(i))
           if i >= 1.0 && i.fract() == 0.0 && i < 9_223_372_036_854_775_808.0 =>
         {
           run.iterations = Some(i as i64)
         }
-        ("FPS" | "Iterations", _) => self.problem(
+        ("fps" | "iterations", _) => self.problem(
           Problem::construct(
             value.span,
             "generic",
             "declaration",
-            if pname.node == "FPS" {
-              "`FPS` takes a positive number of frames per second".to_string()
+            if pname.node == "fps" {
+              "`fps` takes a positive number of frames per second".to_string()
             } else {
-              "`Iterations` takes a positive whole number".to_string()
+              "`iterations` takes a positive whole number".to_string()
             },
           )
           .param(&pname.node),
@@ -461,11 +461,11 @@ impl Lowerer<'_> {
             pname.span,
             "generic",
             "unsupported",
-            format!("`@run` option `{other}` is not supported (supported: FPS, Iterations)"),
+            format!("`@run` option `{other}` is not supported (supported: fps, iterations)"),
           )
           .did_you_mean(closest(
             other,
-            ["FPS".to_string(), "Iterations".to_string()],
+            ["fps".to_string(), "iterations".to_string()],
             2,
           )),
         ),
@@ -778,7 +778,7 @@ impl Lowerer<'_> {
       index: out.len(),
       name: SUB.name().to_string(),
     });
-    inner_prefix.push(PathStep::Param("Action".into()));
+    inner_prefix.push(PathStep::Param("action".into()));
     let mut body = Vec::new();
     lower(self, &mut body, &inner_prefix);
     // A `%` Ref declares a fresh slot at each occurrence, so a wire inlined

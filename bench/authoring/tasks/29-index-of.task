@@ -14,7 +14,7 @@ Repeat({
   Repeat({
     When({All({found | Is(-1)} {xs | Take(i) | Is(target)})} {i > found})
     Inc(i)
-  } Times: 4)
+  } times: 4)
   found | Log
   Inc(t)
-} Times: 2)
+} times: 2)

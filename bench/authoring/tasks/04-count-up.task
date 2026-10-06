@@ -8,4 +8,4 @@ Log the integers 1 to 5, one per line, using a loop.
 5
 === reference
 0 >= n
-Repeat({ Inc(n) | Log } Times: 5)
+Repeat({ Inc(n) | Log } times: 5)

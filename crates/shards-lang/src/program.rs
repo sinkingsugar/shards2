@@ -252,7 +252,7 @@ impl Program {
 
   /// Runs the program on `H`: the entry wires, ticked at the `@run` rate
   /// (as fast as possible without one) until every instance finishes or
-  /// the `Iterations` limit is reached.
+  /// the `iterations` limit is reached.
   pub fn run<H: Host>(&self) -> Result<RunReport, Vec<Diagnostic>> {
     let mut mesh = H::create();
     for def in &self.lowered.wires {
@@ -325,7 +325,7 @@ impl Program {
 }
 
 /// What a run did: ticks, and each entry wire's outcome (`None`: still
-/// running when the `Iterations` limit stopped the mesh).
+/// running when the `iterations` limit stopped the mesh).
 #[derive(Debug)]
 pub struct RunReport {
   pub ticks: i64,

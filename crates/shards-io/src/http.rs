@@ -10,7 +10,7 @@
 //! - reading the body also races the cancellation token. In 1.x only
 //!   `send()` does, so cancelling midway through a body leaves the task
 //!   reading until the body completes or the request times out.
-//! - only a subset of 1.x's parameters: `URL` and `Timeout`.
+//! - only a subset of 1.x's parameters: `url` and `timeout`.
 //!
 //! **What cancellation does:** it stops local polling, and the request
 //! future is dropped on the runtime, which closes the connection (verified by
@@ -62,7 +62,7 @@ fn client(config: &ClientConfig) -> std::result::Result<reqwest::Client, String>
     builder = builder.danger_accept_invalid_certs(config.invalid_certs);
   }
   if let Some(proxy_url) = &config.proxy_url {
-    let proxy = reqwest::Proxy::all(proxy_url).map_err(|e| format!("Invalid proxy URL: {e}"))?;
+    let proxy = reqwest::Proxy::all(proxy_url).map_err(|e| format!("Invalid proxy url: {e}"))?;
     builder = builder.proxy(proxy);
   }
   let client = builder
@@ -72,7 +72,7 @@ fn client(config: &ClientConfig) -> std::result::Result<reqwest::Client, String>
   Ok(client)
 }
 
-/// The URL: a constant, or a String variable read at activation.
+/// The url: a constant, or a String variable read at activation.
 pub enum Url {
   Const(String),
   Bound(Binding),
@@ -83,7 +83,7 @@ pub struct GetCompiled {
   timeout: Duration,
 }
 
-/// `Http.Get(URL [Timeout])`: GETs `URL` and outputs the body as a String.
+/// `Http.Get(url [timeout])`: GETs `url` and outputs the body as a String.
 /// Fails on a connection error, a timeout (default 10 s), or a non-success
 /// status (with the body in the error).
 pub struct Get;
@@ -92,7 +92,7 @@ pub struct Get;
 /// catalog documents them.
 pub static GET_PARAMS: &[ParamDecl] = &[
   ParamDecl {
-    name: "URL",
+    name: "url",
     help: shard_doc!(
       "The URL to request: a String literal, or a String variable read at activation."
     ),
@@ -102,9 +102,9 @@ pub static GET_PARAMS: &[ParamDecl] = &[
     ty: None,
   },
   ParamDecl {
-    name: "Timeout",
+    name: "timeout",
     help: shard_doc!(
-      "Request timeout in seconds; must be positive. Variable timeouts are not supported yet."
+      "Request timeout in seconds; must be positive. Timeouts from variables are not supported yet."
     ),
     forms: Forms::LITERAL,
     types: &[TypeName::Int],
@@ -146,12 +146,12 @@ impl AsyncShard for Get {
   ) -> Result<Composed<GetCompiled>> {
     // Names, positions, the default, forms and literal types were checked
     // by the shared decoder; compose resolves the binding and checks values.
-    let url = match args.get("URL").expect("decoded required URL") {
+    let url = match args.get("url").expect("decoded required URL") {
       ParamValue::Value(Var::String(url)) => Url::Const(url.to_string()),
       ParamValue::Var(name) => {
         let info = ctx
           .read_var(name, GET_DESC.name)
-          .map_err(|e| e.with_param("URL", args.param_index("URL")))?;
+          .map_err(|e| e.with_param("url", args.param_index("url")))?;
         if info.ty != Type::string() {
           return Err(Error::Diagnostic(Box::new(
             Diagnostic::new(
@@ -161,7 +161,7 @@ impl AsyncShard for Get {
               format!("URL variable {name} must be a String, got {}", info.ty),
             )
             .shard(GET_DESC.name)
-            .param("URL", Some(args.param_index("URL")))
+            .param("url", Some(args.param_index("url")))
             .types(
               Some(TypeRef::of(info.ty)),
               vec![TypeRef::named(TypeName::String)],
@@ -172,13 +172,13 @@ impl AsyncShard for Get {
       }
       other => unreachable!("decoder accepted {other:?} for Http.Get URL"),
     };
-    let secs = args.int("Timeout").expect("decoded Timeout");
+    let secs = args.int("timeout").expect("decoded Timeout");
     if secs <= 0 {
       return Err(compose_error(
         "invalid-argument-value",
         format!("Timeout must be positive, got {secs}"),
-        "Timeout",
-        args.param_index("Timeout"),
+        "timeout",
+        args.param_index("timeout"),
       ));
     }
     Ok(Composed {

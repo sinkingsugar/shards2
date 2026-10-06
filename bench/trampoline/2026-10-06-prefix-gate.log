@@ -1,0 +1,240 @@
+trial=1 engine=old-stackless command=bench_depth args=['--stackless']
+scheduler=stackless phase=pending depth=1 instances=1000 ticks=1000 ns_per_instance_tick=42.05
+scheduler=stackless phase=completion depth=1 instances=1000 ticks=1000 ns_per_instance_tick=61.40
+scheduler=stackless phase=pending depth=4 instances=1000 ticks=1000 ns_per_instance_tick=73.95
+scheduler=stackless phase=completion depth=4 instances=1000 ticks=1000 ns_per_instance_tick=126.21
+scheduler=stackless phase=pending depth=16 instances=1000 ticks=1000 ns_per_instance_tick=374.91
+scheduler=stackless phase=completion depth=16 instances=1000 ticks=1000 ns_per_instance_tick=455.88
+scheduler=stackless phase=pending depth=32 instances=1000 ticks=1000 ns_per_instance_tick=782.93
+scheduler=stackless phase=completion depth=32 instances=1000 ticks=1000 ns_per_instance_tick=916.60
+trial=1 engine=old-stackless command=bench_depth args=['--progress', '--stackless']
+scheduler=stackless phase=progress depth=1 instances=1000 ticks=1000 ns_per_instance_tick=116.44
+scheduler=stackless phase=progress depth=4 instances=1000 ticks=1000 ns_per_instance_tick=143.07
+scheduler=stackless phase=progress depth=16 instances=1000 ticks=1000 ns_per_instance_tick=309.81
+scheduler=stackless phase=progress depth=32 instances=1000 ticks=1000 ns_per_instance_tick=543.82
+trial=1 engine=old-stackless command=bench_instances args=['1000', '--stackless']
+scheduler=stackless instances=1000 compile_ms=0.105 spawn_ms=0.187 ready_ms=1.145 us_per_instance=1.15 tick_us=106.63 ns_per_instance_tick=106.6 iterations=500000 rss_kb_per_instance=1.46 heap_kb_per_instance=1.25 non_heap_kb_per_instance=0.21 state_bytes_per_instance=978 stack_reserved_kb=0 wire_composes=2 shard_composes=19 var_bytes=24
+trial=1 engine=stackful command=bench_depth args=[]
+scheduler=stackful phase=pending depth=1 instances=1000 ticks=1000 ns_per_instance_tick=51.79
+scheduler=stackful phase=completion depth=1 instances=1000 ticks=1000 ns_per_instance_tick=101.74
+scheduler=stackful phase=pending depth=4 instances=1000 ticks=1000 ns_per_instance_tick=53.02
+scheduler=stackful phase=completion depth=4 instances=1000 ticks=1000 ns_per_instance_tick=154.27
+scheduler=stackful phase=pending depth=16 instances=1000 ticks=1000 ns_per_instance_tick=51.20
+scheduler=stackful phase=completion depth=16 instances=1000 ticks=1000 ns_per_instance_tick=355.36
+scheduler=stackful phase=pending depth=32 instances=1000 ticks=1000 ns_per_instance_tick=50.85
+scheduler=stackful phase=completion depth=32 instances=1000 ticks=1000 ns_per_instance_tick=669.56
+trial=1 engine=stackful command=bench_depth args=['--progress']
+scheduler=stackful phase=progress depth=1 instances=1000 ticks=1000 ns_per_instance_tick=122.73
+scheduler=stackful phase=progress depth=4 instances=1000 ticks=1000 ns_per_instance_tick=119.50
+scheduler=stackful phase=progress depth=16 instances=1000 ticks=1000 ns_per_instance_tick=119.11
+scheduler=stackful phase=progress depth=32 instances=1000 ticks=1000 ns_per_instance_tick=123.72
+trial=1 engine=stackful command=bench_instances args=['1000']
+scheduler=stackful instances=1000 compile_ms=0.118 spawn_ms=4.273 ready_ms=5.276 us_per_instance=5.28 tick_us=142.88 ns_per_instance_tick=142.9 iterations=500000 rss_kb_per_instance=5.27 heap_kb_per_instance=1.05 non_heap_kb_per_instance=4.22 state_bytes_per_instance=666 stack_reserved_kb=128 wire_composes=2 shard_composes=19 var_bytes=24
+trial=1 engine=trampoline command=bench_depth args=['--stackless']
+scheduler=stackless phase=pending depth=1 instances=1000 ticks=1000 ns_per_instance_tick=15.12
+scheduler=stackless phase=completion depth=1 instances=1000 ticks=1000 ns_per_instance_tick=66.42
+scheduler=stackless phase=pending depth=4 instances=1000 ticks=1000 ns_per_instance_tick=15.03
+scheduler=stackless phase=completion depth=4 instances=1000 ticks=1000 ns_per_instance_tick=124.88
+scheduler=stackless phase=pending depth=16 instances=1000 ticks=1000 ns_per_instance_tick=14.63
+scheduler=stackless phase=completion depth=16 instances=1000 ticks=1000 ns_per_instance_tick=361.37
+scheduler=stackless phase=pending depth=32 instances=1000 ticks=1000 ns_per_instance_tick=15.12
+scheduler=stackless phase=completion depth=32 instances=1000 ticks=1000 ns_per_instance_tick=635.26
+trial=1 engine=trampoline command=bench_depth args=['--progress', '--stackless']
+scheduler=stackless phase=progress depth=1 instances=1000 ticks=1000 ns_per_instance_tick=94.73
+scheduler=stackless phase=progress depth=4 instances=1000 ticks=1000 ns_per_instance_tick=93.78
+scheduler=stackless phase=progress depth=16 instances=1000 ticks=1000 ns_per_instance_tick=95.55
+scheduler=stackless phase=progress depth=32 instances=1000 ticks=1000 ns_per_instance_tick=96.80
+trial=1 engine=trampoline command=bench_instances args=['1000', '--stackless']
+scheduler=stackless instances=1000 compile_ms=0.063 spawn_ms=0.220 ready_ms=2.130 us_per_instance=2.13 tick_us=104.98 ns_per_instance_tick=105.0 iterations=500000 rss_kb_per_instance=1.83 heap_kb_per_instance=1.53 non_heap_kb_per_instance=0.30 state_bytes_per_instance=1306 stack_reserved_kb=0 wire_composes=2 shard_composes=19 var_bytes=24
+trial=2 engine=old-stackless command=bench_depth args=['--stackless']
+scheduler=stackless phase=pending depth=1 instances=1000 ticks=1000 ns_per_instance_tick=35.83
+scheduler=stackless phase=completion depth=1 instances=1000 ticks=1000 ns_per_instance_tick=62.04
+scheduler=stackless phase=pending depth=4 instances=1000 ticks=1000 ns_per_instance_tick=68.86
+scheduler=stackless phase=completion depth=4 instances=1000 ticks=1000 ns_per_instance_tick=114.79
+scheduler=stackless phase=pending depth=16 instances=1000 ticks=1000 ns_per_instance_tick=237.34
+scheduler=stackless phase=completion depth=16 instances=1000 ticks=1000 ns_per_instance_tick=335.17
+scheduler=stackless phase=pending depth=32 instances=1000 ticks=1000 ns_per_instance_tick=438.76
+scheduler=stackless phase=completion depth=32 instances=1000 ticks=1000 ns_per_instance_tick=656.47
+trial=2 engine=old-stackless command=bench_depth args=['--progress', '--stackless']
+scheduler=stackless phase=progress depth=1 instances=1000 ticks=1000 ns_per_instance_tick=115.08
+scheduler=stackless phase=progress depth=4 instances=1000 ticks=1000 ns_per_instance_tick=140.28
+scheduler=stackless phase=progress depth=16 instances=1000 ticks=1000 ns_per_instance_tick=308.69
+scheduler=stackless phase=progress depth=32 instances=1000 ticks=1000 ns_per_instance_tick=530.24
+trial=2 engine=old-stackless command=bench_instances args=['1000', '--stackless']
+scheduler=stackless instances=1000 compile_ms=0.077 spawn_ms=0.134 ready_ms=0.814 us_per_instance=0.81 tick_us=99.26 ns_per_instance_tick=99.3 iterations=500000 rss_kb_per_instance=1.46 heap_kb_per_instance=1.25 non_heap_kb_per_instance=0.21 state_bytes_per_instance=978 stack_reserved_kb=0 wire_composes=2 shard_composes=19 var_bytes=24
+trial=2 engine=trampoline command=bench_depth args=['--stackless']
+scheduler=stackless phase=pending depth=1 instances=1000 ticks=1000 ns_per_instance_tick=14.77
+scheduler=stackless phase=completion depth=1 instances=1000 ticks=1000 ns_per_instance_tick=64.50
+scheduler=stackless phase=pending depth=4 instances=1000 ticks=1000 ns_per_instance_tick=14.93
+scheduler=stackless phase=completion depth=4 instances=1000 ticks=1000 ns_per_instance_tick=120.82
+scheduler=stackless phase=pending depth=16 instances=1000 ticks=1000 ns_per_instance_tick=14.52
+scheduler=stackless phase=completion depth=16 instances=1000 ticks=1000 ns_per_instance_tick=347.23
+scheduler=stackless phase=pending depth=32 instances=1000 ticks=1000 ns_per_instance_tick=14.60
+scheduler=stackless phase=completion depth=32 instances=1000 ticks=1000 ns_per_instance_tick=623.70
+trial=2 engine=trampoline command=bench_depth args=['--progress', '--stackless']
+scheduler=stackless phase=progress depth=1 instances=1000 ticks=1000 ns_per_instance_tick=93.92
+scheduler=stackless phase=progress depth=4 instances=1000 ticks=1000 ns_per_instance_tick=93.19
+scheduler=stackless phase=progress depth=16 instances=1000 ticks=1000 ns_per_instance_tick=95.96
+scheduler=stackless phase=progress depth=32 instances=1000 ticks=1000 ns_per_instance_tick=98.49
+trial=2 engine=trampoline command=bench_instances args=['1000', '--stackless']
+scheduler=stackless instances=1000 compile_ms=0.064 spawn_ms=0.238 ready_ms=2.159 us_per_instance=2.16 tick_us=111.38 ns_per_instance_tick=111.4 iterations=500000 rss_kb_per_instance=1.83 heap_kb_per_instance=1.53 non_heap_kb_per_instance=0.30 state_bytes_per_instance=1306 stack_reserved_kb=0 wire_composes=2 shard_composes=19 var_bytes=24
+trial=2 engine=stackful command=bench_depth args=[]
+scheduler=stackful phase=pending depth=1 instances=1000 ticks=1000 ns_per_instance_tick=51.68
+scheduler=stackful phase=completion depth=1 instances=1000 ticks=1000 ns_per_instance_tick=102.17
+scheduler=stackful phase=pending depth=4 instances=1000 ticks=1000 ns_per_instance_tick=53.53
+scheduler=stackful phase=completion depth=4 instances=1000 ticks=1000 ns_per_instance_tick=153.74
+scheduler=stackful phase=pending depth=16 instances=1000 ticks=1000 ns_per_instance_tick=51.51
+scheduler=stackful phase=completion depth=16 instances=1000 ticks=1000 ns_per_instance_tick=348.92
+scheduler=stackful phase=pending depth=32 instances=1000 ticks=1000 ns_per_instance_tick=52.14
+scheduler=stackful phase=completion depth=32 instances=1000 ticks=1000 ns_per_instance_tick=665.54
+trial=2 engine=stackful command=bench_depth args=['--progress']
+scheduler=stackful phase=progress depth=1 instances=1000 ticks=1000 ns_per_instance_tick=122.15
+scheduler=stackful phase=progress depth=4 instances=1000 ticks=1000 ns_per_instance_tick=119.31
+scheduler=stackful phase=progress depth=16 instances=1000 ticks=1000 ns_per_instance_tick=118.47
+scheduler=stackful phase=progress depth=32 instances=1000 ticks=1000 ns_per_instance_tick=122.62
+trial=2 engine=stackful command=bench_instances args=['1000']
+scheduler=stackful instances=1000 compile_ms=0.110 spawn_ms=4.323 ready_ms=5.313 us_per_instance=5.31 tick_us=131.76 ns_per_instance_tick=131.8 iterations=500000 rss_kb_per_instance=5.27 heap_kb_per_instance=1.05 non_heap_kb_per_instance=4.22 state_bytes_per_instance=666 stack_reserved_kb=128 wire_composes=2 shard_composes=19 var_bytes=24
+trial=3 engine=trampoline command=bench_depth args=['--stackless']
+scheduler=stackless phase=pending depth=1 instances=1000 ticks=1000 ns_per_instance_tick=21.36
+scheduler=stackless phase=completion depth=1 instances=1000 ticks=1000 ns_per_instance_tick=67.32
+scheduler=stackless phase=pending depth=4 instances=1000 ticks=1000 ns_per_instance_tick=14.79
+scheduler=stackless phase=completion depth=4 instances=1000 ticks=1000 ns_per_instance_tick=124.47
+scheduler=stackless phase=pending depth=16 instances=1000 ticks=1000 ns_per_instance_tick=14.56
+scheduler=stackless phase=completion depth=16 instances=1000 ticks=1000 ns_per_instance_tick=355.17
+scheduler=stackless phase=pending depth=32 instances=1000 ticks=1000 ns_per_instance_tick=14.65
+scheduler=stackless phase=completion depth=32 instances=1000 ticks=1000 ns_per_instance_tick=612.91
+trial=3 engine=trampoline command=bench_depth args=['--progress', '--stackless']
+scheduler=stackless phase=progress depth=1 instances=1000 ticks=1000 ns_per_instance_tick=99.93
+scheduler=stackless phase=progress depth=4 instances=1000 ticks=1000 ns_per_instance_tick=91.10
+scheduler=stackless phase=progress depth=16 instances=1000 ticks=1000 ns_per_instance_tick=92.25
+scheduler=stackless phase=progress depth=32 instances=1000 ticks=1000 ns_per_instance_tick=98.13
+trial=3 engine=trampoline command=bench_instances args=['1000', '--stackless']
+scheduler=stackless instances=1000 compile_ms=0.068 spawn_ms=0.247 ready_ms=2.184 us_per_instance=2.18 tick_us=103.59 ns_per_instance_tick=103.6 iterations=500000 rss_kb_per_instance=1.83 heap_kb_per_instance=1.53 non_heap_kb_per_instance=0.30 state_bytes_per_instance=1306 stack_reserved_kb=0 wire_composes=2 shard_composes=19 var_bytes=24
+trial=3 engine=old-stackless command=bench_depth args=['--stackless']
+scheduler=stackless phase=pending depth=1 instances=1000 ticks=1000 ns_per_instance_tick=42.30
+scheduler=stackless phase=completion depth=1 instances=1000 ticks=1000 ns_per_instance_tick=60.27
+scheduler=stackless phase=pending depth=4 instances=1000 ticks=1000 ns_per_instance_tick=64.83
+scheduler=stackless phase=completion depth=4 instances=1000 ticks=1000 ns_per_instance_tick=112.86
+scheduler=stackless phase=pending depth=16 instances=1000 ticks=1000 ns_per_instance_tick=236.96
+scheduler=stackless phase=completion depth=16 instances=1000 ticks=1000 ns_per_instance_tick=393.93
+scheduler=stackless phase=pending depth=32 instances=1000 ticks=1000 ns_per_instance_tick=774.24
+scheduler=stackless phase=completion depth=32 instances=1000 ticks=1000 ns_per_instance_tick=934.33
+trial=3 engine=old-stackless command=bench_depth args=['--progress', '--stackless']
+scheduler=stackless phase=progress depth=1 instances=1000 ticks=1000 ns_per_instance_tick=115.13
+scheduler=stackless phase=progress depth=4 instances=1000 ticks=1000 ns_per_instance_tick=137.83
+scheduler=stackless phase=progress depth=16 instances=1000 ticks=1000 ns_per_instance_tick=306.79
+scheduler=stackless phase=progress depth=32 instances=1000 ticks=1000 ns_per_instance_tick=531.97
+trial=3 engine=old-stackless command=bench_instances args=['1000', '--stackless']
+scheduler=stackless instances=1000 compile_ms=0.074 spawn_ms=0.128 ready_ms=0.788 us_per_instance=0.79 tick_us=105.55 ns_per_instance_tick=105.5 iterations=500000 rss_kb_per_instance=1.46 heap_kb_per_instance=1.25 non_heap_kb_per_instance=0.21 state_bytes_per_instance=978 stack_reserved_kb=0 wire_composes=2 shard_composes=19 var_bytes=24
+trial=3 engine=stackful command=bench_depth args=[]
+scheduler=stackful phase=pending depth=1 instances=1000 ticks=1000 ns_per_instance_tick=52.57
+scheduler=stackful phase=completion depth=1 instances=1000 ticks=1000 ns_per_instance_tick=124.92
+scheduler=stackful phase=pending depth=4 instances=1000 ticks=1000 ns_per_instance_tick=54.72
+scheduler=stackful phase=completion depth=4 instances=1000 ticks=1000 ns_per_instance_tick=237.73
+scheduler=stackful phase=pending depth=16 instances=1000 ticks=1000 ns_per_instance_tick=51.67
+scheduler=stackful phase=completion depth=16 instances=1000 ticks=1000 ns_per_instance_tick=585.96
+scheduler=stackful phase=pending depth=32 instances=1000 ticks=1000 ns_per_instance_tick=51.37
+scheduler=stackful phase=completion depth=32 instances=1000 ticks=1000 ns_per_instance_tick=1118.74
+trial=3 engine=stackful command=bench_depth args=['--progress']
+scheduler=stackful phase=progress depth=1 instances=1000 ticks=1000 ns_per_instance_tick=120.89
+scheduler=stackful phase=progress depth=4 instances=1000 ticks=1000 ns_per_instance_tick=117.86
+scheduler=stackful phase=progress depth=16 instances=1000 ticks=1000 ns_per_instance_tick=117.63
+scheduler=stackful phase=progress depth=32 instances=1000 ticks=1000 ns_per_instance_tick=121.86
+trial=3 engine=stackful command=bench_instances args=['1000']
+scheduler=stackful instances=1000 compile_ms=0.083 spawn_ms=2.626 ready_ms=3.369 us_per_instance=3.37 tick_us=132.03 ns_per_instance_tick=132.0 iterations=500000 rss_kb_per_instance=5.27 heap_kb_per_instance=1.05 non_heap_kb_per_instance=4.22 state_bytes_per_instance=666 stack_reserved_kb=128 wire_composes=2 shard_composes=19 var_bytes=24
+trial=4 engine=trampoline command=bench_depth args=['--stackless']
+scheduler=stackless phase=pending depth=1 instances=1000 ticks=1000 ns_per_instance_tick=21.41
+scheduler=stackless phase=completion depth=1 instances=1000 ticks=1000 ns_per_instance_tick=65.36
+scheduler=stackless phase=pending depth=4 instances=1000 ticks=1000 ns_per_instance_tick=14.59
+scheduler=stackless phase=completion depth=4 instances=1000 ticks=1000 ns_per_instance_tick=122.94
+scheduler=stackless phase=pending depth=16 instances=1000 ticks=1000 ns_per_instance_tick=15.26
+scheduler=stackless phase=completion depth=16 instances=1000 ticks=1000 ns_per_instance_tick=352.03
+scheduler=stackless phase=pending depth=32 instances=1000 ticks=1000 ns_per_instance_tick=14.66
+scheduler=stackless phase=completion depth=32 instances=1000 ticks=1000 ns_per_instance_tick=620.61
+trial=4 engine=trampoline command=bench_depth args=['--progress', '--stackless']
+scheduler=stackless phase=progress depth=1 instances=1000 ticks=1000 ns_per_instance_tick=91.98
+scheduler=stackless phase=progress depth=4 instances=1000 ticks=1000 ns_per_instance_tick=91.85
+scheduler=stackless phase=progress depth=16 instances=1000 ticks=1000 ns_per_instance_tick=93.03
+scheduler=stackless phase=progress depth=32 instances=1000 ticks=1000 ns_per_instance_tick=96.20
+trial=4 engine=trampoline command=bench_instances args=['1000', '--stackless']
+scheduler=stackless instances=1000 compile_ms=0.064 spawn_ms=0.174 ready_ms=1.454 us_per_instance=1.45 tick_us=103.78 ns_per_instance_tick=103.8 iterations=500000 rss_kb_per_instance=1.83 heap_kb_per_instance=1.53 non_heap_kb_per_instance=0.30 state_bytes_per_instance=1306 stack_reserved_kb=0 wire_composes=2 shard_composes=19 var_bytes=24
+trial=4 engine=stackful command=bench_depth args=[]
+scheduler=stackful phase=pending depth=1 instances=1000 ticks=1000 ns_per_instance_tick=51.90
+scheduler=stackful phase=completion depth=1 instances=1000 ticks=1000 ns_per_instance_tick=100.66
+scheduler=stackful phase=pending depth=4 instances=1000 ticks=1000 ns_per_instance_tick=54.01
+scheduler=stackful phase=completion depth=4 instances=1000 ticks=1000 ns_per_instance_tick=151.93
+scheduler=stackful phase=pending depth=16 instances=1000 ticks=1000 ns_per_instance_tick=53.03
+scheduler=stackful phase=completion depth=16 instances=1000 ticks=1000 ns_per_instance_tick=354.68
+scheduler=stackful phase=pending depth=32 instances=1000 ticks=1000 ns_per_instance_tick=51.09
+scheduler=stackful phase=completion depth=32 instances=1000 ticks=1000 ns_per_instance_tick=670.61
+trial=4 engine=stackful command=bench_depth args=['--progress']
+scheduler=stackful phase=progress depth=1 instances=1000 ticks=1000 ns_per_instance_tick=120.33
+scheduler=stackful phase=progress depth=4 instances=1000 ticks=1000 ns_per_instance_tick=118.53
+scheduler=stackful phase=progress depth=16 instances=1000 ticks=1000 ns_per_instance_tick=120.03
+scheduler=stackful phase=progress depth=32 instances=1000 ticks=1000 ns_per_instance_tick=121.50
+trial=4 engine=stackful command=bench_instances args=['1000']
+scheduler=stackful instances=1000 compile_ms=0.110 spawn_ms=2.366 ready_ms=3.116 us_per_instance=3.12 tick_us=133.93 ns_per_instance_tick=133.9 iterations=500000 rss_kb_per_instance=5.27 heap_kb_per_instance=1.05 non_heap_kb_per_instance=4.22 state_bytes_per_instance=666 stack_reserved_kb=128 wire_composes=2 shard_composes=19 var_bytes=24
+trial=4 engine=old-stackless command=bench_depth args=['--stackless']
+scheduler=stackless phase=pending depth=1 instances=1000 ticks=1000 ns_per_instance_tick=39.87
+scheduler=stackless phase=completion depth=1 instances=1000 ticks=1000 ns_per_instance_tick=60.75
+scheduler=stackless phase=pending depth=4 instances=1000 ticks=1000 ns_per_instance_tick=64.48
+scheduler=stackless phase=completion depth=4 instances=1000 ticks=1000 ns_per_instance_tick=113.66
+scheduler=stackless phase=pending depth=16 instances=1000 ticks=1000 ns_per_instance_tick=235.87
+scheduler=stackless phase=completion depth=16 instances=1000 ticks=1000 ns_per_instance_tick=328.87
+scheduler=stackless phase=pending depth=32 instances=1000 ticks=1000 ns_per_instance_tick=435.84
+scheduler=stackless phase=completion depth=32 instances=1000 ticks=1000 ns_per_instance_tick=662.41
+trial=4 engine=old-stackless command=bench_depth args=['--progress', '--stackless']
+scheduler=stackless phase=progress depth=1 instances=1000 ticks=1000 ns_per_instance_tick=112.49
+scheduler=stackless phase=progress depth=4 instances=1000 ticks=1000 ns_per_instance_tick=139.42
+scheduler=stackless phase=progress depth=16 instances=1000 ticks=1000 ns_per_instance_tick=309.95
+scheduler=stackless phase=progress depth=32 instances=1000 ticks=1000 ns_per_instance_tick=527.45
+trial=4 engine=old-stackless command=bench_instances args=['1000', '--stackless']
+scheduler=stackless instances=1000 compile_ms=0.115 spawn_ms=0.139 ready_ms=0.836 us_per_instance=0.84 tick_us=101.59 ns_per_instance_tick=101.6 iterations=500000 rss_kb_per_instance=1.46 heap_kb_per_instance=1.25 non_heap_kb_per_instance=0.21 state_bytes_per_instance=978 stack_reserved_kb=0 wire_composes=2 shard_composes=19 var_bytes=24
+trial=5 engine=stackful command=bench_depth args=[]
+scheduler=stackful phase=pending depth=1 instances=1000 ticks=1000 ns_per_instance_tick=49.06
+scheduler=stackful phase=completion depth=1 instances=1000 ticks=1000 ns_per_instance_tick=99.16
+scheduler=stackful phase=pending depth=4 instances=1000 ticks=1000 ns_per_instance_tick=54.68
+scheduler=stackful phase=completion depth=4 instances=1000 ticks=1000 ns_per_instance_tick=152.06
+scheduler=stackful phase=pending depth=16 instances=1000 ticks=1000 ns_per_instance_tick=49.96
+scheduler=stackful phase=completion depth=16 instances=1000 ticks=1000 ns_per_instance_tick=353.90
+scheduler=stackful phase=pending depth=32 instances=1000 ticks=1000 ns_per_instance_tick=52.33
+scheduler=stackful phase=completion depth=32 instances=1000 ticks=1000 ns_per_instance_tick=680.30
+trial=5 engine=stackful command=bench_depth args=['--progress']
+scheduler=stackful phase=progress depth=1 instances=1000 ticks=1000 ns_per_instance_tick=122.93
+scheduler=stackful phase=progress depth=4 instances=1000 ticks=1000 ns_per_instance_tick=118.70
+scheduler=stackful phase=progress depth=16 instances=1000 ticks=1000 ns_per_instance_tick=117.48
+scheduler=stackful phase=progress depth=32 instances=1000 ticks=1000 ns_per_instance_tick=121.96
+trial=5 engine=stackful command=bench_instances args=['1000']
+scheduler=stackful instances=1000 compile_ms=0.115 spawn_ms=2.297 ready_ms=3.119 us_per_instance=3.12 tick_us=133.48 ns_per_instance_tick=133.5 iterations=500000 rss_kb_per_instance=5.27 heap_kb_per_instance=1.05 non_heap_kb_per_instance=4.22 state_bytes_per_instance=666 stack_reserved_kb=128 wire_composes=2 shard_composes=19 var_bytes=24
+trial=5 engine=trampoline command=bench_depth args=['--stackless']
+scheduler=stackless phase=pending depth=1 instances=1000 ticks=1000 ns_per_instance_tick=21.27
+scheduler=stackless phase=completion depth=1 instances=1000 ticks=1000 ns_per_instance_tick=66.75
+scheduler=stackless phase=pending depth=4 instances=1000 ticks=1000 ns_per_instance_tick=14.70
+scheduler=stackless phase=completion depth=4 instances=1000 ticks=1000 ns_per_instance_tick=122.30
+scheduler=stackless phase=pending depth=16 instances=1000 ticks=1000 ns_per_instance_tick=14.76
+scheduler=stackless phase=completion depth=16 instances=1000 ticks=1000 ns_per_instance_tick=351.78
+scheduler=stackless phase=pending depth=32 instances=1000 ticks=1000 ns_per_instance_tick=14.77
+scheduler=stackless phase=completion depth=32 instances=1000 ticks=1000 ns_per_instance_tick=614.73
+trial=5 engine=trampoline command=bench_depth args=['--progress', '--stackless']
+scheduler=stackless phase=progress depth=1 instances=1000 ticks=1000 ns_per_instance_tick=102.64
+scheduler=stackless phase=progress depth=4 instances=1000 ticks=1000 ns_per_instance_tick=95.50
+scheduler=stackless phase=progress depth=16 instances=1000 ticks=1000 ns_per_instance_tick=94.54
+scheduler=stackless phase=progress depth=32 instances=1000 ticks=1000 ns_per_instance_tick=97.58
+trial=5 engine=trampoline command=bench_instances args=['1000', '--stackless']
+scheduler=stackless instances=1000 compile_ms=0.062 spawn_ms=0.232 ready_ms=2.074 us_per_instance=2.07 tick_us=110.87 ns_per_instance_tick=110.9 iterations=500000 rss_kb_per_instance=1.83 heap_kb_per_instance=1.53 non_heap_kb_per_instance=0.30 state_bytes_per_instance=1306 stack_reserved_kb=0 wire_composes=2 shard_composes=19 var_bytes=24
+trial=5 engine=old-stackless command=bench_depth args=['--stackless']
+scheduler=stackless phase=pending depth=1 instances=1000 ticks=1000 ns_per_instance_tick=48.63
+scheduler=stackless phase=completion depth=1 instances=1000 ticks=1000 ns_per_instance_tick=67.25
+scheduler=stackless phase=pending depth=4 instances=1000 ticks=1000 ns_per_instance_tick=70.36
+scheduler=stackless phase=completion depth=4 instances=1000 ticks=1000 ns_per_instance_tick=115.71
+scheduler=stackless phase=pending depth=16 instances=1000 ticks=1000 ns_per_instance_tick=236.96
+scheduler=stackless phase=completion depth=16 instances=1000 ticks=1000 ns_per_instance_tick=332.56
+scheduler=stackless phase=pending depth=32 instances=1000 ticks=1000 ns_per_instance_tick=438.92
+scheduler=stackless phase=completion depth=32 instances=1000 ticks=1000 ns_per_instance_tick=650.06
+trial=5 engine=old-stackless command=bench_depth args=['--progress', '--stackless']
+scheduler=stackless phase=progress depth=1 instances=1000 ticks=1000 ns_per_instance_tick=112.57
+scheduler=stackless phase=progress depth=4 instances=1000 ticks=1000 ns_per_instance_tick=142.27
+scheduler=stackless phase=progress depth=16 instances=1000 ticks=1000 ns_per_instance_tick=303.48
+scheduler=stackless phase=progress depth=32 instances=1000 ticks=1000 ns_per_instance_tick=535.53
+trial=5 engine=old-stackless command=bench_instances args=['1000', '--stackless']
+scheduler=stackless instances=1000 compile_ms=0.107 spawn_ms=0.187 ready_ms=1.178 us_per_instance=1.18 tick_us=107.33 ns_per_instance_tick=107.3 iterations=500000 rss_kb_per_instance=1.46 heap_kb_per_instance=1.25 non_heap_kb_per_instance=0.21 state_bytes_per_instance=978 stack_reserved_kb=0 wire_composes=2 shard_composes=19 var_bytes=24

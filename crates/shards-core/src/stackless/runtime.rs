@@ -88,6 +88,12 @@ impl Mesh {
     self.wake_mode = mode;
   }
 
+  /// Reserves space for a known batch of additional instances without the
+  /// spare capacity of geometric growth. Does not create or activate instances.
+  pub fn reserve_instances(&mut self, additional: usize) {
+    self.instances.reserve_exact(additional);
+  }
+
   pub fn add_wire(&mut self, def: WireDef) {
     self.wires.insert(def.name.clone(), def);
   }

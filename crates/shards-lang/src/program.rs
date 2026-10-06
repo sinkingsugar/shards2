@@ -26,6 +26,8 @@ pub trait Host {
   fn compile(&mut self, name: &str) -> shards_core::Result<Self::Wire>;
   fn analysis(wire: &Self::Wire) -> &Analysis;
   fn spawn(&mut self, wire: &Self::Wire) -> shards_core::Result<InstanceId>;
+  /// Optional capacity hint for a known batch of entries. No semantic effect.
+  fn reserve_instances(&mut self, _additional: usize) {}
   fn tick(&mut self) -> usize;
   fn running(&self) -> usize;
   fn take_outcome(&mut self, id: InstanceId) -> Option<Outcome>;
@@ -34,8 +36,9 @@ pub trait Host {
 }
 
 macro_rules! host {
-  ($mesh:ty, $backend:ty) => {
+  ($mesh:ty, $backend:ty $(, $reserve:path)?) => {
     impl Host for $mesh {
+      $(fn reserve_instances(&mut self, additional: usize) { $reserve(self, additional); })?
       type Wire = std::sync::Arc<shards_core::CompiledWire<$backend>>;
       fn create() -> Self {
         <$mesh>::new()
@@ -68,7 +71,11 @@ macro_rules! host {
   };
 }
 
-host!(shards_core::Mesh, shards_core::Stackless);
+host!(
+  shards_core::Mesh,
+  shards_core::Stackless,
+  shards_core::Mesh::reserve_instances
+);
 #[cfg(stackful)]
 host!(shards_core::StackfulMesh, shards_core::Stackful);
 
@@ -375,9 +382,11 @@ impl Program {
     for def in &self.lowered.wires {
       mesh.add_wire(def.clone());
     }
-    let mut instances = Vec::new();
+    let entries = self.entries();
+    mesh.reserve_instances(entries.len());
+    let mut instances = Vec::with_capacity(entries.len());
     let mut errors = Vec::new();
-    for wire in self.entries() {
+    for wire in entries {
       match mesh.compile(&wire) {
         Ok(compiled) => match mesh.spawn(&compiled) {
           Ok(id) => instances.push((wire, id)),

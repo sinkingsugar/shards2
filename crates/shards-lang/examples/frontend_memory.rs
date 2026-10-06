@@ -62,7 +62,17 @@ fn main() {
     ));
   }
   wrapped.push_str(&format!("@wire(w{n} {{1}})\nDo(w0)"));
+  let mut entries = String::new();
+  for i in 0..64 {
+    entries.push_str(&format!("@wire(e{i} {{{i}}})\n"));
+  }
+  entries.push_str("@wire(ticker {Pause} looped: true)\n@mesh(m)\n");
+  for i in 0..64 {
+    entries.push_str(&format!("@schedule(m e{i})\n"));
+  }
+  entries.push_str("@schedule(m ticker)\n@run(m iterations: 3)");
   for (name, text, valid) in [
+    ("entries65", entries, true),
     ("do80", chain, false),
     ("when30", nested, true),
     ("wrapped_when", wrapped, true),

@@ -71,3 +71,16 @@ The unchanged five-trial run at `ab4bc6b744701b503e0524a2e1783b02dc14455c` is re
 | mixed | 112.80 | 165.40 | 118.00 |
 
 Both soft limits pass: pending is 0.305× stackful; mixed regresses 4.61%. This supersedes the exact-reservation run for the current snapshot. It does not clear the device acceptance gate.
+
+### Persistent call-site prefix follow-up
+
+The unchanged five-trial run at `c88c59ded12184fb9d0b56eb7add81bf00b104cf` is retained in `2026-10-06-prefix-gate.csv`, its raw log and metadata. All local checks and reviewer tests finished before sampling. Medians (ns/instance/tick):
+
+| Workload | M3 stackless | Stackful | Trampoline |
+|---|---:|---:|---:|
+| pending (depth 32) | 438.92 | 51.37 | 14.66 |
+| completion (depth 32) | 662.41 | 670.61 | 620.61 |
+| progress (depth 32) | 531.97 | 121.96 | 97.58 |
+| mixed | 105.50 | 133.50 | 105.00 |
+
+Both limits pass: pending is 0.285× stackful; mixed is 0.995× M3 stackless (no regression in this run). Absolute timings vary on the unpinned workstation; compare engines within each alternating run. This supersedes the shared-metadata run for the current snapshot. Device clearance remains a separate requirement.

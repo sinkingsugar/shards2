@@ -19,6 +19,7 @@ This repository should be usable without previous chat history or private agent 
 
 ## Read first
 
+- `docs/golden-path.md`: the approved plan for the current work (functions, scope, the stackless engine, values). It is the contract for milestones M0 to M7 and overrides older statements in the documents below where they conflict.
 - `docs/shards-2-compose-split.md`: the design and the source of truth for the core model. Read it before changing core code.
 - `docs/prototype-shard-contract.md`: the shard contract (the decisions that replace 1.x's `shards.h`).
 - `docs/stackless-experiment.md`: the two schedulers, their trade-offs, the shared shard APIs, and the matched benchmarks against 1.x.
@@ -33,7 +34,7 @@ This repository should be usable without previous chat history or private agent 
 - `crates/shards-io`: I/O shards (`Http.Get`) on a shared Tokio runtime, following 1.x's HTTP module. Native only.
 - `crates/shards-lang`: the language frontend: hand-written lexer and parser with spans, lowering to `WireDef`/`ShardDef` with a source map, and `check`/`run` on either scheduler (`docs/surface-syntax-review.md`).
 - `crates/shards-cli`: the `shards2` command (`check [--json]`, `run`, `watch`, `describe`, `search`, `catalog`; `--stackful` selects the other scheduler).
-- `bench/`: benchmarks matched with 1.x (`shards-1x/`, `http-concurrency/`).
+- `bench/`: benchmarks matched with 1.x (`shards-1x/`, `http-concurrency/`), and the authoring eval (`authoring/`, golden path §8; a workspace member, not implemented yet).
 - `examples/esp32`: ESP-IDF firmware embedding the core and frontend on the stackless scheduler; a separate workspace with its own lockfile (`docs/esp32.md`).
 
 ## Core rules

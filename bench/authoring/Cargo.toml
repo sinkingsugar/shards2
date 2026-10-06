@@ -1,0 +1,13 @@
+[package]
+name = "authoring-eval"
+description = "Authoring eval runner for Shards 2.0 (golden-path.md §8); not implemented yet"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]

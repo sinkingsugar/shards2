@@ -2,7 +2,7 @@
 
 A new Rust implementation of the [Shards](https://github.com/fragcolor-xyz/shards) runtime.
 
-**Status:** core prototype complete (2026-10-04). `crates/shards-core` implements the compiled/state split with two schedulers, **stackless (the default) and stackful**, both maintained, one per mesh. `crates/shards-io` adds real async I/O (`Http.Get`). The same acceptance suite passes on both schedulers, and on wasm for stackless. The core catalog and `Http.Get` have shared descriptions, argument decoding and structured compose diagnostics. Next: tables and type sets, then a language frontend slice measured against real scripts (see `docs/current-state.md`).
+**Status:** core prototype and language frontend working (2026-10-05): the compiled/state split with two schedulers (stackless default, stackful maintained until golden path M4), real async I/O (`Http.Get`), a hand-written frontend with `check --json`, hot reload, wasm (WASI) and ESP32 (QEMU) builds. **Next:** the language redesign in [`docs/golden-path.md`](docs/golden-path.md) (functions, scope, a direct-resume stackless engine, struct tables). Current status is in `docs/current-state.md`.
 
 ## Starting work
 
@@ -16,7 +16,8 @@ C++ libraries are still used, but called from Rust; in 1.x, C++ is the host.
 
 ## Documents
 
-- [`docs/shard-metadata-and-compose.md`](docs/shard-metadata-and-compose.md): shared descriptions, catalog, argument decoding, and diagnostics; implemented for the full core catalog and `Http.Get`.
+- [`docs/golden-path.md`](docs/golden-path.md): the executable contract for functions, scope and the stackless engine (M0-M7).
+    28	- [`docs/shard-metadata-and-compose.md`](docs/shard-metadata-and-compose.md): shared descriptions, catalog, argument decoding, and diagnostics; implemented for the full core catalog and `Http.Get`.
 
 - [`docs/shards-2-compose-split.md`](docs/shards-2-compose-split.md): the core design, the 1.x audit behind it, what carries over from 1.x, and the validation plan.
 - [`docs/prototype-shard-contract.md`](docs/prototype-shard-contract.md): the shard contract the prototype implements.

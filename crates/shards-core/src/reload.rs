@@ -23,7 +23,9 @@ pub(crate) enum SiteStep {
 pub(crate) struct InlineKey {
   pub root: Arc<WireDef>,
   pub input: Type,
-  pub path: Vec<SiteStep>,
+  // Compiled calls and registry entries share one immutable key path.
+  // Compose uses copy-on-write while extending the current site.
+  pub path: Arc<Vec<SiteStep>>,
 }
 
 #[derive(Clone, PartialEq)]

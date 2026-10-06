@@ -142,7 +142,10 @@ pub enum Dep {
   /// A mesh variable, or its absence (`found: None`).
   MeshVar { name: String, found: Option<Slot> },
   /// A wire definition referenced by name (`Do`, `Spawn`), or its absence.
-  Wire { name: String, def: Option<WireDef> },
+  Wire {
+    name: String,
+    def: Option<Arc<WireDef>>,
+  },
 }
 
 /// What compose may read besides parameters and input type.
@@ -155,7 +158,7 @@ impl Dep {
   pub(crate) fn still_valid(&self, env: &ComposeEnv<'_>) -> bool {
     match self {
       Dep::MeshVar { name, found } => env.mesh_layout.lookup(name) == *found,
-      Dep::Wire { name, def } => env.wires.get(name) == def.as_ref(),
+      Dep::Wire { name, def } => env.wires.get(name) == def.as_deref(),
     }
   }
 }
@@ -464,9 +467,9 @@ impl<B: Backend> ComposeCtx<'_, B> {
     self.depth += 1;
     let child = self.next_flow;
     self.next_flow = 0;
-    self.site.path.push(SiteStep::Flow(child));
+    Arc::make_mut(&mut self.site.path).push(SiteStep::Flow(child));
     let result = self.compose_flow_at_depth(flow, input);
-    self.site.path.pop();
+    Arc::make_mut(&mut self.site.path).pop();
     self.next_flow = child + 1;
     self.depth -= 1;
     self.diagnostic_path.truncate(path_len);
@@ -494,7 +497,7 @@ impl<B: Backend> ComposeCtx<'_, B> {
       self.cache.stats.shard_composes += 1;
       // Decode against the shard's declared parameters (the same
       // declarations its documentation is generated from), then compose.
-      self.site.path.push(SiteStep::Node(index));
+      Arc::make_mut(&mut self.site.path).push(SiteStep::Node(index));
       let saved_next = self.next_flow;
       self.next_flow = 0;
       self.diagnostic_path.push(PathStep::Shard {
@@ -532,7 +535,7 @@ impl<B: Backend> ComposeCtx<'_, B> {
         result
       });
       self.diagnostic_path.pop();
-      self.site.path.pop();
+      Arc::make_mut(&mut self.site.path).pop();
       self.next_flow = saved_next;
       let mut node_analysis = std::mem::replace(&mut self.analysis, parent_analysis);
       let composed = match composed {
@@ -586,8 +589,8 @@ impl<B: Backend> ComposeCtx<'_, B> {
     })
   }
 
-  fn wire_def(&mut self, name: &str) -> Option<WireDef> {
-    let def = self.env.wires.get(name).cloned();
+  fn wire_def(&mut self, name: &str) -> Option<Arc<WireDef>> {
+    let def = self.env.wires.get(name).cloned().map(Arc::new);
     let dep = Dep::Wire {
       name: name.to_string(),
       def: def.clone(),
@@ -646,7 +649,7 @@ impl<B: Backend> ComposeCtx<'_, B> {
     // Descendant keys include this body's identity: an old in-flight body
     // cannot accidentally select a newly rearranged descendant call site.
     if let Some(def) = self.env.wires.get(name) {
-      self.site.path.push(SiteStep::Wire(Arc::new(def.clone())));
+      Arc::make_mut(&mut self.site.path).push(SiteStep::Wire(Arc::new(def.clone())));
     }
     let result = self.compose_inline(name, input);
     self.site = key.clone();
@@ -882,7 +885,7 @@ impl<B: Backend> ComposeCache<B> {
         site: InlineKey {
           root: Arc::new(def.clone()),
           input,
-          path: Vec::new(),
+          path: Arc::default(),
         },
         next_flow: 0,
         diagnostic_path: vec![PathStep::Wire(def.name.clone())],

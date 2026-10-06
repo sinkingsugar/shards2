@@ -5,6 +5,7 @@
 
 use std::cell::Cell;
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use crate::compose::{Backend, CompiledWire, ComposeEnv, Dep, FrameLayout, WireDef};
@@ -19,13 +20,82 @@ pub(crate) enum SiteStep {
   Wire(Arc<WireDef>),
 }
 
+/// Persistent call-site path. Extending a nested call shares its ancestors;
+/// retaining every call boundary must not copy all preceding steps.
+#[derive(Clone, Default)]
+pub(crate) struct SitePath(Option<Arc<SitePathNode>>);
+
+struct SitePathNode {
+  step: SiteStep,
+  parent: SitePath,
+  len: usize,
+}
+
+impl SitePath {
+  fn len(&self) -> usize {
+    self.0.as_ref().map_or(0, |node| node.len)
+  }
+
+  pub fn push(&mut self, step: SiteStep) {
+    let len = self.len() + 1;
+    let parent = std::mem::take(self);
+    self.0 = Some(Arc::new(SitePathNode { step, parent, len }));
+  }
+
+  pub fn pop(&mut self) {
+    if let Some(node) = self.0.take() {
+      *self = node.parent.clone();
+    }
+  }
+
+  fn reversed(&self) -> impl Iterator<Item = &SiteStep> {
+    std::iter::successors(self.0.as_deref(), |node| node.parent.0.as_deref()).map(|node| &node.step)
+  }
+}
+
+impl PartialEq for SitePath {
+  fn eq(&self, other: &Self) -> bool {
+    // Order is significant; iterating both paths from leaf to root preserves
+    // structural equality without materializing either path.
+    self.len() == other.len() && self.reversed().eq(other.reversed())
+  }
+}
+impl Eq for SitePath {}
+
+impl Hash for SitePath {
+  fn hash<H: Hasher>(&self, state: &mut H) {
+    self.len().hash(state);
+    for step in self.reversed() {
+      step.hash(state);
+    }
+  }
+}
+
+impl std::fmt::Debug for SitePath {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.debug_tuple("SitePath(leaf to root)")
+      .field(&self.reversed().collect::<Vec<_>>())
+      .finish()
+  }
+}
+
+impl Drop for SitePath {
+  fn drop(&mut self) {
+    let mut tail = self.0.take();
+    while let Some(node) = tail {
+      match Arc::try_unwrap(node) {
+        Ok(mut node) => tail = node.parent.0.take(),
+        Err(_) => break, // another owner keeps the rest of this prefix alive
+      }
+    }
+  }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct InlineKey {
   pub root: Arc<WireDef>,
   pub input: Type,
-  // Compiled calls and registry entries share one immutable key path.
-  // Compose uses copy-on-write while extending the current site.
-  pub path: Arc<Vec<SiteStep>>,
+  pub path: SitePath,
 }
 
 #[derive(Clone, PartialEq)]
@@ -217,4 +287,56 @@ fn incompatibility(old: &InlineSignature, new: &InlineSignature) -> (String, Opt
     }
   }
   ("local binding contract changed".into(), None)
+}
+
+#[cfg(test)]
+mod path_tests {
+  use super::*;
+  use std::collections::hash_map::DefaultHasher;
+
+  fn hash(path: &SitePath) -> u64 {
+    let mut h = DefaultHasher::new();
+    path.hash(&mut h);
+    h.finish()
+  }
+
+  #[test]
+  fn call_paths_share_prefixes_but_compare_by_content() {
+    let mut first = SitePath::default();
+    first.push(SiteStep::Flow(0));
+    first.push(SiteStep::Node(2));
+    let saved = first.clone();
+    first.push(SiteStep::Flow(1));
+    assert!(Arc::ptr_eq(
+      first.0.as_ref().unwrap().parent.0.as_ref().unwrap(),
+      saved.0.as_ref().unwrap()
+    ));
+    assert_ne!(first, saved);
+    first.pop();
+    assert_eq!(first, saved);
+    let mut independent = SitePath::default();
+    independent.push(SiteStep::Flow(0));
+    independent.push(SiteStep::Node(2));
+    assert_eq!(independent, saved);
+    assert_eq!(hash(&independent), hash(&saved));
+    independent.pop();
+    independent.push(SiteStep::Flow(2));
+    assert_ne!(independent, saved);
+  }
+
+  #[test]
+  fn long_paths_drop_iteratively_with_shared_ancestors() {
+    let mut path = SitePath::default();
+    for i in 0..10_000 {
+      path.push(SiteStep::Node(i));
+    }
+    let saved = path.clone();
+    for i in 10_000..20_000 {
+      path.push(SiteStep::Node(i));
+    }
+    drop(path);
+    assert_eq!(saved.len(), 10_000);
+    assert_eq!(Arc::strong_count(saved.0.as_ref().unwrap()), 1);
+    drop(saved);
+  }
 }

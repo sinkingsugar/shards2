@@ -467,9 +467,9 @@ impl<B: Backend> ComposeCtx<'_, B> {
     self.depth += 1;
     let child = self.next_flow;
     self.next_flow = 0;
-    Arc::make_mut(&mut self.site.path).push(SiteStep::Flow(child));
+    self.site.path.push(SiteStep::Flow(child));
     let result = self.compose_flow_at_depth(flow, input);
-    Arc::make_mut(&mut self.site.path).pop();
+    self.site.path.pop();
     self.next_flow = child + 1;
     self.depth -= 1;
     self.diagnostic_path.truncate(path_len);
@@ -497,7 +497,7 @@ impl<B: Backend> ComposeCtx<'_, B> {
       self.cache.stats.shard_composes += 1;
       // Decode against the shard's declared parameters (the same
       // declarations its documentation is generated from), then compose.
-      Arc::make_mut(&mut self.site.path).push(SiteStep::Node(index));
+      self.site.path.push(SiteStep::Node(index));
       let saved_next = self.next_flow;
       self.next_flow = 0;
       self.diagnostic_path.push(PathStep::Shard {
@@ -535,7 +535,7 @@ impl<B: Backend> ComposeCtx<'_, B> {
         result
       });
       self.diagnostic_path.pop();
-      Arc::make_mut(&mut self.site.path).pop();
+      self.site.path.pop();
       self.next_flow = saved_next;
       let mut node_analysis = std::mem::replace(&mut self.analysis, parent_analysis);
       let composed = match composed {
@@ -649,7 +649,7 @@ impl<B: Backend> ComposeCtx<'_, B> {
     // Descendant keys include this body's identity: an old in-flight body
     // cannot accidentally select a newly rearranged descendant call site.
     if let Some(def) = self.env.wires.get(name) {
-      Arc::make_mut(&mut self.site.path).push(SiteStep::Wire(Arc::new(def.clone())));
+      self.site.path.push(SiteStep::Wire(Arc::new(def.clone())));
     }
     let result = self.compose_inline(name, input);
     self.site = key.clone();
@@ -885,7 +885,7 @@ impl<B: Backend> ComposeCache<B> {
         site: InlineKey {
           root: Arc::new(def.clone()),
           input,
-          path: Arc::default(),
+          path: Default::default(),
         },
         next_flow: 0,
         diagnostic_path: vec![PathStep::Wire(def.name.clone())],

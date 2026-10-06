@@ -18,7 +18,7 @@ Checkpoint: 2026-10-06. Check `git log` and the working tree for later changes. 
 | Milestone | Status |
 |---|---|
 | M0 docs hygiene | done (this file, `history.md`, README) |
-| M0 authoring eval | harness done: 38 tasks with references checked by `cargo test`, the `current` primer, a runner for any model CLI that judges `shards2 run --json` logs ([README](../bench/authoring/README.md)). The first Sonnet baseline (7bd1852) is superseded: it used the first primer (two misleading statements, review F5), recorded only the `sonnet` alias, and ran one trial. **Rerun pending**: corrected primer, recorded model IDs, 3 trials, Sonnet and Haiku, with `shards2` from tag `authoring-control-v1` |
+| M0 authoring eval | done: 38 tasks with references checked by `cargo test`, the `current` primer, a runner for any model CLI that judges `shards2 run --json` logs ([README](../bench/authoring/README.md)). Baseline in `bench/authoring/results/2026-10-06-baseline` (3 trials, `shards2` from tag `authoring-control-v1`, Claude Code 2.1.291): `claude-sonnet-5-5` 113 of 114 correct, 112 clean first passes; `claude-haiku-4-5-20251001` 110 of 114, 101 clean first passes. The first single-trial run is kept, superseded, in `results/2026-10-06-sonnet-primer-v1` |
 | M1 opaque collections | done: `Var::Table(Table)` with private storage, `as_table`/`as_seq`/`as_str`, `TableBuilder`, sorted iteration (`host_contract::hosts_use_opaque_collections`) |
 | M2 to M7 | not started |
 
@@ -26,11 +26,10 @@ The current syntax (`>=`, `>`, `>>`, `Do`, uppercase labels) is what the code ac
 
 ## Baseline findings
 
-From the first (superseded) Sonnet run:
-
-- The tasks are easy for Sonnet on today's syntax (one wrong output, two one-round repairs). Harder tasks are needed before the M5 rerun; the control tag keeps the old syntax runnable for their baseline.
-- Wrong output (`27-persistent-total`): a looped wire already yields once per iteration, so a `Pause` at its end makes each iteration take two ticks. The first primer's looped example showed `Pause`, and the model copied it; the primer now explains it. Decide in M4 whether a looped wire should yield both times.
-- Repairs: a variable declared inside a `Repeat` body read after it (`possibly-uninitialized`), and a variable-key `Take` giving `Int | None` that needed `ExpectInt` (the first primer said missing keys were always compile errors).
+- **Near saturation.** Sonnet failed 1 of 114 runs (an off-by-one in its loop), Haiku 4 (three logged one poll too many or too few; one FizzBuzz branch). Haiku leaves some headroom; harder tasks are still needed before the M5 rerun, and the control tag keeps the old syntax runnable to baseline them.
+- **First-pass errors** (both models, all trials) are all compose errors except one missing shard: `variable-exists` 6 times (redeclaring with `>=` where `>` was meant; relevant to M2's assignment forms), `input-type-mismatch` 3, `missing-argument` 2, `possibly-uninitialized` 2, and one each of `immutable-variable`, `too-many-arguments`, `unknown-variable`, `wrong-argument-type`. No syntax (parse) errors.
+- Haiku writes about 13 times Sonnet's output tokens (mostly thinking).
+- From the superseded run: a looped wire already yields once per iteration, so a trailing `Pause` makes each iteration take two ticks; the first primer's example showed it and the model copied it. The primer now explains it. Decide in M4 whether a looped wire should yield both times.
 
 ## Open items outside the golden path
 

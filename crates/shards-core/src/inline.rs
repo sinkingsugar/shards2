@@ -599,11 +599,27 @@ pub(crate) fn run<C: VmCalls>(
             Operand::Const(v) => v,
             Operand::Bound(b) => &*frames.slot(*b),
           };
-          scratch = data::take_value(&*value, key)?;
+          // The common reads inline (an element by index, an entry by
+          // key); the generic lookup, with its errors, stays out of line.
+          scratch = match (&*value, key) {
+            (Var::Seq(items), Var::Int(i)) if *i >= 0 && (*i as usize) < items.len() => {
+              items[*i as usize].clone()
+            }
+            (Var::Table(entries), Var::String(k)) => entries.get(k).cloned().unwrap_or(Var::None),
+            _ => data::take_value(&*value, key)?,
+          };
           value = &scratch;
         }
         Op::TakeSlot(index) => {
-          scratch = data::take_slot(&*value, *index)?;
+          // The slot read inline; the errors stay out of line.
+          let slot = match &*value {
+            Var::Table(entries) => entries.slot(*index),
+            _ => None,
+          };
+          scratch = match slot {
+            Some(v) => v.clone(),
+            None => data::take_slot(&*value, *index)?,
+          };
           value = &scratch;
         }
         Op::Push(b) => {

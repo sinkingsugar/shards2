@@ -208,7 +208,8 @@ pub(crate) fn take_slot(input: &Var, index: usize) -> Result<Var> {
   }
 }
 
-#[inline]
+/// The VM's `Take` inlines the sequence-by-index and table-by-key reads
+/// and calls this for everything else.
 pub(crate) fn take_value(input: &Var, key: &Var) -> Result<Var> {
   let index = |len: usize| match key {
     Var::Int(i) if *i >= 0 && (*i as usize) < len => Ok(*i as usize),

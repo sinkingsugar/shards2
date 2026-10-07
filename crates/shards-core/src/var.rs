@@ -302,6 +302,7 @@ impl Table {
     self.len() == 0
   }
 
+  #[inline]
   pub fn get(&self, key: &str) -> Option<&Var> {
     match &self.0 {
       TableRepr::Struct { shape, slots } => shape.index_of(key).map(|i| &slots[i]),
@@ -316,6 +317,7 @@ impl Table {
   /// entry of a map table. Compose resolves a literal key on a fixed table
   /// to its index (golden path §7.3); a map value admitted by a fixed type
   /// has exactly the type's keys, so its sorted entries are the slots.
+  #[inline]
   pub fn slot(&self, index: usize) -> Option<&Var> {
     match &self.0 {
       TableRepr::Struct { slots, .. } => slots.get(index),

@@ -46,9 +46,13 @@ fn acceptance() {
               .filter(|a| a.path().is_ident("cfg"))
               .collect();
             let name = &f.sig.ident;
-            calls.push(
-              quote! { #(#cfgs)* { println!("acceptance: {}", stringify!(#name)); #name(); std::thread::sleep(std::time::Duration::from_millis(10)); } },
-            );
+            calls.push(quote! { #(#cfgs)* {
+              // SAFETY: a query of the SDK heap.
+              let heap = unsafe { esp_idf_sys::esp_get_free_heap_size() };
+              println!("acceptance: {} (heap free {heap} B)", stringify!(#name));
+              #name();
+              std::thread::sleep(std::time::Duration::from_millis(10));
+            } });
           }
           Item::Mod(m) => {
             if let Some((_, children)) = &mut m.content {

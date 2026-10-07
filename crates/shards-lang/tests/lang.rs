@@ -1474,18 +1474,21 @@ fn entry_outcomes_survive_retirement_of_finished_records() {
   // Many one-shot entries finish on the first tick; a looped entry keeps
   // the mesh running. Finished records are drained from the mesh every
   // tick; the report still has every entry's outcome.
+  // Device-sized on ESP-IDF: 64 compiled wires and their instances exceed
+  // the classic ESP32's heap late in the suite.
+  let entries = if cfg!(target_os = "espidf") { 16 } else { 64 };
   let mut src = String::new();
-  for i in 0..64 {
+  for i in 0..entries {
     src.push_str(&format!("@wire(e{i} {{{i}}})\n"));
   }
   src.push_str("@wire(ticker {Pause} looped: true)\n@mesh(m)\n");
-  for i in 0..64 {
+  for i in 0..entries {
     src.push_str(&format!("@schedule(m e{i})\n"));
   }
   src.push_str("@schedule(m ticker)\n@run(m iterations: 3)");
   let report = run(&src, &no_defines());
   assert_eq!(report.ticks, 3);
-  for i in 0..64 {
+  for i in 0..entries {
     assert_eq!(completed(&report, &format!("e{i}")), Var::Int(i));
   }
   assert!(matches!(

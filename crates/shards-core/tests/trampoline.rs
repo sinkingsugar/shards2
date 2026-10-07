@@ -124,9 +124,17 @@ fn wire(flow: Vec<ShardDef>, looped: bool) -> WireDef {
   }
 }
 
+/// Nesting depths exercised; the device composes at most 24 flow levels
+/// (`MAX_FLOW_DEPTH` on ESP-IDF).
+const DEPTHS: [usize; 4] = if cfg!(target_os = "espidf") {
+  [1, 4, 16, 20]
+} else {
+  [1, 4, 16, 32]
+};
+
 #[test]
 fn pending_repolls_dispatch_zero_ancestors_at_every_depth() {
-  for depth in [1, 4, 16, 32] {
+  for depth in DEPTHS {
     let gate = gate();
     let mut mesh = Mesh::new();
     mesh.add_wire(wire(nested(depth), false));
@@ -209,7 +217,7 @@ fn stale_wakes_do_not_resume_cancelled_or_replacement_instances() {
 
 #[test]
 fn completing_nested_frames_dispatches_each_parent_once() {
-  for depth in [1, 4, 16, 32] {
+  for depth in DEPTHS {
     let gate = gate();
     let mut mesh = Mesh::new();
     mesh.add_wire(wire(nested(depth), true));
@@ -378,7 +386,7 @@ fn call_depth_limit_is_checked_before_entering_the_named_body() {
 
 #[test]
 fn function_frames_in_the_nesting_resume_pending_leaves_directly() {
-  for depth in [1, 4, 16, 32] {
+  for depth in DEPTHS {
     let gate = gate();
     let mut mesh = Mesh::new();
     let flow = nested_with_functions(&mut mesh, depth);

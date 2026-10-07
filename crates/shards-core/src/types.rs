@@ -66,12 +66,44 @@ impl TableType {
   }
 }
 
-#[derive(Default)]
 struct Registry {
   descs: Vec<&'static TypeDesc>,
   ids: HashMap<&'static TypeDesc, Type>,
   shapes: Vec<&'static [Arc<str>]>,
   shape_ids: HashMap<&'static [Arc<str>], Shape>,
+}
+
+/// The primitive descriptions, interned first and in this order, so their
+/// handles are constants: `Type::none()` and friends do no lookup (they
+/// are compared on activation hot paths, such as a call's input check).
+const PRIMITIVES: [TypeDesc; 10] = [
+  TypeDesc::None,
+  TypeDesc::Never,
+  TypeDesc::Any,
+  TypeDesc::Bool,
+  TypeDesc::Int,
+  TypeDesc::Float,
+  TypeDesc::Float2,
+  TypeDesc::Float3,
+  TypeDesc::Float4,
+  TypeDesc::String,
+];
+
+impl Default for Registry {
+  fn default() -> Registry {
+    let mut reg = Registry {
+      descs: Vec::new(),
+      ids: HashMap::new(),
+      shapes: Vec::new(),
+      shape_ids: HashMap::new(),
+    };
+    for (i, desc) in PRIMITIVES.iter().enumerate() {
+      let desc: &'static TypeDesc = Box::leak(Box::new(desc.clone()));
+      reg.descs.push(desc);
+      reg.ids.insert(desc, Type(i as u32));
+    }
+    reg
+  }
 }
 
 /// An interned sorted key list: the keys of a struct table (golden path
@@ -205,35 +237,36 @@ impl Type {
     registry().read().expect("type registry poisoned").descs[self.0 as usize]
   }
 
-  pub fn none() -> Type {
-    Type::intern(TypeDesc::None)
+  // The primitives are constants (see `PRIMITIVES`): no registry access.
+  pub const fn none() -> Type {
+    Type(0)
   }
-  pub fn never() -> Type {
-    Type::intern(TypeDesc::Never)
+  pub const fn never() -> Type {
+    Type(1)
   }
-  pub fn any() -> Type {
-    Type::intern(TypeDesc::Any)
+  pub const fn any() -> Type {
+    Type(2)
   }
-  pub fn bool() -> Type {
-    Type::intern(TypeDesc::Bool)
+  pub const fn bool() -> Type {
+    Type(3)
   }
-  pub fn int() -> Type {
-    Type::intern(TypeDesc::Int)
+  pub const fn int() -> Type {
+    Type(4)
   }
-  pub fn float() -> Type {
-    Type::intern(TypeDesc::Float)
+  pub const fn float() -> Type {
+    Type(5)
   }
-  pub fn float2() -> Type {
-    Type::intern(TypeDesc::Float2)
+  pub const fn float2() -> Type {
+    Type(6)
   }
-  pub fn float3() -> Type {
-    Type::intern(TypeDesc::Float3)
+  pub const fn float3() -> Type {
+    Type(7)
   }
-  pub fn float4() -> Type {
-    Type::intern(TypeDesc::Float4)
+  pub const fn float4() -> Type {
+    Type(8)
   }
-  pub fn string() -> Type {
-    Type::intern(TypeDesc::String)
+  pub const fn string() -> Type {
+    Type(9)
   }
   pub fn seq(inner: Type) -> Type {
     Type::intern(TypeDesc::Seq(inner))
@@ -329,15 +362,15 @@ impl Type {
       (TypeDesc::Table(t), Var::Table(entries)) => {
         if let (Some(expected), Some(actual)) = (t.shape, entries.shape()) {
           // A struct value of a fixed type: the shape handle says whether
-          // the keys match; the slots are checked where outputs are
-          // (debug builds and `output-checks`), as the plan allows.
+          // the keys match (no lookups), then each slot is checked. The
+          // slot check is unconditional: `set_var` and `spawn` admit host
+          // values with this, in release too.
           return expected == actual
-            && (!crate::shards::leaf::OUTPUT_CHECKS
-              || t
-                .keys
-                .iter()
-                .zip(entries.values())
-                .all(|((_, kt), v)| kt.admits(v)));
+            && t
+              .keys
+              .iter()
+              .zip(entries.values())
+              .all(|((_, kt), v)| kt.admits(v));
         }
         t.keys
           .iter()

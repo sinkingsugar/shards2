@@ -1,10 +1,11 @@
 //! Values (contract §9, docs/values-and-types.md §2, golden path §7).
 //!
-//! `Var` is 32 bytes, as 1.x's `SHVar`: on 64-bit targets it is aligned to
-//! 32 so a value in an array never straddles a cache line; on 32-bit targets
-//! it is aligned to 16, what `Float4` needs. The explicit `u8` tag keeps the
-//! layout defined (RFC 2195): the tag at offset 0, `Float4` at offset 16,
-//! and the table payload after the tag. `tests/values.rs` pins these.
+//! `Var` is 32 bytes aligned to 16, as 1.x's `SHVar` (what `Float4` needs;
+//! alignment 32 measured the same in time and cost a third more in every
+//! frame, instruction and step that holds a value, see `bench/values`). The
+//! explicit `u8` tag keeps the layout defined (RFC 2195): the tag at offset
+//! 0, `Float4` at offset 16, and the table payload after the tag.
+//! `tests/values.rs` pins these.
 
 use std::fmt;
 use std::hash::{Hash, Hasher};
@@ -14,8 +15,7 @@ use std::sync::Arc;
 use crate::types::{Shape, Type};
 
 #[derive(Clone, Debug, Default)]
-#[repr(u8)]
-#[cfg_attr(target_pointer_width = "64", repr(align(32)))]
+#[repr(u8, align(16))]
 pub enum Var {
   #[default]
   None,

@@ -197,29 +197,17 @@ impl LeafShard for Bind {
 pub struct Keep;
 
 impl LeafShard for Keep {
-  type Compiled = (Binding, Var);
-  /// Whether the initial value was applied.
-  type State = bool;
+  type Compiled = ();
+  no_state!(());
   const DESC: ShardDesc = KEEP_DESC;
 
-  fn compose(args: &Args, ctx: &mut ComposeCtx<'_>) -> Result<Composed<(Binding, Var)>> {
+  fn compose(args: &Args, ctx: &mut ComposeCtx<'_>) -> Result<Composed<()>> {
     compose_keep(args, ctx)
   }
 
-  fn instantiate(_: &(Binding, Var), _: &mut InstanceCtx) -> Result<bool> {
-    Ok(false)
-  }
-
-  fn activate(
-    (b, value): &(Binding, Var),
-    applied: &mut bool,
-    ctx: &mut impl LeafCtx,
-    input: &Var,
-  ) -> Result<Flow> {
-    if !*applied {
-      ctx.set(*b, value.clone());
-      *applied = true;
-    }
+  /// The slot already holds its value (set when the frame was created, or
+  /// carried over by a reload): nothing to do but pass the input on.
+  fn activate(_: &(), _: &mut (), _: &mut impl LeafCtx, input: &Var) -> Result<Flow> {
     Ok(Flow::Next(input.clone()))
   }
 }

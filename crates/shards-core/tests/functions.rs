@@ -954,3 +954,34 @@ fn uncalled_functions_can_be_checked_on_their_own() {
   let err = mesh.compile_function("Bad").err().expect("compose error");
   assert_eq!(err.diagnostic().unwrap().code, "unknown-variable");
 }
+
+// Golden path §3.4: a wire's ordinary locals are fresh per root iteration;
+// only `Keep` slots survive.
+#[test]
+fn a_looped_wire_starts_each_iteration_with_fresh_locals() {
+  let mut mesh = Mesh::new();
+  mesh.add_wire(wire(
+    "root",
+    true,
+    vec![
+      keep("kept", Var::Int(1)),
+      konst(Var::Seq(std::sync::Arc::new(vec![Var::Int(5); 64]))),
+      declare("scratch"),
+      inc("kept"),
+    ],
+  ));
+  let root = mesh.compile("root", Type::none()).unwrap();
+  let id = mesh.spawn(&root, Var::None).unwrap();
+  mesh.tick();
+  let locals = mesh.instance_locals(id).unwrap().to_vec();
+  assert_eq!(locals.len(), 2);
+  assert_eq!(
+    locals[0],
+    Var::Int(2),
+    "the Keep slot survives the iteration"
+  );
+  assert_eq!(locals[1], Var::None, "the scratch local is released");
+  mesh.tick();
+  assert_eq!(mesh.instance_locals(id).unwrap()[0], Var::Int(3));
+  mesh.cancel(id);
+}

@@ -63,6 +63,19 @@ impl BinOp {
       BinOp::Divide => a / b,
     }
   }
+
+  /// The same operation in f32. For these four operations the result equals
+  /// computing in f64 and rounding once (double rounding is innocuous when
+  /// the wide format has at least 2p+2 bits; f64 has 53 against f32's 24),
+  /// so the vector fast paths below agree with the component rule.
+  fn f32(self, a: f32, b: f32) -> f32 {
+    match self {
+      BinOp::Add => a + b,
+      BinOp::Subtract => a - b,
+      BinOp::Multiply => a * b,
+      BinOp::Divide => a / b,
+    }
+  }
 }
 
 /// A number's shape: Int, Float, or a float vector of a size.
@@ -152,6 +165,28 @@ pub fn arith(op: BinOp, name: &str, input: &Var, operand: &Var) -> Result<Var> {
         format!("{name}: integer overflow")
       })
     });
+  }
+  // Same-size vectors, directly in f32 (same results as the general rule).
+  match (input, operand) {
+    (Var::Float2(a), Var::Float2(b)) => {
+      return Ok(Var::float2(op.f32(a[0], b[0]), op.f32(a[1], b[1])));
+    }
+    (Var::Float3(a), Var::Float3(b)) => {
+      return Ok(Var::float3(
+        op.f32(a[0], b[0]),
+        op.f32(a[1], b[1]),
+        op.f32(a[2], b[2]),
+      ));
+    }
+    (Var::Float4(a), Var::Float4(b)) => {
+      return Ok(Var::float4(
+        op.f32(a[0], b[0]),
+        op.f32(a[1], b[1]),
+        op.f32(a[2], b[2]),
+        op.f32(a[3], b[3]),
+      ));
+    }
+    _ => {}
   }
   let mismatch = || Error::Activation(format!("{name}: operand type mismatch"));
   let (a, na) = components(input).ok_or_else(mismatch)?;

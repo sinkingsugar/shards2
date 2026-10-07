@@ -229,6 +229,7 @@ mod allocations {
   use std::alloc::{GlobalAlloc, Layout, System};
   use std::cell::Cell;
   thread_local! { static LIVE: Cell<isize> = const { Cell::new(0) }; }
+  thread_local! { static COUNT: Cell<usize> = const { Cell::new(0) }; }
   struct Count;
   // SAFETY: forwards each allocation unchanged to System. The counter is
   // thread-local and allocation-free; test instances never migrate threads.
@@ -237,6 +238,7 @@ mod allocations {
       let ptr = unsafe { System.alloc(layout) };
       if !ptr.is_null() {
         let _ = LIVE.try_with(|n| n.set(n.get() + layout.size() as isize));
+        let _ = COUNT.try_with(|n| n.set(n.get() + 1));
       }
       ptr
     }
@@ -252,6 +254,66 @@ mod allocations {
   pub fn live() -> isize {
     LIVE.with(Cell::get)
   }
+  pub fn count() -> usize {
+    COUNT.with(Cell::get)
+  }
+}
+
+/// A stateless call site keeps its invocation frames: after the first
+/// call, repeated calls of a body with a suspension, a nested flow and a
+/// callee allocate nothing and visit no ancestor on the re-poll.
+#[cfg(not(target_os = "espidf"))]
+#[test]
+fn repeated_stateless_calls_reuse_their_frames_without_allocating() {
+  let mut mesh = Mesh::new();
+  mesh.declare_var("total", Var::Int(0), true);
+  mesh.add_function(
+    shards_core::FunctionDef::new("Leaf", Type::int(), Type::int())
+      .uses(&["total"])
+      .mutates(&["total"])
+      .body(vec![pause(), inc("total")]),
+  );
+  mesh.add_function(
+    shards_core::FunctionDef::new("Think", Type::int(), Type::int())
+      .uses(&["total"])
+      .mutates(&["total"])
+      .body(vec![
+        add(val(Var::Int(1))),
+        declare("n"),
+        when(
+          vec![is_less(val(Var::Int(100)))],
+          vec![call("Leaf", vec![])],
+        ),
+        get("n"),
+      ]),
+  );
+  mesh.add_wire(wire(vec![call("Think", vec![])], true));
+  let code = mesh.compile("root", Type::int()).unwrap();
+  let id = mesh.spawn(&code, Var::Int(7)).unwrap();
+  // Warm up: the first call builds the frames; one full cycle is two ticks.
+  for _ in 0..4 {
+    mesh.tick();
+  }
+  let (live, count) = (allocations::live(), allocations::count());
+  let state = mesh.memory(id).unwrap().state_bytes;
+  let dispatches = mesh.composite_dispatches();
+  mesh.tick();
+  mesh.tick();
+  let per_cycle = mesh.composite_dispatches() - dispatches;
+  for _ in 0..999 {
+    mesh.tick();
+    mesh.tick();
+    assert_eq!(allocations::live(), live);
+    assert_eq!(allocations::count(), count);
+  }
+  assert_eq!(mesh.memory(id).unwrap().state_bytes, state);
+  // The same composite steps every cycle: Think and Leaf each take a
+  // preparation step, an entry and a completion, When an entry and a
+  // completion; the pause re-polls without visiting any of them.
+  assert_eq!(mesh.composite_dispatches() - dispatches, 1000 * per_cycle);
+  assert!(per_cycle <= 9, "{per_cycle} composite steps per cycle");
+  assert_eq!(mesh.get_var("total"), Some(Var::Int(1002)));
+  mesh.cancel(id);
 }
 
 #[cfg(not(target_os = "espidf"))]

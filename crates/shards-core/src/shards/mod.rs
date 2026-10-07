@@ -502,11 +502,10 @@ pub const KEEP_DESC: ShardDesc = ShardDesc {
   lifetime: crate::signature::Lifetime::Stateful,
 };
 
-/// `Keep`: the slot and its initial value.
-pub(crate) fn compose_keep(
-  args: &Args,
-  ctx: &mut ComposeCtx<'_>,
-) -> Result<Composed<(Binding, Var)>> {
+/// `Keep`: declares the persistent slot, whose initial value the frame
+/// holds from its creation (golden path §3.4); the node passes its input
+/// through.
+pub(crate) fn compose_keep(args: &Args, ctx: &mut ComposeCtx<'_>) -> Result<Composed<()>> {
   if !ctx.allows_persistent_state() {
     return Err(Error::Diagnostic(Box::new(
       Diagnostic::new(
@@ -536,11 +535,9 @@ pub(crate) fn compose_keep(
   }
   check_declaration(args, ctx, "Keep")?;
   let value = args.literal("value").expect("decoded value").clone();
-  let binding = ctx
-    .declare_keep(variable(args, "variable"), value.type_of())
-    .binding;
+  ctx.declare_keep(variable(args, "variable"), value);
   Ok(Composed {
-    compiled: (binding, value),
+    compiled: (),
     output: ctx.input(),
   })
 }
@@ -1459,7 +1456,9 @@ pub const PROBE_DESC: ShardDesc = ShardDesc {
   targets: Targets::All,
   aliases: &[],
   effects: crate::signature::Effects::IO,
-  lifetime: crate::signature::Lifetime::Stateless,
+  // Its lifecycle is what tests observe, so it is stateful: a cached
+  // invocation frame instantiates it per invocation.
+  lifetime: crate::signature::Lifetime::Stateful,
 };
 
 /// `Probe`: records its instantiate, activate and cleanup events (for tests).

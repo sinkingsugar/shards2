@@ -20,6 +20,7 @@ use crate::shard::{CompiledNode, Composed, ParamValue, ShardDef, ShardType};
 use crate::shards::Operand;
 use crate::signature::{Analysis, Effects, Lifetime, Occurrence};
 use crate::types::Type;
+use crate::var::Var;
 
 /// A wire as the loader produces it.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -174,6 +175,26 @@ pub struct CompiledWire {
   /// The function bodies this wire's call sites (and their callees) were
   /// composed against, for reload admission.
   pub(crate) functions: FunctionRegistry,
+  /// `Keep` slots: the locals that survive a root iteration (golden path
+  /// §3.4); every other local starts the next iteration unset.
+  pub keeps: Vec<crate::function::KeepSlot>,
+}
+
+impl CompiledWire {
+  /// Whether a local slot survives between root iterations.
+  pub fn persistent(&self, slot: usize) -> bool {
+    self.keeps.iter().any(|k| k.slot == slot)
+  }
+
+  /// An instance's local frame at its start: every slot unset, except
+  /// `Keep` slots at their initial values.
+  pub fn fresh_locals(&self) -> Vec<Var> {
+    let mut locals = vec![Var::None; self.locals.len()];
+    for keep in &self.keeps {
+      locals[keep.slot] = keep.initial.clone();
+    }
+    locals
+  }
 }
 
 impl CompiledWire {
@@ -236,8 +257,12 @@ pub struct ComposeCtx<'a> {
   /// composed within its wire body; 0 at a wire's top level.
   blocks: usize,
   owner: Owner,
-  /// `Keep` slots declared so far (a stateful function's persistent state).
+  /// `Keep` slots declared so far (a stateful function's or a wire's
+  /// persistent state).
   keeps: Vec<KeepSlot>,
+  /// Names called lazily in this body or its callees (see
+  /// `CompiledFunction::lazy_refs`).
+  lazy_refs: Vec<String>,
 }
 
 /// How deeply flows may nest, counting function bodies and wires composed
@@ -437,15 +462,13 @@ impl ComposeCtx<'_> {
       if let Owner::Function(def) = &self.owner
         && !def.may_write(name)
       {
-        return Err(Error::Diagnostic(Box::new(Diagnostic::new(
-          Phase::Compose,
-          "compose-error",
+        return Err(plain_error(
           "undeclared-mesh-access",
           format!(
             "{name} is a mesh variable that {} may not assign; add `mutates: [{name}]` to write it",
             def.name
           ),
-        ))));
+        ));
       }
       self.analysis.access(name, slot.ty, true);
     }
@@ -457,16 +480,15 @@ impl ComposeCtx<'_> {
 
   /// Declares a `Keep` slot: a mutable local that a stateful owner retains
   /// between invocations (and across reloads, by name and type).
-  pub fn declare_keep(&mut self, name: &str, ty: Type) -> VarInfo {
+  pub fn declare_keep(&mut self, name: &str, initial: Var) -> VarInfo {
+    let ty = initial.type_of();
     let info = self.declare_local(name, ty, true);
-    if let (Binding::Local(slot), Some(PathStep::Shard { index, .. })) =
-      (info.binding, self.diagnostic_path.last())
-    {
+    if let Binding::Local(slot) = info.binding {
       self.keeps.push(KeepSlot {
         name: name.to_string(),
         slot,
         ty,
-        node: *index,
+        initial,
       });
     }
     info
@@ -535,16 +557,12 @@ impl ComposeCtx<'_> {
   /// function body.
   fn compose_flow_unscoped(&mut self, flow: &[ShardDef], input: Type) -> Result<CompiledFlow> {
     if self.depth >= MAX_FLOW_DEPTH {
-      return Err(crate::Error::Diagnostic(Box::new(
-        crate::diagnostic::Diagnostic::new(
-          crate::diagnostic::Phase::Compose,
-          "compose-error",
-          "too-deep",
-          format!(
-            "flows nest more than {MAX_FLOW_DEPTH} levels deep (nested flows, function bodies and wires run through Spawn count)"
-          ),
+      return Err(plain_error(
+        "too-deep",
+        format!(
+          "flows nest more than {MAX_FLOW_DEPTH} levels deep (nested flows, function bodies and wires run through Spawn count)"
         ),
-      )));
+      ));
     }
     let path_len = self.diagnostic_path.len();
     if let Some((param, item)) = self
@@ -564,6 +582,7 @@ impl ComposeCtx<'_> {
     result
   }
 
+  #[inline(never)]
   fn compose_flow_at_depth(&mut self, flow: &[ShardDef], input: Type) -> Result<CompiledFlow> {
     let saved = self.input;
     let mut analysis = Analysis::default();
@@ -734,6 +753,10 @@ impl ComposeCtx<'_> {
   /// operands read once at entry, composes the body once per input type
   /// (shared by every call site), and checks the caller's declared mesh
   /// access covers the callee's.
+  /// Not inlined into the per-node loop: its temporaries would otherwise
+  /// sit in every level's frame of the compose recursion (a nested body
+  /// is composed from here), and the device's task stack is small.
+  #[inline(never)]
   fn compose_call(
     &mut self,
     def: &ShardDef,
@@ -760,16 +783,15 @@ impl ComposeCtx<'_> {
       ));
     }
     if !fdef.ignores_input() && !fdef.input.accepts(self.input) {
-      return Err(Error::Diagnostic(Box::new(
-        Diagnostic::new(
-          Phase::Compose,
-          "input-type-mismatch",
-          "input-type-mismatch",
-          format!("{name} needs {} input, got {}", fdef.input, self.input),
-        )
-        .shard(name)
-        .types(Some(TypeRef::of(self.input)), vec![TypeRef::of(fdef.input)]),
-      )));
+      return Err(typed_error(
+        "input-type-mismatch",
+        "input-type-mismatch",
+        format!("{name} needs {} input, got {}", fdef.input, self.input),
+        name,
+        None,
+        self.input,
+        vec![TypeRef::of(fdef.input)],
+      ));
     }
     // Labels are validated against the parameter list first; then each
     // argument is a literal or a variable read once at entry.
@@ -862,15 +884,15 @@ impl ComposeCtx<'_> {
         } else {
           "wrong-variable-type"
         };
-        return Err(Error::Diagnostic(Box::new(
-          compose_diagnostic(
-            code,
-            format!("{name}: {} must be {}, got {ty}", param.name, param.ty),
-          )
-          .shard(name)
-          .param(&param.name, Some(index))
-          .types(Some(TypeRef::of(ty)), vec![TypeRef::of(param.ty)]),
-        )));
+        return Err(typed_error(
+          "compose-error",
+          code,
+          format!("{name}: {} must be {}, got {ty}", param.name, param.ty),
+          name,
+          Some((&param.name, index)),
+          ty,
+          vec![TypeRef::of(param.ty)],
+        ));
       }
       given[index] = Some(operand);
     }
@@ -941,17 +963,21 @@ impl ComposeCtx<'_> {
         .analysis
         .include(&group, &[PathStep::Function(name.to_string())]);
       self.analysis.lifetime = Lifetime::Stateless;
+      self.note_lazy_ref(name);
       return Ok(Composed {
-        compiled: crate::shard::erase::<crate::stackless::shards::Call>(CallCompiled {
-          target: CallTarget::Lazy {
-            key: FunctionKey {
-              name: name.to_string(),
-              input,
+        compiled: crate::shard::erase::<crate::stackless::shards::Call>(
+          CallCompiled {
+            target: CallTarget::Lazy {
+              key: FunctionKey {
+                name: name.to_string(),
+                input,
+              },
+              def: fdef,
             },
-            def: fdef,
+            args,
           },
-          args,
-        }),
+          Lifetime::Stateless,
+        ),
         output: fdef_output(&self.env.functions[name]),
       });
     }
@@ -997,22 +1023,47 @@ impl ComposeCtx<'_> {
       .include(&body.flow.analysis, &[PathStep::Function(name.to_string())]);
     // The call site's lifetime is the function's: a stateless function
     // keeps nothing between invocations, whatever its body holds inside one.
-    self.analysis.lifetime = if fdef.stateful {
+    let lifetime = if fdef.stateful {
       Lifetime::Stateful
     } else {
       Lifetime::Stateless
     };
+    self.analysis.lifetime = lifetime;
+    // A callee that reaches a function still being composed is inside the
+    // caller's recursive group: the edge resolves through the group's
+    // pinned table too, so a reload never mixes revisions along a chain.
+    let in_group = body
+      .lazy_refs
+      .iter()
+      .any(|n| self.composing.iter().any(|c| c == n));
+    let target = if in_group {
+      for n in &body.lazy_refs {
+        self.note_lazy_ref(n);
+      }
+      CallTarget::Lazy {
+        key: FunctionKey::of(&body),
+        def: fdef.clone(),
+      }
+    } else {
+      CallTarget::Direct(body)
+    };
     Ok(Composed {
-      compiled: crate::shard::erase::<crate::stackless::shards::Call>(CallCompiled {
-        target: CallTarget::Direct(body),
-        args,
-      }),
+      compiled: crate::shard::erase::<crate::stackless::shards::Call>(
+        CallCompiled { target, args },
+        lifetime,
+      ),
       output: fdef.output,
     })
   }
 
   /// An `unknown-variable` inside a callee that names one of the caller's
   /// locals: say how to pass it (golden path §3.2, test B).
+  fn note_lazy_ref(&mut self, name: &str) {
+    if !self.lazy_refs.iter().any(|n| n == name) {
+      self.lazy_refs.push(name.to_string());
+    }
+  }
+
   fn explain_caller_local(&self, err: Error, function: &str) -> Error {
     let Error::Diagnostic(mut d) = err else {
       return err;
@@ -1044,8 +1095,43 @@ fn compose_diagnostic(code: &'static str, message: String) -> Diagnostic {
 }
 
 /// A structured compose error about function `name`.
+///
+/// Error constructors on the compose recursion path are cold and never
+/// inlined: a `Diagnostic` is a few hundred bytes, and one stack slot per
+/// error site in a function that recurses once per nesting level adds up
+/// to the device's whole task stack.
+#[cold]
+#[inline(never)]
 fn fn_error(name: &str, code: &'static str, message: String) -> Error {
   Error::Diagnostic(Box::new(compose_diagnostic(code, message).shard(name)))
+}
+
+/// A typed compose error (`input-type-mismatch`, `wrong-argument-type`,
+/// `output-type-mismatch`): the actual type against the expected ones,
+/// optionally at a parameter. Cold, see [`fn_error`].
+#[cold]
+#[inline(never)]
+fn typed_error(
+  kind: &'static str,
+  code: &'static str,
+  message: String,
+  shard: &str,
+  param: Option<(&str, usize)>,
+  actual: Type,
+  expected: Vec<TypeRef>,
+) -> Error {
+  let mut d = Diagnostic::new(Phase::Compose, kind, code, message).shard(shard);
+  if let Some((name, index)) = param {
+    d = d.param(name, Some(index));
+  }
+  Error::Diagnostic(Box::new(d.types(Some(TypeRef::of(actual)), expected)))
+}
+
+/// A plain compose error without a shard. Cold, see [`fn_error`].
+#[cold]
+#[inline(never)]
+fn plain_error(code: &'static str, message: String) -> Error {
+  Error::Diagnostic(Box::new(compose_diagnostic(code, message)))
 }
 
 /// The first occurrence in a body with the picked effect: the shard a
@@ -1093,16 +1179,15 @@ fn check_input(ty: &ShardType, input: Type) -> Result<()> {
     }
     InputDesc::Any | InputDesc::Ignored => return Ok(()),
   };
-  Err(crate::Error::Diagnostic(Box::new(
-    crate::diagnostic::Diagnostic::new(
-      crate::diagnostic::Phase::Compose,
-      "input-type-mismatch",
-      "input-type-mismatch",
-      format!("{} needs {expected} input, got {input}", ty.name()),
-    )
-    .shard(ty.name())
-    .types(Some(TypeRef::of(input)), refs),
-  )))
+  Err(typed_error(
+    "input-type-mismatch",
+    "input-type-mismatch",
+    format!("{} needs {expected} input, got {input}", ty.name()),
+    ty.name(),
+    None,
+    input,
+    refs,
+  ))
 }
 
 /// Adds where the input came from to a mismatch on the failing shard's own
@@ -1270,14 +1355,24 @@ impl ComposeCache {
         blocks: 0,
         owner: Owner::Wire,
         keeps: Vec::new(),
+        lazy_refs: Vec::new(),
       });
       ctx
         .compose_flow_unscoped(&def.flow, input)
-        .map(|flow| (flow, ctx.locals, ctx.deps, ctx.restart_deps, ctx.functions))
+        .map(|flow| {
+          (
+            flow,
+            ctx.locals,
+            ctx.deps,
+            ctx.restart_deps,
+            ctx.functions,
+            ctx.keeps,
+          )
+        })
         .map_err(|err| err.prefix_path(PathStep::Wire(def.name.clone())))
     };
     composing.pop();
-    let (flow, locals, deps, restart_deps, functions) = result?;
+    let (flow, locals, deps, restart_deps, functions, keeps) = result?;
 
     self.stats.wire_composes += 1;
     let compiled = Arc::new(CompiledWire {
@@ -1290,6 +1385,7 @@ impl ComposeCache {
       definition: Arc::new(def.clone()),
       restart_deps,
       functions,
+      keeps,
     });
     self.entries.entry(key).or_default().push(Entry {
       def: def.clone(),
@@ -1358,6 +1454,7 @@ impl ComposeCache {
         blocks: 0,
         owner: Owner::Function(def.clone()),
         keeps: Vec::new(),
+        lazy_refs: Vec::new(),
       });
       let slot_of = |info: VarInfo| match info.binding {
         Binding::Local(i) => i,
@@ -1375,20 +1472,18 @@ impl ComposeCache {
           if def.output.accepts(flow.output) {
             Ok(flow)
           } else {
-            Err(Error::Diagnostic(Box::new(
-              compose_diagnostic(
-                "output-type-mismatch",
-                format!(
-                  "{} declares output {} but its body outputs {}",
-                  def.name, def.output, flow.output
-                ),
-              )
-              .shard(&def.name)
-              .types(
-                Some(TypeRef::of(flow.output)),
-                vec![TypeRef::of(def.output)],
+            Err(typed_error(
+              "compose-error",
+              "output-type-mismatch",
+              format!(
+                "{} declares output {} but its body outputs {}",
+                def.name, def.output, flow.output
               ),
-            )))
+              &def.name,
+              None,
+              flow.output,
+              vec![TypeRef::of(def.output)],
+            ))
           }
         })
         .map(|flow| {
@@ -1400,12 +1495,13 @@ impl ComposeCache {
             ctx.functions,
             input_slot,
             param_slots,
+            ctx.lazy_refs,
           )
         })
         .map_err(|err| err.prefix_path(PathStep::Function(def.name.clone())))
     };
     composing.pop();
-    let (flow, locals, deps, keeps, functions, input_slot, param_slots) = result?;
+    let (flow, locals, deps, keeps, functions, input_slot, param_slots, lazy_refs) = result?;
     if def.pure {
       let analysis = &flow.analysis;
       let effect = [
@@ -1462,9 +1558,13 @@ impl ComposeCache {
       self.group = outer;
       return result;
     }
+    let native_state =
+      flow.analysis.lifetime != Lifetime::Stateless || functions.values().any(|f| f.native_state);
     let compiled = Arc::new(CompiledFunction {
       def: def.clone(),
       input,
+      native_state,
+      lazy_refs,
       flow,
       locals,
       input_slot,

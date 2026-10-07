@@ -36,10 +36,7 @@ fn run(mesh: &mut Mesh, flow: Vec<shards_core::ShardDef>) -> Result<Var, shards_
 #[test]
 fn var_is_32_bytes_with_float4_at_offset_16() {
   assert_eq!(std::mem::size_of::<Var>(), 32);
-  // Two per cache line on 64-bit targets; what Float4 needs elsewhere.
-  #[cfg(target_pointer_width = "64")]
-  assert_eq!(std::mem::align_of::<Var>(), 32);
-  #[cfg(target_pointer_width = "32")]
+  // What Float4 needs; alignment 32 bought nothing measurable (bench/values).
   assert_eq!(std::mem::align_of::<Var>(), 16);
   assert_eq!(std::mem::align_of::<Float4>(), 16);
   let v = Var::float4(1.0, 2.0, 3.0, 4.0);
@@ -270,9 +267,9 @@ fn fixed_types_admit_struct_values_by_shape_handle() {
   assert!(!ty.admits(&wrong_shape));
   assert!(ty.admits(&map_right));
   assert!(!ty.admits(&map_wrong));
-  // Slot types of a struct value are checked where outputs are checked.
-  let checked = cfg!(any(debug_assertions, feature = "output-checks"));
-  assert_eq!(ty.admits(&wrong_slot), !checked);
+  // Slot types of a struct value are checked in every build: hosts pass
+  // values through `admits`.
+  assert!(!ty.admits(&wrong_slot));
   // That none of this interns is checked in `tests/registry.rs`.
 
   // A host value of the wrong shape is rejected at the mesh boundary, in

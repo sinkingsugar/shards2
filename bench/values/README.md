@@ -36,3 +36,5 @@ Same binaries with the `repr(align)` attribute on `Var` changed; `bench_instance
 | depth 1 / 4 / 16 / 32 | 175.5 / 155.9 / 157.9 / 159.9 | 168.6 / 149.8 / 154.6 / 154.8 |
 
 Alignment 16 wins the instance and depth workloads by 2 to 3 percent, alignment 32 wins the table workloads by 5 to 27 percent; both are within this setup's run-to-run spread for the instance benchmark (about 3 percent) and no workload measurably loses at 32. Alignment stays 32 on 64-bit targets, as the plan prefers (a value never straddles a cache line); on 32-bit targets `Var` is 16-aligned by `Float4` and the same 32 bytes.
+
+**Decision after review (2026-10-07):** the measurement above is in time only, and the review pointed out that the cost of alignment 32 is in size: a frame slot of the engine grew from 128 to 224 bytes, the VM's instruction and the engine's step from 32 to 64, and per-instance memory of the entity workload followed. `Var` is 32 bytes aligned to 16 on every target now (what `Float4` needs, and 1.x's `SHVar` layout); the time difference was within noise either way.

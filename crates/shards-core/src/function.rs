@@ -178,8 +178,10 @@ pub struct KeepSlot {
   pub name: String,
   pub slot: usize,
   pub ty: Type,
-  /// The `Keep` shard's index in the body's top-level flow.
-  pub node: usize,
+  /// The declared initial value: the slot holds it from the frame's
+  /// creation (or from a reload that did not carry a value over), so the
+  /// `Keep` node itself is a pass-through.
+  pub initial: Var,
 }
 
 /// A compiled function body: shared by every call site and invocation,
@@ -201,12 +203,27 @@ pub struct CompiledFunction {
   pub deps: Vec<Dep>,
   /// The bodies this one calls, directly or through callees, as composed.
   pub functions: crate::reload::FunctionRegistry,
+  /// Whether the body (or a callee's) holds a node that is not stateless:
+  /// a cached invocation frame then cleans such leaves up at exit and
+  /// instantiates them again at entry (golden path §3.4).
+  pub(crate) native_state: bool,
+  /// Functions this body (or a callee's) calls lazily, by name: members of
+  /// a recursive group not closed when the body was composed. A caller
+  /// still composing one of them is inside that group, and calls this
+  /// body lazily too, so the group is pinned as a unit across reloads.
+  pub(crate) lazy_refs: Vec<String>,
 }
 
 impl CompiledFunction {
   /// A fresh frame: every slot unset.
+  /// A fresh frame: every slot unset, except `Keep` slots at their
+  /// initial values.
   pub(crate) fn fresh_locals(&self) -> Vec<Var> {
-    vec![Var::None; self.locals.len()]
+    let mut locals = vec![Var::None; self.locals.len()];
+    for keep in &self.keeps {
+      locals[keep.slot] = keep.initial.clone();
+    }
+    locals
   }
 
   /// Whether a slot survives between invocations of a stateful function.

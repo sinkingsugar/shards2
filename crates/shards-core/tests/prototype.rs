@@ -267,8 +267,7 @@ fn call_sites_check_the_reload_registry_once_per_revision() {
 
 #[test]
 fn spawned_instances_share_one_compose() {
-  // Device-sized: an entity instance holds about 2 KiB of frames.
-  let n: i64 = if cfg!(target_os = "espidf") { 40 } else { 100 };
+  let n: i64 = 100;
   let mut mesh = bench_mesh(n);
   let spawner = mesh.compile("spawner", Type::none()).unwrap();
   // The spawner and the entity it spawns, each composed once.

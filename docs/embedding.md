@@ -26,7 +26,7 @@ Choose the trait by what the shard does:
 | Does slow or blocking work (a long scan, a blocking library call, human-paced input) | `AsyncShard`, with `shards_io::runtime::spawn_blocking` | The work runs on the blocking pool. Only the waiting instance suspends; other wires keep running. |
 | Waits on async I/O | `AsyncShard`, with `shards_io::runtime::spawn` | Race every await against the cancellation token. |
 
-Host shards should not need the full `Shard` contract, which is for control flow.
+Host shards do not implement the full `Shard` contract: control flow (running a nested flow, suspending in the middle of one) is core-only, because the engine enters children through a closed `Control` description and `activate` cannot run child flows. A host shard that needs a flow takes it as a parameter and hands it to a core control shard, or declares it as a function parameter; a public continuation protocol is an open design item (`docs/current-state.md`).
 
 ### Parameters
 

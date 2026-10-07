@@ -207,10 +207,11 @@ pub(crate) fn admit(old: &CompiledFunction, new: &CompiledFunction) -> Result<()
   Ok(())
 }
 
-/// How a stateful body's `Keep` slots carry over: `(old slot, new slot, new
-/// Keep node)` for each retained slot, by name and type.
+/// How a stateful body's `Keep` slots carry over: `(old slot, new slot)`
+/// for each retained slot, by name and type; the others start at the new
+/// body's initial values.
 pub(crate) struct KeepPlan {
-  pub moves: Vec<(usize, usize, usize)>,
+  pub moves: Vec<(usize, usize)>,
   pub retained: Vec<String>,
   pub reset: Vec<String>,
 }
@@ -229,7 +230,7 @@ pub(crate) fn keep_plan(old: &CompiledFunction, new: &CompiledFunction) -> KeepP
       .find(|k| k.name == keep.name && k.ty == keep.ty)
     {
       Some(target) => {
-        plan.moves.push((keep.slot, target.slot, target.node));
+        plan.moves.push((keep.slot, target.slot));
         plan.retained.push(format!("{name}.{}", keep.name));
       }
       None => plan.reset.push(format!("{name}.{}", keep.name)),

@@ -105,8 +105,8 @@ nesting limit does not fit the 128 KiB acceptance task: a level of function
 compose takes several KiB of stack, so on ESP-IDF `MAX_FLOW_DEPTH` is 24
 (desktop 48), as the runtime call depth is 32 (desktop 256); deeper scripts
 use more stack while parsing and composing, and real workloads need their own
-measurement. An entity instance of the acceptance workload holds about 2 KiB of
-frames, so the instance-count fixtures are device-sized too.
+measurement. The instance-count fixtures are the desktop ones (an entity instance of
+the acceptance workload holds about 1.7 KiB).
 Firmware uses `panic = "abort"`: panics terminate the application and do not
 provide desktop per-instance panic isolation. Shard documentation prose is
 disabled through both dependency paths; parameter contracts are retained.

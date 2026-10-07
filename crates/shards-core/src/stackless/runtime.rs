@@ -12,7 +12,7 @@ use crate::compose::{CacheStats, CompiledWire, ComposeCache, ComposeEnv, FrameLa
 use crate::error::{Error, Result, panic_message};
 use crate::function::{CompiledFunction, FunctionDef};
 use crate::instance::{InstanceCtx, InstanceId, InstanceMemory, Outcome, WakeFlag, WakeMode};
-use crate::reload::{FunctionRegistry, ReloadReport, ResetPolicy, Revisions};
+use crate::reload::{FunctionKey, FunctionRegistry, ReloadReport, ResetPolicy, Revisions};
 use crate::shard::{ActivationCtx, Step};
 use crate::types::Type;
 use crate::var::Var;
@@ -262,11 +262,37 @@ impl Mesh {
         report.restarted.push(instance.wire.name.clone());
         continue;
       }
-      let mut keys: Vec<_> = instance.wire.functions.keys().collect();
-      keys.sort_by(|a, b| a.name.cmp(&b.name));
-      for key in keys {
-        let old = &instance.wire.functions[key];
-        let Some(new) = next.prepared_functions.get(key) else {
+      // Admission is against the bodies the wire's call sites were composed
+      // with (their interface) and the bodies its sites actually hold now
+      // (a site may have adopted a newer body under an earlier reload); the
+      // state plan is for the live bodies, which are what migrates. An
+      // instance not started yet holds what it was composed with.
+      let composed: Vec<(&Arc<CompiledFunction>, bool)> = instance
+        .wire
+        .functions
+        .values()
+        .map(|b| (b, instance.state.is_none()))
+        .collect();
+      let live: Vec<(&Arc<CompiledFunction>, bool)> = instance
+        .state
+        .iter()
+        .flat_map(|engine| engine.function_bodies())
+        .map(|b| (b, true))
+        .collect();
+      let mut olds: Vec<(&Arc<CompiledFunction>, bool)> =
+        composed.into_iter().chain(live).collect();
+      olds.sort_by(|a, b| {
+        a.0
+          .def
+          .name
+          .cmp(&b.0.def.name)
+          .then(Arc::as_ptr(a.0).cmp(&Arc::as_ptr(b.0)))
+          .then(b.1.cmp(&a.1))
+      });
+      olds.dedup_by(|a, b| Arc::ptr_eq(a.0, b.0));
+      for (old, plans) in olds {
+        let key = FunctionKey::of(old);
+        let Some(new) = next.prepared_functions.get(&key) else {
           return Err(crate::Error::Diagnostic(Box::new(
             crate::diagnostic::Diagnostic::new(
               crate::diagnostic::Phase::Compose,
@@ -284,7 +310,7 @@ impl Mesh {
           continue;
         }
         crate::reload::admit(old, new)?;
-        if old.def.stateful && seen.insert(key.clone()) {
+        if plans && old.def.stateful && seen.insert((key.clone(), Arc::as_ptr(old))) {
           let plan = crate::reload::keep_plan(old, new);
           report.retained.extend(plan.retained);
           report.reset.extend(plan.reset);
@@ -396,7 +422,7 @@ impl Mesh {
       wake,
       iteration: 0,
       id,
-      locals: vec![Var::None; wire.locals.len()],
+      locals: wire.fresh_locals(),
       wire,
       input,
       state: None,
@@ -486,6 +512,17 @@ impl Mesh {
       .iter()
       .find(|i| i.id == id)
       .and_then(|i| i.outcome.as_ref())
+  }
+
+  /// An instance's local frame, for tests of iteration freshness; not a
+  /// stable API.
+  #[doc(hidden)]
+  pub fn instance_locals(&self, id: InstanceId) -> Option<&[Var]> {
+    self
+      .instances
+      .iter()
+      .find(|i| i.id == id)
+      .map(|i| i.locals.as_slice())
   }
 
   pub fn memory(&self, id: InstanceId) -> Option<InstanceMemory> {
@@ -601,7 +638,7 @@ fn step(
     catch_unwind(AssertUnwindSafe(|| {
       let mut ctx = ActivationCtx {
         instance: *id,
-        locals,
+        locals: locals.as_mut_slice(),
         revisions,
         table,
         mesh_frame: frame,
@@ -621,9 +658,15 @@ fn step(
       Outcome::Completed(value)
     }
     // A loop iteration, a Return at the root or a Restart keeps the
-    // instance and its state.
+    // instance and its state; the next iteration starts with fresh locals
+    // except the `Keep` slots (golden path §3.4).
     Ok(Ok(Step::Next(_) | Step::Return(_) | Step::Restart)) => {
       instance.iteration += 1;
+      for (slot, value) in instance.locals.iter_mut().enumerate() {
+        if !instance.wire.persistent(slot) {
+          *value = Var::None;
+        }
+      }
       return;
     }
     Ok(Ok(Step::Stop)) => Outcome::Stopped,

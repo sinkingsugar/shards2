@@ -88,7 +88,9 @@ impl From<Flow> for Step {
 /// shard returns [`Step::Suspend`] and is activated again on a later tick.
 pub struct ActivationCtx<'a> {
   pub(crate) instance: InstanceId,
-  pub(crate) locals: &'a mut Vec<Var>,
+  /// The locals the running code addresses: the instance's own, or, inside
+  /// a function invocation, that invocation's (the engine switches them).
+  pub(crate) locals: &'a mut [Var],
   pub(crate) revisions: &'a crate::reload::Revisions,
   /// Every body this mesh compiled, by key: what recursive call sites
   /// resolve through, pinned per outermost invocation.
@@ -116,8 +118,8 @@ impl ActivationCtx<'_> {
   }
 
   /// The mesh's current function table (the newest accepted bodies).
-  pub(crate) fn table(&self) -> Arc<crate::reload::FunctionRegistry> {
-    self.table.clone()
+  pub(crate) fn table(&self) -> &Arc<crate::reload::FunctionRegistry> {
+    self.table
   }
 
   pub fn instance(&self) -> InstanceId {
@@ -244,6 +246,10 @@ pub trait CompiledNode: Send + Sync {
   }
 
   fn name(&self) -> &'static str;
+  /// The shard's declared lifetime: a `Stateless` node's state is not
+  /// observable across activations, so a cached invocation frame keeps it;
+  /// any other node is cleaned up and instantiated again per invocation.
+  fn lifetime(&self) -> crate::signature::Lifetime;
   fn instantiate(&self, ctx: &mut InstanceCtx) -> Result<Box<dyn Any>>;
   fn activate(&self, state: &mut dyn Any, ctx: &mut ActivationCtx<'_>, input: &Var)
   -> Result<Step>;
@@ -252,7 +258,7 @@ pub trait CompiledNode: Send + Sync {
   fn state_size(&self, state: &dyn Any) -> usize;
 }
 
-struct Node<S: Shard>(S::Compiled);
+struct Node<S: Shard>(S::Compiled, crate::signature::Lifetime);
 
 impl<S: Shard> CompiledNode for Node<S> {
   fn control(&self) -> Option<Control<'_>> {
@@ -265,6 +271,10 @@ impl<S: Shard> CompiledNode for Node<S> {
 
   fn name(&self) -> &'static str {
     S::NAME
+  }
+
+  fn lifetime(&self) -> crate::signature::Lifetime {
+    self.1
   }
 
   fn instantiate(&self, ctx: &mut InstanceCtx) -> Result<Box<dyn Any>> {
@@ -298,8 +308,11 @@ fn downcast<S: Shard>(state: &mut dyn Any) -> &mut S::State {
     .expect("shard state type mismatch")
 }
 
-pub(crate) type ComposeFn =
-  fn(&Args, &mut ComposeCtx<'_>) -> Result<Composed<Arc<dyn CompiledNode>>>;
+pub(crate) type ComposeFn = fn(
+  &Args,
+  &mut ComposeCtx<'_>,
+  crate::signature::Lifetime,
+) -> Result<Composed<Arc<dyn CompiledNode>>>;
 
 /// One shard kind: its static description ([`ShardDesc`]) and its
 /// implementation. Wire definitions refer to it.
@@ -393,7 +406,7 @@ impl ShardType {
     ctx: &mut ComposeCtx<'_>,
   ) -> Result<Composed<Arc<dyn CompiledNode>>> {
     match self.compose {
-      Some(compose) => compose(args, ctx),
+      Some(compose) => compose(args, ctx, self.desc.lifetime),
       None => Err(crate::error::Error::Diagnostic(Box::new(
         crate::diagnostic::Diagnostic::new(
           crate::diagnostic::Phase::Compose,
@@ -410,10 +423,11 @@ impl ShardType {
 fn compose_erased<S: Shard>(
   args: &Args,
   ctx: &mut ComposeCtx<'_>,
+  lifetime: crate::signature::Lifetime,
 ) -> Result<Composed<Arc<dyn CompiledNode>>> {
   let composed = S::compose(args, ctx)?;
   Ok(Composed {
-    compiled: Arc::new(Node::<S>(composed.compiled)),
+    compiled: Arc::new(Node::<S>(composed.compiled, lifetime)),
     output: composed.output,
   })
 }
@@ -495,6 +509,9 @@ impl fmt::Debug for ShardDef {
 }
 
 /// Erases a compiled value into a flow node of shard `S`.
-pub(crate) fn erase<S: Shard>(compiled: S::Compiled) -> Arc<dyn CompiledNode> {
-  Arc::new(Node::<S>(compiled))
+pub(crate) fn erase<S: Shard>(
+  compiled: S::Compiled,
+  lifetime: crate::signature::Lifetime,
+) -> Arc<dyn CompiledNode> {
+  Arc::new(Node::<S>(compiled, lifetime))
 }

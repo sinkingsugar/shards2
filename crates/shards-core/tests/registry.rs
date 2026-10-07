@@ -18,6 +18,7 @@ fn checking_values_against_types_interns_nothing() {
     assert!(fixed.admits(&Var::Table(Table::with_shape(shape, [Var::Int(i)]))));
     assert!(!fixed.admits(&Var::Table(Table::with_shape(other, [Var::Int(i)]))));
     assert!(fixed.admits(&Var::table([("a", Var::Int(i))])));
+    assert!(!fixed.admits(&Var::Table(Table::with_shape(shape, [Var::Float(1.0)]))));
   }
   assert_eq!((Type::registered(), Shape::registered()), before);
 }

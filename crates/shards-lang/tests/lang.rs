@@ -2160,3 +2160,110 @@ fn preserving_reload_migrates_keep_slots_by_name_and_type() {
   assert!(d[0].message.contains("C.n"), "{}", d[0].message);
   assert_eq!(session.tick().len(), 0);
 }
+
+/// Every edge inside a recursive group resolves through the table pinned
+/// at the group's outermost entry, so a chain in flight never mixes
+/// revisions: the old `Even` reached from the old `Odd` calls the old `Odd`.
+#[test]
+fn a_recursive_group_in_flight_keeps_one_revision_on_every_edge() {
+  let source = |base: i64| {
+    format!(
+      r#"@fn(Even input: Int output: Int params: {{}} {{ If({{Is(0)}} {{1}} {{Math.Subtract(1) | Odd}}) }})
+@fn(Odd input: Int output: Int params: {{}} {{ If({{Is(0)}} {{{base}}} {{Pause Math.Subtract(1) | Even}}) }})
+@wire(main {{ 3 | Even | Log }} looped: true)
+@mesh(m) @schedule(m main) @run(m)"#
+    )
+  };
+  let mut session = shards_lang::Session::new();
+  preserve(&mut session, &source(0));
+  let (_, lines) = shards_core::log::capture(|| {
+    session.tick(); // Even(3) -> Odd(2), paused.
+    assert!(preserve(&mut session, &source(5)).is_empty());
+    session.tick(); // old Odd(2) -> old Even(1) -> old Odd(0) = 0
+    session.tick(); // a new chain: Even(3) -> new Odd(2), paused.
+    session.tick(); // -> new Odd(0) = 5
+  });
+  assert_eq!(lines, ["0", "5"]);
+}
+
+/// A stateful site whose replacement fails to instantiate keeps its old
+/// component (still owned, cleaned up exactly once at the end) and retries
+/// the selection at the next entry.
+#[test]
+fn a_failed_component_migration_keeps_the_old_component_owned() {
+  use shards_core::shards::{ProbeEventKind, take_probe_events};
+  let source = |probe: &str, extra: &str| {
+    format!(
+      r#"@fn(C stateful: true input: None output: Int params: {{}} {{ Keep(n 0) Probe("{probe}") {extra} n | Math.Add(1) | Update(n) }})
+@wire(main {{ Maybe({{C}} {{-1}} silent: true) Log }} looped: true)
+@mesh(m) @schedule(m main) @run(m)"#
+    )
+  };
+  take_probe_events();
+  let mut session = shards_lang::Session::new();
+  // The probe counts as native state, which the default policy would
+  // refuse to reset.
+  session.set_reset_policy(shards_core::ResetPolicy::Apply);
+  preserve(&mut session, &source("v0", ""));
+  let (_, lines) = shards_core::log::capture(|| {
+    session.tick();
+    assert!(
+      preserve(
+        &mut session,
+        &source("v1", r#"Probe("bad" "fail-instantiate")"#)
+      )
+      .is_empty()
+    );
+    session.tick();
+    session.tick();
+    drop(session);
+  });
+  assert_eq!(lines, ["1", "-1", "-1"]);
+  let events = take_probe_events();
+  let count = |tag: &str, kind| {
+    events
+      .iter()
+      .filter(|e| e.tag == tag && e.kind == kind)
+      .count()
+  };
+  // The failing probe never activates (the two caught errors above are
+  // its two attempts, each rolling the new frame back); the old component
+  // is cleaned up exactly once, at the end.
+  assert_eq!(count("bad", ProbeEventKind::Activate), 0);
+  assert_eq!(
+    count("v1", ProbeEventKind::Cleanup),
+    2,
+    "two rolled-back replacements"
+  );
+  assert_eq!(
+    count("v0", ProbeEventKind::Cleanup),
+    1,
+    "owned until the end, cleaned once"
+  );
+}
+
+/// A later edit is judged against the body a component actually adopted,
+/// not the one its wire was composed with: removing a `Keep` added by an
+/// earlier accepted edit is a reset, and the default policy rejects it.
+#[test]
+fn reload_admission_follows_the_live_component_body() {
+  let source = |keeps: &str| {
+    format!(
+      "@fn(C stateful: true input: None output: Int params: {{}} {{ {keeps} n | Math.Add(1) | Update(n) }})\n@wire(main {{ C | Log }} looped: true)\n@mesh(m) @schedule(m main) @run(m)"
+    )
+  };
+  let mut session = shards_lang::Session::new();
+  preserve(&mut session, &source("Keep(n 0)"));
+  session.tick();
+  assert!(preserve(&mut session, &source("Keep(n 0) Keep(extra 0)")).is_empty());
+  session.tick(); // The component adopts the body with `extra`.
+  let (_, d) = session
+    .reload_preserving(
+      Source::new("t.shs", source("Keep(n 0)")),
+      &catalog(),
+      &no_defines(),
+    )
+    .unwrap_err();
+  assert_eq!(d[0].code, "reload-resets-state");
+  assert!(d[0].message.contains("C.extra"), "{}", d[0].message);
+}

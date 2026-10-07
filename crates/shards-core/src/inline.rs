@@ -14,6 +14,8 @@ use crate::error::{Error, Result};
 use crate::shards::Operand;
 use crate::shards::data;
 use crate::shards::leaf::{self, LeafShard};
+use crate::shards::math::{self, BinOp};
+use crate::shards::values;
 use crate::types::{Shape, Type};
 use crate::var::{Float4, Table, Var};
 
@@ -48,6 +50,35 @@ pub(crate) enum Op {
   AddFloatBound(Binding),
   AddFloat4Const(Float4),
   AddFloat4Bound(Binding),
+  /// Any other arithmetic (vectors, mixed numbers, subtract/multiply/
+  /// divide): the shared numeric rule without a node activation.
+  Arith(BinOp, Operand),
+  /// An ordered comparison of numbers.
+  Compare(Cmp, Operand),
+  /// The language's equality (`Is`, or `IsNot` when negated).
+  Equal(bool, Operand),
+  /// Passes the value through (`Keep`: its slot was set at frame creation).
+  Pass,
+}
+
+/// Which ordering a comparison instruction tests for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Cmp {
+  Less,
+  LessEqual,
+  More,
+  MoreEqual,
+}
+
+impl Cmp {
+  fn holds(self, o: std::cmp::Ordering) -> bool {
+    match self {
+      Cmp::Less => o.is_lt(),
+      Cmp::LessEqual => o.is_le(),
+      Cmp::More => o.is_gt(),
+      Cmp::MoreEqual => o.is_ge(),
+    }
+  }
 }
 
 impl Op {
@@ -76,6 +107,10 @@ impl Op {
       Op::AddFloatBound(_) => "add-float-bound",
       Op::AddFloat4Const(_) => "add-float4-const",
       Op::AddFloat4Bound(_) => "add-float4-bound",
+      Op::Arith(..) => "arith",
+      Op::Compare(..) => "compare",
+      Op::Equal(..) => "equal",
+      Op::Pass => "pass",
     }
   }
 }
@@ -164,7 +199,12 @@ pub(crate) fn lower_scratch_releases(code: &mut [Instruction]) {
       | Op::AddIntConst(_)
       | Op::AddIntBound(_)
       | Op::AddFloatConst(_)
-      | Op::AddFloatBound(_) => {}
+      | Op::AddFloatBound(_)
+      // Results are numbers or booleans, written to the numeric slot.
+      | Op::Arith(..)
+      | Op::Compare(..)
+      | Op::Equal(..)
+      | Op::Pass => {}
     }
   }
 }
@@ -186,6 +226,8 @@ pub(crate) fn leaf<L: LeafShard>(c: &L::Compiled, output: Type) -> Option<Inline
     Op::Set(*c.downcast_ref::<Binding>()?)
   } else if id == TypeId::of::<leaf::Inc>() {
     Op::Inc(*c.downcast_ref::<Binding>()?)
+  } else if id == TypeId::of::<leaf::Keep>() {
+    Op::Pass
   } else if id == TypeId::of::<data::Take>() {
     match c.downcast_ref::<data::TakeCode>()? {
       data::TakeCode::Key(key) => Op::Take(key.clone()),
@@ -206,8 +248,26 @@ pub(crate) fn leaf<L: LeafShard>(c: &L::Compiled, output: Type) -> Option<Inline
       (ty, Operand::Bound(b)) if ty == Type::float() => Op::AddFloatBound(*b),
       (ty, Operand::Const(Var::Float4(v))) if ty == Type::float4() => Op::AddFloat4Const(*v),
       (ty, Operand::Bound(b)) if ty == Type::float4() => Op::AddFloat4Bound(*b),
-      _ => return None,
+      (_, operand) => Op::Arith(BinOp::Add, operand.clone()),
     }
+  } else if id == TypeId::of::<math::Binary<math::SubOp>>() {
+    Op::Arith(BinOp::Subtract, c.downcast_ref::<Operand>()?.clone())
+  } else if id == TypeId::of::<math::Binary<math::MulOp>>() {
+    Op::Arith(BinOp::Multiply, c.downcast_ref::<Operand>()?.clone())
+  } else if id == TypeId::of::<math::Binary<math::DivOp>>() {
+    Op::Arith(BinOp::Divide, c.downcast_ref::<Operand>()?.clone())
+  } else if id == TypeId::of::<leaf::IsLess>() {
+    Op::Compare(Cmp::Less, c.downcast_ref::<Operand>()?.clone())
+  } else if id == TypeId::of::<leaf::IsMoreEqual>() {
+    Op::Compare(Cmp::MoreEqual, c.downcast_ref::<Operand>()?.clone())
+  } else if id == TypeId::of::<values::Ordered<values::IsMoreSpec>>() {
+    Op::Compare(Cmp::More, c.downcast_ref::<Operand>()?.clone())
+  } else if id == TypeId::of::<values::Ordered<values::IsLessEqualSpec>>() {
+    Op::Compare(Cmp::LessEqual, c.downcast_ref::<Operand>()?.clone())
+  } else if id == TypeId::of::<values::Equality<values::IsSpec>>() {
+    Op::Equal(false, c.downcast_ref::<Operand>()?.clone())
+  } else if id == TypeId::of::<values::Equality<values::IsNotSpec>>() {
+    Op::Equal(true, c.downcast_ref::<Operand>()?.clone())
   } else {
     return None;
   };
@@ -442,6 +502,32 @@ pub(crate) fn run(
             value = &scratch;
           }
         }
+        Op::Pass => {}
+        Op::Arith(op, rhs) => {
+          let rhs = match rhs {
+            Operand::Const(v) => v,
+            Operand::Bound(b) => &*frames.slot(*b),
+          };
+          numeric.write(math::arith(*op, arith_name(*op), &*value, rhs)?);
+          value = numeric.as_ptr();
+        }
+        Op::Compare(cmp, rhs) => {
+          let rhs = match rhs {
+            Operand::Const(v) => v,
+            Operand::Bound(b) => &*frames.slot(*b),
+          };
+          let ordering = crate::shards::compare(&*value, rhs.clone())?;
+          numeric.write(Var::Bool(cmp.holds(ordering)));
+          value = numeric.as_ptr();
+        }
+        Op::Equal(negate, rhs) => {
+          let rhs = match rhs {
+            Operand::Const(v) => v,
+            Operand::Bound(b) => &*frames.slot(*b),
+          };
+          numeric.write(Var::Bool(values::values_equal(&*value, rhs) != *negate));
+          value = numeric.as_ptr();
+        }
       }
       #[cfg(any(debug_assertions, feature = "output-checks"))]
       leaf::check_output(instruction.check.0, instruction.check.1, &*value)?;
@@ -456,6 +542,16 @@ pub(crate) fn run(
     unsafe { (*value).clone() }
   };
   Ok((index, output))
+}
+
+/// The shard name an arithmetic error reports.
+fn arith_name(op: BinOp) -> &'static str {
+  match op {
+    BinOp::Add => "Math.Add",
+    BinOp::Subtract => "Math.Subtract",
+    BinOp::Multiply => "Math.Multiply",
+    BinOp::Divide => "Math.Divide",
+  }
 }
 
 #[cold]

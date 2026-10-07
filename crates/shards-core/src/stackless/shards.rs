@@ -50,9 +50,15 @@ impl Shard for Spawn {
 /// point is when it started waiting.
 pub struct Pause;
 
+/// A pause in progress: since when, for a timed pause; a plain yield reads
+/// no clock.
+pub struct Waiting {
+  since: Option<Instant>,
+}
+
 impl Shard for Pause {
   type Compiled = Duration;
-  type State = Option<Instant>;
+  type State = Option<Waiting>;
   const NAME: &'static str = PAUSE_DESC.name;
   const VERSION: u32 = PAUSE_DESC.version;
 
@@ -60,24 +66,26 @@ impl Shard for Pause {
     compose_pause(args, ctx)
   }
 
-  fn instantiate(_: &Duration, _: &mut InstanceCtx) -> Result<Option<Instant>> {
+  fn instantiate(_: &Duration, _: &mut InstanceCtx) -> Result<Option<Waiting>> {
     Ok(None)
   }
 
   fn activate(
     duration: &Duration,
-    started: &mut Option<Instant>,
+    waiting: &mut Option<Waiting>,
     _: &mut ActivationCtx<'_>,
     input: &Var,
   ) -> Result<Step> {
-    match started {
+    match waiting {
       None => {
-        *started = Some(Instant::now());
+        *waiting = Some(Waiting {
+          since: (!duration.is_zero()).then(Instant::now),
+        });
         Ok(Step::Suspend)
       }
-      Some(start) if start.elapsed() < *duration => Ok(Step::Suspend),
+      Some(Waiting { since: Some(start) }) if start.elapsed() < *duration => Ok(Step::Suspend),
       Some(_) => {
-        *started = None;
+        *waiting = None;
         Ok(Step::Next(input.clone()))
       }
     }

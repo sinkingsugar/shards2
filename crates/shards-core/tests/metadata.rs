@@ -1107,10 +1107,8 @@ fn signatures_classify_every_core_shard_and_support_owned_metadata() {
     shards_core::shards::SPAWN.desc.lifetime,
     Lifetime::Stateless
   );
-  assert_eq!(
-    shards_core::shards::PROBE.desc.lifetime,
-    Lifetime::Stateless
-  );
+  // The probe's lifecycle is what tests observe, so it is stateful.
+  assert_eq!(shards_core::shards::PROBE.desc.lifetime, Lifetime::Stateful);
   assert_eq!(shards_core::shards::KEEP.desc.lifetime, Lifetime::Stateful);
   assert_eq!(shards_core::shards::ONCE.desc.lifetime, Lifetime::Stateful);
   // Owned dynamic names require no leaked allocations or static descriptions.

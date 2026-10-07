@@ -235,11 +235,14 @@ pub(crate) fn keep_plan(old: &CompiledFunction, new: &CompiledFunction) -> KeepP
       None => plan.reset.push(format!("{name}.{}", keep.name)),
     }
   }
-  // Native shard state inside the body declares no compatibility contract
-  // yet, so it restarts with the body; say so when the body changed.
-  if new.flow.analysis.lifetime == crate::signature::Lifetime::Stateful
-    && new.flow.nodes.len() != new.keeps.len()
-  {
+  // Native shard state inside the body (and nested components) declares no
+  // compatibility contract yet, so it restarts with the body; say so when
+  // the old body held any beyond its Keep slots.
+  let keeps_only = old.flow.analysis.occurrences.iter().all(|o| {
+    o.lifetime != crate::signature::Lifetime::Stateful
+      || matches!(o.path.last(), Some(PathStep::Shard { name, .. }) if name == "Keep")
+  });
+  if !keeps_only {
     plan.reset.push(format!("{name} (native state)"));
   }
   plan

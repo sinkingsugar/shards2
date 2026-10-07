@@ -173,9 +173,9 @@ pub fn arith(op: BinOp, name: &str, input: &Var, operand: &Var) -> Result<Var> {
 
 /// Shared compose of the binary shards: the input and the operand (literal
 /// or variable) are numbers or float vectors that mix ([`Shape::mix`]).
-pub(crate) fn compose_binary<B: Backend>(
+pub(crate) fn compose_binary(
   args: &Args,
-  ctx: &mut ComposeCtx<'_, B>,
+  ctx: &mut ComposeCtx<'_>,
   name: &'static str,
   op: BinOp,
 ) -> Result<Composed<Operand>> {
@@ -285,7 +285,7 @@ impl<S: BinarySpec> LeafShard for Binary<S> {
   type State = ();
   const DESC: ShardDesc = S::DESC;
 
-  fn compose<B: Backend>(args: &Args, ctx: &mut ComposeCtx<'_, B>) -> Result<Composed<Operand>> {
+  fn compose(args: &Args, ctx: &mut ComposeCtx<'_>) -> Result<Composed<Operand>> {
     compose_binary(args, ctx, S::DESC.name, S::OP)
   }
 
@@ -331,7 +331,7 @@ impl LeafShard for Dec {
   type State = ();
   const DESC: ShardDesc = DEC_DESC;
 
-  fn compose<B: Backend>(args: &Args, ctx: &mut ComposeCtx<'_, B>) -> Result<Composed<Binding>> {
+  fn compose(args: &Args, ctx: &mut ComposeCtx<'_>) -> Result<Composed<Binding>> {
     compose_counter(args, ctx, DEC_DESC.name)
   }
 
@@ -444,11 +444,7 @@ impl UnarySpec for CeilOp {
 }
 
 /// Checks that the input type is one of `accepted`.
-fn require_input<B: Backend>(
-  ctx: &ComposeCtx<'_, B>,
-  name: &str,
-  accepted: &[TypeName],
-) -> Result<Type> {
+fn require_input(ctx: &ComposeCtx<'_>, name: &str, accepted: &[TypeName]) -> Result<Type> {
   let input = ctx.input();
   if accepted.iter().any(|t| t.to_type() == input) {
     return Ok(input);
@@ -482,7 +478,7 @@ impl<S: UnarySpec> LeafShard for Unary<S> {
   type State = ();
   const DESC: ShardDesc = S::DESC;
 
-  fn compose<B: Backend>(_: &Args, ctx: &mut ComposeCtx<'_, B>) -> Result<Composed<()>> {
+  fn compose(_: &Args, ctx: &mut ComposeCtx<'_>) -> Result<Composed<()>> {
     let output = require_input(ctx, S::DESC.name, ARITHMETIC)?;
     Ok(Composed {
       compiled: (),
@@ -540,7 +536,7 @@ impl LeafShard for Length {
   type State = ();
   const DESC: ShardDesc = LENGTH_DESC;
 
-  fn compose<B: Backend>(_: &Args, ctx: &mut ComposeCtx<'_, B>) -> Result<Composed<()>> {
+  fn compose(_: &Args, ctx: &mut ComposeCtx<'_>) -> Result<Composed<()>> {
     require_input(ctx, LENGTH_DESC.name, VECTORS)?;
     Ok(Composed {
       compiled: (),

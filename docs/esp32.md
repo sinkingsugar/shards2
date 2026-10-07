@@ -12,11 +12,11 @@ low-water marks to the serial console.
 | ESP32-S3 | `xtensa-esp32s3-espidf` | Espressif Rust `1.97.0.0` (`esp`) |
 | ESP32-C3 | `riscv32imc-esp-espidf` | `nightly-2026-10-03` |
 
-This uses Rust `std` on ESP-IDF, not bare-metal `no_std`. The coroutine mesh
-and its `corosensei` dependency are excluded on ESP-IDF, as on WASI: the
-crates' `build.rs` sets `cfg(stackful)` only where it exists. The
-desktop backends remain unchanged. `shards-io`, the desktop CLI, networking,
-GPIO and other peripheral shards are outside this initial build target.
+This uses Rust `std` on ESP-IDF, not bare-metal `no_std`. The runtime is
+the same engine as on desktop and WASI; the only target-specific defaults in
+the core are the device call-depth limit and the device-sized test fixtures.
+`shards-io`, the desktop CLI, networking, GPIO and other peripheral shards are
+outside this initial build target.
 
 ## Build
 

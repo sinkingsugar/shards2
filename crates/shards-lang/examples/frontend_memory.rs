@@ -4,7 +4,7 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 
-use shards_core::{Catalog, Mesh};
+use shards_core::Catalog;
 use shards_lang::{Program, Source};
 
 struct Counting;
@@ -85,17 +85,17 @@ fn main() {
     let program = measure(name, "load", || {
       Program::load(source, &catalog, &Default::default()).unwrap_or_else(|(_, d)| panic!("{d:?}"))
     });
-    let diagnostics = measure(name, "compose", || program.compose::<Mesh>());
+    let diagnostics = measure(name, "compose", || program.compose());
     assert_eq!(diagnostics.is_empty(), valid);
     if !valid {
       assert_eq!(diagnostics[0].code, "too-deep");
     }
     drop(diagnostics);
-    let report = measure(name, "analyze", || program.analyze::<Mesh>());
+    let report = measure(name, "analyze", || program.analyze());
     assert_eq!(report.ok(), valid);
     drop(report);
     if valid {
-      let report = measure(name, "run", || program.run::<Mesh>().unwrap());
+      let report = measure(name, "run", || program.run().unwrap());
       assert!(report.succeeded());
     }
   }

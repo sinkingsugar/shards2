@@ -5,7 +5,7 @@
 //! sleeping until every request has finished (timed as execution). Prints
 //! one `BENCH` line. Waiting instances use notification-driven wakeups.
 //!
-//! Usage: bench_http <url> <instances> [stackful|stackless]
+//! Usage: bench_http <url> <instances>
 
 use std::time::Instant;
 
@@ -48,13 +48,8 @@ fn main() {
   let args: Vec<String> = std::env::args().skip(1).collect();
   let url = args.first().expect("url").clone();
   let n: usize = args.get(1).expect("instances").parse().expect("instances");
-  let scheduler = args.get(2).map(String::as_str).unwrap_or("stackless");
-  let (create_ms, exec_ms, ticks, ok) = match scheduler {
-    "stackful" => run!(shards_core::StackfulMesh::new(), &url, n),
-    "stackless" => run!(shards_core::stackless::Mesh::new(), &url, n),
-    other => panic!("unknown scheduler {other}"),
-  };
+  let (create_ms, exec_ms, ticks, ok) = run!(shards_core::Mesh::new(), &url, n);
   println!(
-    "BENCH runtime=2.0-{scheduler} instances={n} create_ms={create_ms:.3} exec_ms={exec_ms:.3} ticks={ticks} ok={ok}"
+    "BENCH runtime=2.0 instances={n} create_ms={create_ms:.3} exec_ms={exec_ms:.3} ticks={ticks} ok={ok}"
   );
 }

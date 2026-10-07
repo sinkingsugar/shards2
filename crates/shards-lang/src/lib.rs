@@ -19,8 +19,8 @@ pub mod watch;
 
 pub use parser::parse;
 pub use problem::{Problem, render};
-pub use program::{CheckReport, Host, Program, RunReport, check};
-pub use session::{Finished, ReloadHost, Session, SessionHost};
+pub use program::{CheckReport, Program, RunReport, check};
+pub use session::{Finished, Session};
 pub use source::{Source, Span};
 
 pub use watch::{FileWatcher, WatchControl, WatchEvent};

@@ -1,14 +1,14 @@
 //! What core enforces for host shards (defined here with the public API
 //! only, as an external crate would): declared input types, and in debug
 //! builds (or with the `output-checks` feature) that produced values fit
-//! the shard's compose output type. Both schedulers.
+//! the shard's compose output type.
 
 use shards_core::args::Args;
-use shards_core::compose::{Backend, ComposeCtx};
+use shards_core::compose::ComposeCtx;
 use shards_core::describe::{InputDesc, OutputDesc, Params, ShardDesc, Targets, TypeName};
 use shards_core::instance::{InstanceCtx, LeafCtx};
 use shards_core::shards::leaf::{LeafShard, leaf_type};
-use shards_core::{Composed, Flow, Result, ShardDef, ShardType, Type, Var, WireDef};
+use shards_core::{Composed, Flow, Mesh, Result, ShardDef, ShardType, Type, Var, WireDef};
 
 /// Declares a fixed record with `name: String` but produces an Int there:
 /// a shard that drifted from its declared type.
@@ -33,7 +33,7 @@ impl LeafShard for Drifted {
   type State = ();
   const DESC: ShardDesc = DRIFTED_DESC;
 
-  fn compose<B: Backend>(_: &Args, _: &mut ComposeCtx<'_, B>) -> Result<Composed<()>> {
+  fn compose(_: &Args, _: &mut ComposeCtx<'_>) -> Result<Composed<()>> {
     Ok(Composed {
       compiled: (),
       output: Type::fixed_table([("name", Type::string())]),
@@ -78,7 +78,7 @@ impl LeafShard for Record {
   type State = ();
   const DESC: ShardDesc = RECORD_DESC;
 
-  fn compose<B: Backend>(_: &Args, ctx: &mut ComposeCtx<'_, B>) -> Result<Composed<()>> {
+  fn compose(_: &Args, ctx: &mut ComposeCtx<'_>) -> Result<Composed<()>> {
     // No shape check here: core enforced the declared input.
     Ok(Composed {
       compiled: (),
@@ -129,116 +129,101 @@ fn wire(input: Var) -> WireDef {
   }
 }
 
-macro_rules! host_contract_tests {
-  ($mesh:ty) => {
-    use super::*;
-
-    #[test]
-    fn unknown_host_effects_propagate_through_nested_flows() {
-      use shards_core::shards::defs::{konst, sub};
-      let mut mesh = <$mesh>::new();
-      mesh.add_wire(WireDef {
-        name: "unknown".into(),
-        looped: false,
-        flow: vec![sub(vec![
-          konst(Var::Int(1)),
-          ShardDef::new(&DRIFTED, vec![]),
-        ])],
-      });
-      let wire = mesh.compile("unknown", Type::none()).unwrap();
-      assert!(wire.flow.analysis.effects.unknown);
-      assert!(
-        wire
-          .flow
-          .analysis
-          .occurrences
-          .iter()
-          .next()
-          .unwrap()
-          .effects
-          .unknown
-      );
-      assert_eq!(
-        wire.flow.analysis.lifetime,
-        shards_core::signature::Lifetime::Unknown
-      );
-    }
-
-    #[test]
-    fn declared_input_types_are_enforced() {
-      let mut mesh = <$mesh>::new();
-      mesh.add_wire(wire(Var::string("not an Int")));
-      let err = mesh
-        .compile("w", Type::none())
-        .err()
-        .expect("a compose error");
-      let d = err.diagnostic().expect("structured");
-      assert_eq!(
-        (d.code, d.shard.as_deref()),
-        ("input-type-mismatch", Some("Host.Drifted"))
-      );
-    }
-
-    #[test]
-    fn a_full_input_type_checks_the_record_shape() {
-      let guid = || Var::Seq(std::sync::Arc::new(vec![Var::Int(1), Var::Int(2)]));
-      let mut mesh = <$mesh>::new();
-      mesh.add_wire(record_wire(Var::table([
-        ("addr", Var::Int(7)),
-        ("guid", guid()),
-      ])));
-      assert!(mesh.compile("r", Type::none()).is_ok());
-
-      // A record missing a key fails at compose, not at runtime.
-      let mut mesh = <$mesh>::new();
-      mesh.add_wire(record_wire(Var::table([("addr", Var::Int(7))])));
-      let err = mesh
-        .compile("r", Type::none())
-        .err()
-        .expect("a compose error");
-      let d = err.diagnostic().expect("structured");
-      assert_eq!(d.code, "input-type-mismatch");
-      assert!(
-        d.message
-          .contains("Host.Record needs {addr: Int guid: [Int]} input, got {addr: Int}"),
-        "{}",
-        d.message
-      );
-    }
-
-    #[cfg(any(debug_assertions, feature = "output-checks"))]
-    #[test]
-    fn a_value_outside_the_declared_output_type_fails_the_instance() {
-      use shards_core::{Error, Outcome};
-      let mut mesh = <$mesh>::new();
-      mesh.add_wire(wire(Var::Int(1)));
-      let w = mesh.compile("w", Type::none()).expect("composes");
-      let id = mesh.spawn(&w, Var::None).expect("spawns");
-      mesh.run(2);
-      match mesh.outcome(id) {
-        Some(Outcome::Failed(Error::Activation(message))) => {
-          assert!(
-            message.contains("Host.Drifted produced {name: 1}"),
-            "{message}"
-          );
-          assert!(
-            message.contains("{name: String} does not admit"),
-            "{message}"
-          );
-        }
-        other => panic!("expected a failure, got {other:?}"),
-      }
-    }
-  };
+#[test]
+fn unknown_host_effects_propagate_through_nested_flows() {
+  use shards_core::shards::defs::{konst, sub};
+  let mut mesh = Mesh::new();
+  mesh.add_wire(WireDef {
+    name: "unknown".into(),
+    looped: false,
+    flow: vec![sub(vec![
+      konst(Var::Int(1)),
+      ShardDef::new(&DRIFTED, vec![]),
+    ])],
+  });
+  let wire = mesh.compile("unknown", Type::none()).unwrap();
+  assert!(wire.flow.analysis.effects.unknown);
+  assert!(
+    wire
+      .flow
+      .analysis
+      .occurrences
+      .iter()
+      .next()
+      .unwrap()
+      .effects
+      .unknown
+  );
+  assert_eq!(
+    wire.flow.analysis.lifetime,
+    shards_core::signature::Lifetime::Unknown
+  );
 }
 
-#[cfg(stackful)]
-mod stackful {
-  host_contract_tests!(shards_core::StackfulMesh);
+#[test]
+fn declared_input_types_are_enforced() {
+  let mut mesh = Mesh::new();
+  mesh.add_wire(wire(Var::string("not an Int")));
+  let err = mesh
+    .compile("w", Type::none())
+    .err()
+    .expect("a compose error");
+  let d = err.diagnostic().expect("structured");
+  assert_eq!(
+    (d.code, d.shard.as_deref()),
+    ("input-type-mismatch", Some("Host.Drifted"))
+  );
 }
 
-mod stackless {
-  host_contract_tests!(shards_core::Mesh);
+#[test]
+fn a_full_input_type_checks_the_record_shape() {
+  let guid = || Var::Seq(std::sync::Arc::new(vec![Var::Int(1), Var::Int(2)]));
+  let mut mesh = Mesh::new();
+  mesh.add_wire(record_wire(Var::table([
+    ("addr", Var::Int(7)),
+    ("guid", guid()),
+  ])));
+  assert!(mesh.compile("r", Type::none()).is_ok());
+
+  // A record missing a key fails at compose, not at runtime.
+  let mut mesh = Mesh::new();
+  mesh.add_wire(record_wire(Var::table([("addr", Var::Int(7))])));
+  let err = mesh
+    .compile("r", Type::none())
+    .err()
+    .expect("a compose error");
+  let d = err.diagnostic().expect("structured");
+  assert_eq!(d.code, "input-type-mismatch");
+  assert!(
+    d.message
+      .contains("Host.Record needs {addr: Int guid: [Int]} input, got {addr: Int}"),
+    "{}",
+    d.message
+  );
+}
+
+#[cfg(any(debug_assertions, feature = "output-checks"))]
+#[test]
+fn a_value_outside_the_declared_output_type_fails_the_instance() {
+  use shards_core::{Error, Outcome};
+  let mut mesh = Mesh::new();
+  mesh.add_wire(wire(Var::Int(1)));
+  let w = mesh.compile("w", Type::none()).expect("composes");
+  let id = mesh.spawn(&w, Var::None).expect("spawns");
+  mesh.run(2);
+  match mesh.outcome(id) {
+    Some(Outcome::Failed(Error::Activation(message))) => {
+      assert!(
+        message.contains("Host.Drifted produced {name: 1}"),
+        "{message}"
+      );
+      assert!(
+        message.contains("{name: String} does not admit"),
+        "{message}"
+      );
+    }
+    other => panic!("expected a failure, got {other:?}"),
+  }
 }
 
 /// Hosts read and build collections through `Var` accessors and `Table`,

@@ -3,8 +3,7 @@
 //! with a compact index, full descriptions and search, as JSON.
 //!
 //! Reading the catalog only reads static descriptions: it never composes,
-//! instantiates, starts a reactor or does I/O. Backend availability is
-//! derived from the implementations attached to each `ShardType`.
+//! instantiates, starts a reactor or does I/O.
 
 use crate::describe::{DefaultValue, InputDesc, OutputDesc, Params, Requirement, TypeName};
 use crate::diagnostic::json_str;
@@ -92,7 +91,7 @@ impl Catalog {
       .collect()
   }
 
-  /// The compact index: name, summary, backends and targets of every shard.
+  /// The compact index: name, summary and targets of every shard.
   pub fn index_json(&self) -> String {
     let entries: Vec<String> = self.shards.iter().map(|s| summary_json(s)).collect();
     format!(
@@ -137,12 +136,11 @@ fn aliases_json(s: &ShardType) -> String {
 
 fn summary_json(s: &ShardType) -> String {
   format!(
-    "{{\"name\":{}{},\"summary\":{},\"documented\":{},\"backends\":{},\"targets\":{},\"effects\":{},\"lifetime\":{}}}",
+    "{{\"name\":{}{},\"summary\":{},\"documented\":{},\"targets\":{},\"effects\":{},\"lifetime\":{}}}",
     json_str(s.name()),
     aliases_json(s),
     json_str(s.desc.summary),
     s.desc.is_documented(),
-    strings_json(&s.backends()),
     json_str(s.desc.targets.name()),
     s.desc.effects.to_json(),
     json_str(s.desc.lifetime.name()),
@@ -226,7 +224,7 @@ fn describe_json(s: &ShardType) -> String {
     }
   };
   format!(
-    "{{\"schema\":{},\"name\":{}{},\"version\":{},\"summary\":{},\"help\":{},\"documented\":{},\"backends\":{},\"targets\":{},\"input\":{input},\"output\":{output},\"params\":{params},\"effects\":{},\"lifetime\":{},\"uses\":[],\"mutates\":[],\"signature\":{}}}",
+    "{{\"schema\":{},\"name\":{}{},\"version\":{},\"summary\":{},\"help\":{},\"documented\":{},\"targets\":{},\"input\":{input},\"output\":{output},\"params\":{params},\"effects\":{},\"lifetime\":{},\"uses\":[],\"mutates\":[],\"signature\":{}}}",
     json_str(SCHEMA),
     json_str(d.name),
     aliases_json(s),
@@ -234,7 +232,6 @@ fn describe_json(s: &ShardType) -> String {
     json_str(d.summary),
     json_str(d.help),
     d.is_documented(),
-    strings_json(&s.backends()),
     json_str(d.targets.name()),
     signature.effects.to_json(),
     json_str(signature.lifetime.name()),

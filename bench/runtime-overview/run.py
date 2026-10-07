@@ -45,18 +45,13 @@ for round_id in range(3):
         expected = int(f["instances"]) * int(f["ticks"])
         assert int(f.get("resumes", f.get("iterations"))) == expected // (1 if "resumes" in f else 2), line
     assert sum("BENCH" in line for line in output.splitlines()) == 7
-    for scheduler in (["stackless", "stackful"] if round_id % 2 == 0 else ["stackful", "stackless"]):
-        flags = ["--stackless"] if scheduler == "stackless" else []
-        for n in [100, 1000, 10000]:
-            output = run([root / "target/release/examples/bench_instances", str(n), *flags])
-            assert int(fields(output)["iterations"]) == n * 500
-        output = run([root / "target/release/examples/bench_depth", *flags])
-        assert len(output.splitlines()) == 4
-        for line in output.splitlines():
-            f = fields(line)
-            assert int(f["resumes"]) == int(f["expected"]) == 1000000
-    output = run([root / "target/release/examples/bench_async"])
+    for n in [100, 1000, 10000]:
+        output = run([root / "target/release/examples/bench_instances", str(n)])
+        assert int(fields(output)["iterations"]) == n * 500
+    output = run([root / "target/release/examples/bench_depth", "--progress"])
     assert len(output.splitlines()) == 4
+    output = run([root / "target/release/examples/bench_async"])
+    assert len(output.splitlines()) == 2
     counts = [int(fields(line)["completed_requests"]) for line in output.splitlines()]
     assert counts[0] > 0 and len(set(counts)) == 1, counts
 

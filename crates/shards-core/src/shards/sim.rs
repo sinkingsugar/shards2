@@ -230,10 +230,7 @@ impl AsyncShard for Request {
   type Op = RequestOp;
   const DESC: ShardDesc = REQUEST_DESC;
 
-  fn compose<B: Backend>(
-    args: &Args,
-    ctx: &mut ComposeCtx<'_, B>,
-  ) -> Result<Composed<RequestCompiled>> {
+  fn compose(args: &Args, ctx: &mut ComposeCtx<'_>) -> Result<Composed<RequestCompiled>> {
     let delay = args.int("delay").expect("decoded Delay");
     if delay < 0 {
       return Err(Error::Diagnostic(Box::new(

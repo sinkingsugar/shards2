@@ -12,7 +12,6 @@ fn http_get_is_described_without_starting_anything() {
   let catalog = Catalog::new(&[shards_core::shards::CATALOG, shards_io::CATALOG]).unwrap();
   let json = catalog.describe_json("Http.Get").unwrap();
   assert!(json.contains("\"targets\":\"native-only\""), "{json}");
-  assert!(json.contains("\"backends\":[\"stackful\",\"stackless\"]"));
   assert!(json.contains("\"name\":\"url\",\"index\":0"));
   assert!(json.contains("\"required\":true"));
   assert!(json.contains("\"name\":\"timeout\",\"index\":1"));

@@ -1,11 +1,12 @@
-//! Shards that cannot suspend, with one implementation for both schedulers.
+//! Shards that cannot suspend.
 //!
 //! "Leaf" means the shard never suspends, not that it does little work. An
 //! I/O wrapper qualifies only if it returns without blocking; one that waits
 //! on I/O is an async shard ([`crate::shards::async_shard`]).
 //!
-//! [`Leaf`] adapts a [`LeafShard`] to each scheduler's shard trait: its
-//! result becomes a stackful `Flow` or a stackless `Step` at the boundary.
+//! [`Leaf`] adapts a [`LeafShard`] to the shard contract ([`Shard`]): its
+//! [`Flow`] result becomes a [`Step`] at the boundary, after the output
+//! check.
 
 use crate::args::Args;
 use std::marker::PhantomData;
@@ -13,8 +14,7 @@ use std::marker::PhantomData;
 use super::*;
 use crate::describe::ShardDesc;
 use crate::instance::{CleanupCtx, InstanceCtx, LeafCtx};
-use crate::shard::{Flow, Shard};
-use crate::stackless::{self, Stackless, Step};
+use crate::shard::{ActivationCtx, Flow, Shard, Step};
 
 /// A shard that cannot suspend. Prototype API.
 pub trait LeafShard: 'static {
@@ -25,10 +25,7 @@ pub trait LeafShard: 'static {
   /// shared decoder enforces the declared parameters.
   const DESC: ShardDesc;
 
-  fn compose<B: Backend>(
-    args: &Args,
-    ctx: &mut ComposeCtx<'_, B>,
-  ) -> Result<Composed<Self::Compiled>>;
+  fn compose(args: &Args, ctx: &mut ComposeCtx<'_>) -> Result<Composed<Self::Compiled>>;
 
   fn instantiate(compiled: &Self::Compiled, ctx: &mut InstanceCtx) -> Result<Self::State>;
 
@@ -43,14 +40,12 @@ pub trait LeafShard: 'static {
   fn cleanup(_compiled: &Self::Compiled, _state: &mut Self::State, _ctx: &mut CleanupCtx) {}
 }
 
-/// Adapts a [`LeafShard`] to both schedulers.
+/// Adapts a [`LeafShard`] to the shard contract.
 pub struct Leaf<L>(PhantomData<fn() -> L>);
 
-/// The shard type of a leaf shard, with both implementations.
+/// The shard type of a leaf shard.
 pub const fn leaf_type<L: LeafShard>() -> ShardType {
-  ShardType::new(L::DESC)
-    .with_stackful::<Leaf<L>>()
-    .with_stackless::<Leaf<L>>()
+  ShardType::new(L::DESC).implemented_by::<Leaf<L>>()
 }
 
 /// A leaf or async shard's compose output with the type compose declared
@@ -102,10 +97,7 @@ impl<L: LeafShard> Shard for Leaf<L> {
   const NAME: &'static str = L::DESC.name;
   const VERSION: u32 = L::DESC.version;
 
-  fn compose(
-    args: &Args,
-    ctx: &mut ComposeCtx<'_, Stackful>,
-  ) -> Result<Composed<Checked<L::Compiled>>> {
+  fn compose(args: &Args, ctx: &mut ComposeCtx<'_>) -> Result<Composed<Checked<L::Compiled>>> {
     L::compose(args, ctx).map(checked)
   }
 
@@ -120,46 +112,7 @@ impl<L: LeafShard> Shard for Leaf<L> {
   fn activate(
     c: &Checked<L::Compiled>,
     s: &mut L::State,
-    ctx: &mut crate::runtime::ActivationCtx<'_>,
-    input: &Var,
-  ) -> Result<Flow> {
-    let flow = L::activate(&c.inner, s, ctx, input)?;
-    if let Flow::Next(v) = &flow {
-      check_output(L::DESC.name, c.output, v)?;
-    }
-    Ok(flow)
-  }
-
-  fn cleanup(c: &Checked<L::Compiled>, s: &mut L::State, ctx: &mut CleanupCtx) {
-    L::cleanup(&c.inner, s, ctx)
-  }
-}
-
-impl<L: LeafShard> stackless::Shard for Leaf<L> {
-  type Compiled = Checked<L::Compiled>;
-  type State = L::State;
-  const NAME: &'static str = L::DESC.name;
-  const VERSION: u32 = L::DESC.version;
-
-  fn compose(
-    args: &Args,
-    ctx: &mut ComposeCtx<'_, Stackless>,
-  ) -> Result<Composed<Checked<L::Compiled>>> {
-    L::compose(args, ctx).map(checked)
-  }
-
-  fn instantiate(c: &Checked<L::Compiled>, ctx: &mut InstanceCtx) -> Result<L::State> {
-    L::instantiate(&c.inner, ctx)
-  }
-
-  fn inline(c: &Checked<L::Compiled>) -> Option<crate::inline::InlineOp> {
-    crate::inline::leaf::<L>(&c.inner, c.output)
-  }
-
-  fn activate(
-    c: &Checked<L::Compiled>,
-    s: &mut L::State,
-    ctx: &mut stackless::ActivationCtx<'_>,
+    ctx: &mut ActivationCtx<'_>,
     input: &Var,
   ) -> Result<Step> {
     Ok(match L::activate(&c.inner, s, ctx, input)? {
@@ -194,7 +147,7 @@ impl LeafShard for Const {
   no_state!(Var);
   const DESC: ShardDesc = CONST_DESC;
 
-  fn compose<B: Backend>(args: &Args, _: &mut ComposeCtx<'_, B>) -> Result<Composed<Var>> {
+  fn compose(args: &Args, _: &mut ComposeCtx<'_>) -> Result<Composed<Var>> {
     compose_const(args)
   }
 
@@ -211,7 +164,7 @@ impl LeafShard for VarDecl {
   no_state!(Binding);
   const DESC: ShardDesc = VAR_DESC;
 
-  fn compose<B: Backend>(args: &Args, ctx: &mut ComposeCtx<'_, B>) -> Result<Composed<Binding>> {
+  fn compose(args: &Args, ctx: &mut ComposeCtx<'_>) -> Result<Composed<Binding>> {
     compose_var(args, ctx)
   }
 
@@ -229,7 +182,7 @@ impl LeafShard for Bind {
   no_state!(Binding);
   const DESC: ShardDesc = BIND_DESC;
 
-  fn compose<B: Backend>(args: &Args, ctx: &mut ComposeCtx<'_, B>) -> Result<Composed<Binding>> {
+  fn compose(args: &Args, ctx: &mut ComposeCtx<'_>) -> Result<Composed<Binding>> {
     compose_bind(args, ctx)
   }
 
@@ -249,10 +202,7 @@ impl LeafShard for Keep {
   type State = bool;
   const DESC: ShardDesc = KEEP_DESC;
 
-  fn compose<B: Backend>(
-    args: &Args,
-    ctx: &mut ComposeCtx<'_, B>,
-  ) -> Result<Composed<(Binding, Var)>> {
+  fn compose(args: &Args, ctx: &mut ComposeCtx<'_>) -> Result<Composed<(Binding, Var)>> {
     compose_keep(args, ctx)
   }
 
@@ -282,7 +232,7 @@ impl LeafShard for Update {
   no_state!(Binding);
   const DESC: ShardDesc = UPDATE_DESC;
 
-  fn compose<B: Backend>(args: &Args, ctx: &mut ComposeCtx<'_, B>) -> Result<Composed<Binding>> {
+  fn compose(args: &Args, ctx: &mut ComposeCtx<'_>) -> Result<Composed<Binding>> {
     compose_update(args, ctx)
   }
 
@@ -299,7 +249,7 @@ impl LeafShard for Get {
   no_state!(Binding);
   const DESC: ShardDesc = GET_DESC;
 
-  fn compose<B: Backend>(args: &Args, ctx: &mut ComposeCtx<'_, B>) -> Result<Composed<Binding>> {
+  fn compose(args: &Args, ctx: &mut ComposeCtx<'_>) -> Result<Composed<Binding>> {
     compose_get(args, ctx)
   }
 
@@ -316,7 +266,7 @@ impl LeafShard for Inc {
   no_state!(Binding);
   const DESC: ShardDesc = INC_DESC;
 
-  fn compose<B: Backend>(args: &Args, ctx: &mut ComposeCtx<'_, B>) -> Result<Composed<Binding>> {
+  fn compose(args: &Args, ctx: &mut ComposeCtx<'_>) -> Result<Composed<Binding>> {
     compose_inc(args, ctx)
   }
 
@@ -332,7 +282,7 @@ impl LeafShard for Add {
   no_state!(Operand);
   const DESC: ShardDesc = ADD_DESC;
 
-  fn compose<B: Backend>(args: &Args, ctx: &mut ComposeCtx<'_, B>) -> Result<Composed<Operand>> {
+  fn compose(args: &Args, ctx: &mut ComposeCtx<'_>) -> Result<Composed<Operand>> {
     math::compose_binary(args, ctx, ADD_DESC.name, math::BinOp::Add)
   }
 
@@ -353,7 +303,7 @@ impl LeafShard for IsLess {
   no_state!(Operand);
   const DESC: ShardDesc = IS_LESS_DESC;
 
-  fn compose<B: Backend>(args: &Args, ctx: &mut ComposeCtx<'_, B>) -> Result<Composed<Operand>> {
+  fn compose(args: &Args, ctx: &mut ComposeCtx<'_>) -> Result<Composed<Operand>> {
     compose_compare(args, ctx, Self::DESC.name)
   }
 
@@ -369,7 +319,7 @@ impl LeafShard for IsMoreEqual {
   no_state!(Operand);
   const DESC: ShardDesc = IS_MORE_EQUAL_DESC;
 
-  fn compose<B: Backend>(args: &Args, ctx: &mut ComposeCtx<'_, B>) -> Result<Composed<Operand>> {
+  fn compose(args: &Args, ctx: &mut ComposeCtx<'_>) -> Result<Composed<Operand>> {
     compose_compare(args, ctx, Self::DESC.name)
   }
 
@@ -386,10 +336,7 @@ impl LeafShard for Probe {
   type State = InstanceId;
   const DESC: ShardDesc = PROBE_DESC;
 
-  fn compose<B: Backend>(
-    args: &Args,
-    ctx: &mut ComposeCtx<'_, B>,
-  ) -> Result<Composed<ProbeCompiled>> {
+  fn compose(args: &Args, ctx: &mut ComposeCtx<'_>) -> Result<Composed<ProbeCompiled>> {
     compose_probe(args, ctx)
   }
 

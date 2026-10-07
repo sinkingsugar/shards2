@@ -21,7 +21,7 @@ use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
-use shards_core::compose::{Backend, Binding, ComposeCtx};
+use shards_core::compose::{Binding, ComposeCtx};
 use shards_core::describe::{
   DefaultValue, Forms, InputDesc, OutputDesc, ParamDecl, Params, Requirement, ShardDesc, Targets,
   TypeName,
@@ -142,10 +142,7 @@ impl AsyncShard for Get {
   type Op = IoTask;
   const DESC: ShardDesc = GET_DESC;
 
-  fn compose<B: Backend>(
-    args: &Args,
-    ctx: &mut ComposeCtx<'_, B>,
-  ) -> Result<Composed<GetCompiled>> {
+  fn compose(args: &Args, ctx: &mut ComposeCtx<'_>) -> Result<Composed<GetCompiled>> {
     // Names, positions, the default, forms and literal types were checked
     // by the shared decoder; compose resolves the binding and checks values.
     let url = match args.get("url").expect("decoded required URL") {

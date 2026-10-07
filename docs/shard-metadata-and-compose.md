@@ -5,7 +5,7 @@
 
 **Proposal:** give each shard one static description that powers discovery, documentation, and argument decoding. Let the shard's compose function own context-dependent validation and specialization. Preserve useful verification guarantees from 1.x while choosing a simpler Rust implementation.
 
-Related: [shard contract](prototype-shard-contract.md), [core design](shards-2-compose-split.md), and [AI roadmap](ai-first-roadmap.md), especially its discover → read → check loop. Stackless remains the default; both backends are maintained, one backend per mesh.
+Related: [shard contract](prototype-shard-contract.md), [core design](shards-2-compose-split.md), and [AI roadmap](ai-first-roadmap.md), especially its discover → read → check loop. The runtime has one scheduler since golden path M4 (see the last section).
 
 ## 1. Current implementation
 
@@ -40,13 +40,13 @@ Proposed minimum contents:
 - Parameters in positional order: name, required/optional status, explicit default when present, accepted argument forms, value-type constraint, and help. Optional without a default is distinct from a default of `None`.
 - Broad input constraints and an output description. Output may be fixed, passthrough, or dependent on compose; dependent output must not be presented as an exact static type.
 - Small examples. Initially these can be wire definitions in tests; textual examples can become executable when the front end lands.
-- Supported backends and targets. Discovery must not advertise a shard as runnable on a target/backend where its implementation is unavailable.
+- Supported targets. Discovery must not advertise a shard as runnable on a target where its implementation is unavailable.
 
 Argument form and value type are distinct. A string literal, a reference to a String variable, and a wire name are not interchangeable merely because their source spelling might contain text. Declarations must state which forms are accepted. A literal-only parameter must not silently acquire support for variable references.
 
-Metadata should be shared by `LeafShard`, `AsyncShard`, and the two implementations of a composite. **The description lives on `ShardType` itself, in one place**; backend adapters attach executable implementations to it and never carry their own name, version or documentation. (Today `shard_type::<S>()` takes the name and version from the stackful implementation and `with_stackless` attaches the other without checking they agree; that is the drift to remove.)
+Metadata is shared by `LeafShard`, `AsyncShard` and the control-flow shards. **The description lives on `ShardType` itself, in one place**; the implementation is attached to it and never carries its own name, version or documentation.
 
-**Backend availability is derived, not declared:** a `ShardType` knows which backends have an implementation attached, and discovery reports exactly that. Only genuine target restrictions (for example, `shards-io` being native-only) are declared.
+**Implementation presence is derived, not declared:** a `ShardType` knows whether an implementation is attached, and composing a described shard without one is a `not-implemented` error. Only genuine target restrictions (for example, `shards-io` being native-only) are declared.
 
 A runtime catalog aggregates the shards linked into that runtime and rejects duplicate identities. Reading it must not compose programs, instantiate shards, start reactors, or perform network/file I/O. **Registration is explicit:** each crate exposes a list of its shard types, and a runtime builds its catalog from those lists. No linker-section or global-constructor registration: it is less predictable on wasm and in static builds, and 1.x's registration side effects are what we are moving away from.
 
@@ -84,7 +84,7 @@ Describe the current prototype's actual contract:
 - `url`: required; String literal or variable reference resolving to String.
 - `timeout`: optional; Int literal, default 10 seconds. Compose checks that it is positive. Variable timeouts are not currently supported.
 - Input is ignored; output is String. Help explains non-success responses, timeout, and cancellation behavior.
-- Native implementation on both backends; browser support remains separate work.
+- Native implementation; browser support remains separate work.
 
 The decoder handles names, positions, defaults, and accepted argument forms. Compose resolves the URL binding and validates the timeout. Runtime code performs the request. A documentation query must not construct an HTTP client or start Tokio.
 
@@ -122,7 +122,7 @@ Prove the design on `Http.Get`, `Add`, and `When` before converting the full sub
 2. Implement shared argument decoding, including named arguments as a Rust-level API even before the parser is ported. Give shard compose checked accessors; defer a derive macro until a concrete need appears.
 3. Make the three shards consume that decoder and expose their descriptions through index/detail JSON.
 4. Introduce structured errors for decoding and those shards' compose checks.
-5. Keep both backends on the same descriptions and semantic compose functions.
+5. Keep every implementation on the shared descriptions and semantic compose functions.
 
 Acceptance:
 
@@ -130,7 +130,7 @@ Acceptance:
 - Changing a referenced variable's value needs no recompose; changing a compose-relevant binding/type invalidates reuse.
 - Catalog defaults and accepted argument forms are the definitions actually used by decoding. Context-dependent combinations still fail in compose when appropriate.
 - Enumerating/documenting `Http.Get` requires no instance, reactor, or request. Unavailable backend/target combinations are reported clearly.
-- Examples and invalid cases exercise both backends with matching semantic results. Existing acceptance tests continue to pass.
+- Examples and invalid cases exercise the runtime with matching semantic results. Existing acceptance tests continue to pass.
 - `When`'s published description is produced from the same parameter declarations its decoder uses. A composite is where drift would show first, so the implementation should make drift structurally difficult: documentation and decoding both read **the same declarations**, rather than relying only on a test to keep two copies aligned.
 
 This slice does not require full type-system parity, recursive types, a new parser, effect enforcement, or a general schema language. Broader compose work should follow an explicit list of guarantees we want, with conformance tests; preserving every 1.x implementation detail is not the objective.
@@ -150,10 +150,10 @@ Still open: the ergonomic Rust API for decoded arguments, the catalog registrati
 ## 9. First slice: what was built (2026-10-04)
 
 - **Descriptions** (`crates/shards-core/src/describe.rs`): `ShardDesc` on every `ShardType`, with summary, help, parameter declarations (name, accepted forms, value types, required/optional/default), input and output descriptions, and target restrictions. Undescribed shards use `ShardDesc::undocumented` and keep positional arguments; named arguments to them are rejected.
-- **Structural drift prevention:** implementations are attached with `ShardType::new(desc).with_stackful::<S>().with_stackless::<T>()`, and attaching one whose name or version differs from the description **fails to compile** (a const assertion; covered by a `compile_fail` doctest). `LeafShard`/`AsyncShard` take their identity from their `DESC`; `When`'s two implementations both take theirs from `WHEN_DESC`. Each parameter list is a single `static`, read by both the decoder and the catalog.
+- **Structural drift prevention:** the implementation is attached with `ShardType::new(desc).implemented_by::<S>()`, and attaching one whose name or version differs from the description **fails to compile** (a const assertion; covered by a `compile_fail` doctest). `LeafShard`/`AsyncShard` take their identity from their `DESC`; `When`'s implementation takes its identity from `WHEN_DESC`. Each parameter list is a single `static`, read by both the decoder and the catalog.
 - **Decoding** (`args.rs`): positional and named arguments (`Arg`, `ShardDef::with_args`), defaults, accepted forms and literal types, with diagnostics for missing, unknown, duplicate, wrong-form, wrong-type, positional-after-named and too many arguments. Compose reads the result through checked accessors on `Args`.
-- **Diagnostics** (`diagnostic.rs`): `Error::Diagnostic`, with 1.x field names, `basic_type` using 1.x `SHType` codes, a fine-grained `code`, and `param`; `did_you_mean`/`candidates` omitted. Decoding errors are phase `construct`; the three shards' compose checks are phase `compose` (`input-type-mismatch`, `predicate-not-bool`, `invalid-argument-value`, `wrong-variable-type`). A missing backend implementation is a `backend-unavailable` diagnostic.
-- **Catalog** (`catalog.rs`): `Catalog::new(&[shards_core::shards::CATALOG, shards_io::CATALOG])` from explicit per-crate lists, rejecting duplicates; `index_json`, `describe_json` and `search`, under the schema `shards2-catalog/1`. Backends are derived from attached implementations. Describing `Http.Get` does not start its runtime (tested).
+- **Diagnostics** (`diagnostic.rs`): `Error::Diagnostic`, with 1.x field names, `basic_type` using 1.x `SHType` codes, a fine-grained `code`, and `param`; `did_you_mean`/`candidates` omitted. Decoding errors are phase `construct`; the three shards' compose checks are phase `compose` (`input-type-mismatch`, `predicate-not-bool`, `invalid-argument-value`, `wrong-variable-type`). A described shard without an implementation is a `not-implemented` diagnostic.
+- **Catalog** (`catalog.rs`): `Catalog::new(&[shards_core::shards::CATALOG, shards_io::CATALOG])` from explicit per-crate lists, rejecting duplicates; `index_json`, `describe_json` and `search`, under the schema `shards2-catalog/1`. Describing `Http.Get` does not start its runtime (tested).
 - **Small builds:** the `docs` cargo feature (on by default; forwarded by `shards-io`). Without it, all prose written through `shard_doc!` compiles to empty strings; the argument contract is unchanged. CI runs the metadata tests both ways.
 
 **Review fixes (Astra, after `6d14265`):**
@@ -165,13 +165,13 @@ Still open: the ergonomic Rust API for decoded arguments, the catalog registrati
 **All shards described (2026-10-04).** The remaining 15 shards in the core catalog (`Const`, `Set`, `Update`, `Get`, `Inc`, `IsLess`, `IsMoreEqual`, `Once`, `Repeat`, `While`, `Do`, `Pause`, `Spawn`, and the test shards `Probe` and `Request`) have descriptions derived from what their compose actually accepted: their forms, literal types, defaults (`Pause`'s `Seconds` defaults to `0.0`, its previous behavior when omitted), and flow and output behavior. Their compose logic reads decoded arguments by name; context-dependent checks stay in compose and are now structured diagnostics (binding existence, mutability and type for `Set`/`Update`/`Inc`/`Get`, the input/operand relation for the comparisons, an Int binding for `Repeat`'s `Times`, a `Pause` duration that is finite, non-negative and representable (`Duration::try_from_secs_f64`), unknown and recursive wires for `Do`/`Spawn`, which attribute only those reference errors to their `Wire` parameter and leave diagnostics from inside the called wire with the shard that raised them, `Probe` modes, a non-negative `Request` delay). No shard in the core crate reports plain-string compose errors any more. Verification:
 
 - every declared parameter of every shard accepts exactly its documented forms (a generic test over the catalog);
-- the full behavior suite (`tests/prototype.rs`, which builds every shard's arguments through the definition helpers) passes unchanged through the decoder, on both schedulers;
-- each shard's compose-time checks have a test on both schedulers;
+- the full behavior suite (`tests/prototype.rs`, which builds every shard's arguments through the definition helpers) passes unchanged through the decoder;
+- each shard's compose-time checks have a test;
 - deliberately narrowing one declaration (`Repeat`'s `Times` to literals only) fails both the compose checks and a behavior test.
 
 Variable declaration/write metadata and front-end work remain separate, as agreed.
 
-Tests: `crates/shards-core/tests/metadata.rs` (on both schedulers, and on wasm for stackless) and `crates/shards-io/tests/catalog.rs`, plus named-argument and compose-diagnostic cases in `crates/shards-io/tests/http.rs` against the local server. Not done, as planned: cache normalization, variable declaration/write metadata, and the CLI. Describing the other shards was done afterwards (above).
+Tests: `crates/shards-core/tests/metadata.rs` (natively and on wasm) and `crates/shards-io/tests/catalog.rs`, plus named-argument and compose-diagnostic cases in `crates/shards-io/tests/http.rs` against the local server. Not done, as planned: cache normalization, variable declaration/write metadata, and the CLI. Describing the other shards was done afterwards (above).
 
 ## Golden path M3: signatures and inference
 
@@ -182,3 +182,7 @@ Every shipped core shard declares effects and lifetime. `Keep` and `Once` requir
 Compose unions effects, required lifetime and mesh access through anonymous flows, computed operands, `Do` and cached `Spawn` targets. Binding lookups alone do not imply reads; read-modify-write operations record both access modes. Immutable compiled analysis stores semantic occurrence paths only. The frontend prefixes each call site's path and resolves source spans independently, so cached bodies cannot retain another source file's locations.
 
 `describe` JSON includes the common `signature`, and catalog summaries include effects and lifetime. `check --json` adds `wires`: each successful root has inferred effects, lifetime requirements, mesh access and an `occurrences` array with semantic path, exact input/output types, effects, lifetime and source span/line/column when available. Nested and generated lowering occurrences are included. Failed roots report diagnostics without claiming complete analysis. The wire's inferred lifetime requirement may be stateless even though the process signature itself is stateful. Existing diagnostics fields are unchanged.
+
+## Golden path M4: one scheduler (2026-10-07)
+
+With the stackful scheduler deleted, a `ShardType` carries one implementation, attached with `implemented_by::<S>()`. The catalog's `backends` field is gone from the index and from `describe` (every listed shard runs on the one engine; `targets` still says where); the `backend-unavailable` diagnostic became `not-implemented`, reported when a described shard with no implementation is composed. Compose is no longer generic over a backend: `ComposeCtx<'_>`, `CompiledWire` and `CompiledFlow` have no type parameter, and the frontend's `check`, `Program::run` and `Session` take no mesh type.

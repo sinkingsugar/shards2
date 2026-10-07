@@ -2,6 +2,8 @@
 
 **Status:** Experiment complete (2026-10-04), including matched comparisons with 1.x (C++).
 
+**Outcome (2026-10-07):** the stackful scheduler was deleted after the golden path M4 gate passed ([golden-path.md §6.4](golden-path.md#64-gate-for-deleting-stackful)); the direct-resume engine described in the M4 follow-up at the end is the only scheduler. The decision paragraph, the shard-API discussion and the measurements below are kept as the historical record of why.
+
 **Latest measurements:** the [2026-10-05 runtime overview](runtime-performance-overview.md)
 refreshes steady-state, resume depth, async and HTTP results after VM optimization.
 The tables below retain the original experiment's evidence.
@@ -225,9 +227,9 @@ Scope: these are matched prototype benchmarks, not general 2.0-versus-1.x guaran
 To reproduce:
 
 ```sh
-cargo test --workspace                                                 # both schedulers
-cargo run --release --example bench_instances -- 1000 [--stackless]    # creation, memory, steady state
-cargo run --release --example bench_depth -- [--stackless]             # resume cost vs depth
+cargo test --workspace
+cargo run --release --example bench_instances -- 1000                  # creation, memory, steady state
+cargo run --release --example bench_depth                              # resume cost vs depth
 cargo run --release --example bench_async                              # polling vs notification
 cargo test -p shards-io                                                # real HTTP against a local server
 bench/http-concurrency/run.sh path/to/1.x/shards                       # HTTP concurrency, 1.x vs 2.0
@@ -240,4 +242,4 @@ node scripts/run-wasi.mjs target/wasm32-wasip1/debug/deps/prototype-*.wasm
 
 The recursive stackless activation described above is now replaced by the iterative runner in `stackless/engine.rs`; the original M3 source at `c0aaa39` remains the benchmark oracle. Runtime frames are addressed by checked generation handles. Composites describe their immutable children to the runner and never activate children themselves. Pending leaf re-polls visit zero composite handlers, proven at depths 1, 4, 16 and 32. Full completion visits each parent once. Initialization, rollback and cleanup are iterative too. The frame arena contains no unsafe code and has targeted Miri checks for stale handles and generation exhaustion.
 
-The gate retains stackful until the benchmark, native debug/release, docs-off, WASI, ESP-IDF acceptance and review evidence is complete. The ESP-IDF acceptance build generates a direct runner from the shared core/frontend suites because the device has no libtest harness; panic-unwind tests and host filesystem watching remain target-gated. Very large diagnostic-input cases use a device-sized over-limit input, and named-call depth follows the device's default of 32. This does not change the benchmark workloads.
+The gate (benchmark, native debug/release, docs-off, WASI, ESP-IDF acceptance on three chips, Miri on the arena, review) passed on 2026-10-07, and stackful, `corosensei`, `cfg(stackful)`, `--stackful` and the per-scheduler test macros were deleted in the following commit; `Mesh` is the one scheduler and `Shard` the one contract. The ESP-IDF acceptance build generates a direct runner from the shared core/frontend suites because the device has no libtest harness; panic-unwind tests and host filesystem watching remain target-gated. Very large diagnostic-input cases use a device-sized over-limit input, and named-call depth follows the device's default of 32. This does not change the benchmark workloads.

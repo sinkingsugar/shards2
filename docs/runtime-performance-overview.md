@@ -28,14 +28,14 @@ below are unchanged; no later scheduler/HTTP rerun is implied.
 
 The new trampoline replaces the recursive stackless engine. [Five alternating trials and raw data](../bench/trampoline/README.md#persistent-call-site-prefix-follow-up) compare it with the M3 stackless baseline and stackful using identical workloads, 1,000 instances, Rust 1.98.1 release:
 
-| Workload | M3 stackless | Stackful | Trampoline (current stackless) |
+| Workload | M3 stackless | Stackful | Trampoline (current engine) |
 |---|---:|---:|---:|
 | Pending leaf re-poll, depth 32 | 438.92 ns | 51.37 ns | 14.66 ns |
 | Full completion/unwind, depth 32 | 662.41 ns | 670.61 ns | 620.61 ns |
 | Original depth benchmark (Pause completes each tick), depth 32 | 531.97 ns | 121.96 ns | 97.58 ns |
 | Short mixed entity flow | 105.50 ns | 133.50 ns | 105.00 ns |
 
-The M4 soft gate passes: pending re-polls cost 0.285× stackful, and short mixed flows cost 0.995× M3 (limit 1.10×). Structural tests prove zero ancestor dispatches during pending re-polls and one per parent during completion at depths 1/4/16/32. Measured state in the mixed workload is 1,306 bytes per instance versus 978 for M3 stackless (down from 1,930 before exact reservation). Instance state and creation cost still increase with the explicit arena; the raw log retains those measurements. Historical tables below retain their original snapshots, and their old recursive-stackless depth numbers no longer describe the current engine.
+The M4 soft gate passes: pending re-polls cost 0.285× stackful, and short mixed flows cost 0.995× M3 (limit 1.10×). Structural tests prove zero ancestor dispatches during pending re-polls and one per parent during completion at depths 1/4/16/32. Measured state in the mixed workload is 1,306 bytes per instance versus 978 for M3 stackless (down from 1,930 before exact reservation). Instance state and creation cost still increase with the explicit arena; the raw log retains those measurements. Historical tables below retain their original snapshots, and their old recursive-stackless depth numbers no longer describe the current engine. The stackful scheduler was deleted after this gate (2026-10-07); its column here is its last measurement.
 
 ## Lessons from the VM optimization work
 
@@ -212,7 +212,7 @@ future optimization will be cheap.
   re-entering every suspended ancestor. That requires reworking control shards,
   unwinding, cancellation and reload handling; it is more than an inline tweak.
   The common leaf/async contracts and compiled/state split can survive that work.
-  Keep stackful available for deeply suspended native flows in the meantime.
+  (Done in golden path M4: the trampoline above; stackful was then deleted.)
 - **SIMD is available, but not the missing general solution.** The measured
   Float4 builtin already emits packed arithmetic. Table lookup, reference
   ownership and ancestor traversal need different optimizations. General loop

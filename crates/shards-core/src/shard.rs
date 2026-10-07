@@ -1,21 +1,26 @@
 //! The shard contract (contract §1, §2, §4-§6).
 //!
 //! A shard kind implements [`Shard`]. Its static [`ShardType`] (one per kind,
-//! built with [`shard_type`]) is what wire definitions refer to. Compose turns
-//! parameters into an immutable `Compiled` value shared by every instance; each
-//! instance owns only its `State`.
+//! built with [`ShardType::new`] and [`ShardType::implemented_by`]) is what
+//! wire definitions refer to. Compose turns parameters into an immutable
+//! `Compiled` value shared by every instance; each instance owns only its
+//! `State`. Most shards implement [`crate::shards::leaf::LeafShard`] or
+//! [`crate::shards::async_shard::AsyncShard`] instead, and are adapted to
+//! [`Shard`] by their `*_type` helpers.
 
 use std::any::Any;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::mem::size_of;
 use std::sync::Arc;
+use std::task::Waker;
 
 use crate::args::{Arg, Args};
-use crate::compose::{Backend, ComposeCtx};
+use crate::compose::{Binding, CompiledWire, ComposeCtx};
 use crate::describe::{ShardDesc, check_params, str_eq};
 use crate::error::Result;
-use crate::runtime::{ActivationCtx, CleanupCtx, InstanceCtx};
+use crate::instance::{CleanupCtx, Frames, InstanceCtx, InstanceId, LeafCtx};
+use crate::stackless::Control;
 use crate::types::Type;
 use crate::var::Var;
 
@@ -41,10 +46,8 @@ pub struct Composed<C> {
   pub output: Type,
 }
 
-/// What an activation produced (contract §6). Suspension is not represented
-/// here: with the stackful scheduler it happens inside
-/// [`ActivationCtx::suspend`]. That is a prototype choice, not part of the
-/// permanent contract.
+/// What a non-suspending activation produced (contract §6): the result of a
+/// [`crate::shards::leaf::LeafShard`]. [`Step`] adds suspension.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Flow {
   /// Continue with this value as the next shard's input.
@@ -55,6 +58,114 @@ pub enum Flow {
   Restart,
   /// End the current wire (or `Do` sub-wire) with this value.
   Return(Var),
+}
+
+/// What an activation produced: [`Flow`]'s outcomes, plus `Suspend`.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Step {
+  Next(Var),
+  Stop,
+  Restart,
+  Return(Var),
+  /// Not finished: activate again on a later tick, and the shard continues
+  /// from the resume point it saved in its state. The input passed on resume
+  /// is the original input.
+  Suspend,
+}
+
+impl From<Flow> for Step {
+  fn from(flow: Flow) -> Step {
+    match flow {
+      Flow::Next(v) => Step::Next(v),
+      Flow::Stop => Step::Stop,
+      Flow::Restart => Step::Restart,
+      Flow::Return(v) => Step::Return(v),
+    }
+  }
+}
+
+/// Context for `activate`. No scheduler operation is needed to suspend: a
+/// shard returns [`Step::Suspend`] and is activated again on a later tick.
+pub struct ActivationCtx<'a> {
+  pub(crate) instance: InstanceId,
+  pub(crate) locals: &'a mut Vec<Var>,
+  pub(crate) inline_calls: &'a crate::reload::Revisions,
+  pub(crate) mesh_frame: &'a mut Vec<Var>,
+  pub(crate) spawn_queue: &'a mut Vec<(Arc<CompiledWire>, Var)>,
+  pub(crate) waiting: &'a mut bool,
+  pub(crate) waker: &'a Waker,
+  /// The loop iteration ([`LeafCtx::iteration`]).
+  pub(crate) iteration: u64,
+  pub(crate) max_call_depth: usize,
+}
+
+impl ActivationCtx<'_> {
+  pub(crate) fn inline_call(
+    &self,
+    key: &crate::reload::InlineKey,
+  ) -> Option<Arc<crate::reload::InlineCall>> {
+    self.inline_calls.select(key)
+  }
+
+  pub(crate) fn reload_revision(&self) -> u64 {
+    self.inline_calls.revision
+  }
+
+  pub fn instance(&self) -> InstanceId {
+    self.instance
+  }
+
+  pub fn get(&self, binding: Binding) -> Var {
+    match binding {
+      Binding::Local(i) => self.locals[i].clone(),
+      Binding::Mesh(i) => self.mesh_frame[i].clone(),
+    }
+  }
+
+  pub fn set(&mut self, binding: Binding, value: Var) {
+    match binding {
+      Binding::Local(i) => self.locals[i] = value,
+      Binding::Mesh(i) => self.mesh_frame[i] = value,
+    }
+  }
+
+  /// Schedules a new instance of `wire`. It starts on the next tick.
+  pub fn spawn(&mut self, wire: Arc<CompiledWire>, input: Var) {
+    self.spawn_queue.push((wire, input));
+  }
+
+  /// Marks the instance as waiting on its waker. A shard calls this right
+  /// before returning [`Step::Suspend`] for an async operation; in
+  /// `WakeMode::OnNotify` the instance is then resumed only after the waker
+  /// fires.
+  pub fn set_waiting(&mut self) {
+    *self.waiting = true;
+  }
+
+  /// The instance's waker. Waking it after the instance finished is harmless.
+  pub fn waker(&self) -> &Waker {
+    self.waker
+  }
+}
+
+impl LeafCtx for ActivationCtx<'_> {
+  fn instance(&self) -> InstanceId {
+    self.instance
+  }
+
+  fn iteration(&self) -> u64 {
+    self.iteration
+  }
+}
+
+impl Frames for ActivationCtx<'_> {
+  fn get(&self, binding: Binding) -> Var {
+    ActivationCtx::get(self, binding)
+  }
+
+  fn set(&mut self, binding: Binding, value: Var) {
+    ActivationCtx::set(self, binding, value)
+  }
 }
 
 pub trait Shard: 'static {
@@ -73,23 +184,33 @@ pub trait Shard: 'static {
   /// dependencies read through `ctx`. This is a trusted contract: nothing
   /// stops Rust code from reading the clock or the filesystem here, and it
   /// must not (contract §4).
-  fn compose(args: &Args, ctx: &mut ComposeCtx<'_, Stackful>) -> Result<Composed<Self::Compiled>>;
+  fn compose(args: &Args, ctx: &mut ComposeCtx<'_>) -> Result<Composed<Self::Compiled>>;
 
   /// Creates one instance's state. On error, must release anything it
   /// acquired: no `cleanup` follows (contract §5).
   fn instantiate(compiled: &Self::Compiled, ctx: &mut InstanceCtx) -> Result<Self::State>;
+
+  /// Builtin composites describe children to the runner, never activate them.
+  #[doc(hidden)]
+  fn control(_compiled: &Self::Compiled) -> Option<Control<'_>> {
+    None
+  }
 
   #[doc(hidden)]
   fn inline(_compiled: &Self::Compiled) -> Option<crate::inline::InlineOp> {
     None
   }
 
+  /// Starts an activation, or continues one that returned [`Step::Suspend`].
+  /// A directly suspending leaf keeps its pending operation in `state` and
+  /// resets it on completion/error. Builtin composites instead expose their
+  /// control description; the runner owns and resets their continuations.
   fn activate(
     compiled: &Self::Compiled,
     state: &mut Self::State,
     ctx: &mut ActivationCtx<'_>,
     input: &Var,
-  ) -> Result<Flow>;
+  ) -> Result<Step>;
 
   /// Called by the runtime exactly once for every successfully instantiated
   /// state, on completion, failure or cancellation.
@@ -105,6 +226,10 @@ pub trait Shard: 'static {
 /// Type-erased compiled node, as stored in a compiled flow.
 pub trait CompiledNode: Send + Sync {
   #[doc(hidden)]
+  fn control(&self) -> Option<Control<'_>> {
+    None
+  }
+  #[doc(hidden)]
   fn inline(&self) -> Option<crate::inline::InlineOp> {
     None
   }
@@ -112,7 +237,7 @@ pub trait CompiledNode: Send + Sync {
   fn name(&self) -> &'static str;
   fn instantiate(&self, ctx: &mut InstanceCtx) -> Result<Box<dyn Any>>;
   fn activate(&self, state: &mut dyn Any, ctx: &mut ActivationCtx<'_>, input: &Var)
-  -> Result<Flow>;
+  -> Result<Step>;
   fn cleanup(&self, state: &mut dyn Any, ctx: &mut CleanupCtx);
   /// Inline size of this node's state, for measurements.
   fn state_size(&self, state: &dyn Any) -> usize;
@@ -121,6 +246,10 @@ pub trait CompiledNode: Send + Sync {
 struct Node<S: Shard>(S::Compiled);
 
 impl<S: Shard> CompiledNode for Node<S> {
+  fn control(&self) -> Option<Control<'_>> {
+    S::control(&self.0)
+  }
+
   fn inline(&self) -> Option<crate::inline::InlineOp> {
     S::inline(&self.0)
   }
@@ -138,7 +267,7 @@ impl<S: Shard> CompiledNode for Node<S> {
     state: &mut dyn Any,
     ctx: &mut ActivationCtx<'_>,
     input: &Var,
-  ) -> Result<Flow> {
+  ) -> Result<Step> {
     S::activate(&self.0, downcast::<S>(state), ctx, input)
   }
 
@@ -160,24 +289,18 @@ fn downcast<S: Shard>(state: &mut dyn Any) -> &mut S::State {
     .expect("shard state type mismatch")
 }
 
-pub(crate) type ComposeFn<B> =
-  fn(&Args, &mut ComposeCtx<'_, B>) -> Result<Composed<Arc<<B as Backend>::Node>>>;
+pub(crate) type ComposeFn =
+  fn(&Args, &mut ComposeCtx<'_>) -> Result<Composed<Arc<dyn CompiledNode>>>;
 
-/// One shard kind: its static description ([`ShardDesc`]) and the
-/// implementation each scheduler has. Wire definitions refer to it.
+/// One shard kind: its static description ([`ShardDesc`]) and its
+/// implementation. Wire definitions refer to it.
 ///
 /// The description is the single source of the shard's name, version,
-/// documentation and parameter contract; implementations are attached to
+/// documentation and parameter contract; the implementation is attached to
 /// it, and attaching one whose name or version differs fails to compile.
 pub struct ShardType {
   pub desc: ShardDesc,
-  pub(crate) stackful: Option<ComposeFn<Stackful>>,
-  pub(crate) stackless: Option<ComposeFn<crate::stackless::Stackless>>,
-}
-
-/// A shard type with only a stackful implementation, not described yet.
-pub const fn shard_type<S: Shard>() -> ShardType {
-  ShardType::new(ShardDesc::undocumented(S::NAME, S::VERSION)).with_stackful::<S>()
+  pub(crate) compose: Option<ComposeFn>,
 }
 
 impl ShardType {
@@ -212,13 +335,12 @@ impl ShardType {
     }
     ShardType {
       desc,
-      stackful: None,
-      stackless: None,
+      compose: None,
     }
   }
 
-  /// Attaches the stackful implementation. Its name and version must match
-  /// the description (checked at compile time), so an implementation cannot
+  /// Attaches the implementation. Its name and version must match the
+  /// description (checked at compile time), so an implementation cannot
   /// drift from the description it is attached to:
   ///
   /// ```compile_fail
@@ -228,37 +350,24 @@ impl ShardType {
   ///   type Compiled = ();
   ///   type State = ();
   ///   const NAME: &'static str = "Mislabeled";
-  ///   fn compose(_: &Args, ctx: &mut ComposeCtx<'_, Stackful>) -> Result<Composed<()>> {
+  ///   fn compose(_: &Args, ctx: &mut ComposeCtx<'_>) -> Result<Composed<()>> {
   ///     Ok(Composed { compiled: (), output: ctx.input() })
   ///   }
   ///   fn instantiate(_: &(), _: &mut instance::InstanceCtx) -> Result<()> { Ok(()) }
-  ///   fn activate(_: &(), _: &mut (), _: &mut runtime::ActivationCtx<'_>, v: &Var) -> Result<Flow> {
-  ///     Ok(Flow::Next(v.clone()))
+  ///   fn activate(_: &(), _: &mut (), _: &mut ActivationCtx<'_>, v: &Var) -> Result<Step> {
+  ///     Ok(Step::Next(v.clone()))
   ///   }
   /// }
   /// // The description says "Other": this does not compile.
-  /// static T: ShardType = ShardType::new(ShardDesc::undocumented("Other", 1)).with_stackful::<Mislabeled>();
+  /// static T: ShardType = ShardType::new(ShardDesc::undocumented("Other", 1)).implemented_by::<Mislabeled>();
   /// ```
-  pub const fn with_stackful<S: Shard>(self) -> ShardType {
+  pub const fn implemented_by<S: Shard>(self) -> ShardType {
     assert!(
       str_eq(S::NAME, self.desc.name) && S::VERSION == self.desc.version,
-      "stackful implementation does not match the shard description"
+      "implementation does not match the shard description"
     );
     ShardType {
-      stackful: Some(compose_erased::<S>),
-      ..self
-    }
-  }
-
-  /// Attaches the stackless implementation. Its name and version must match
-  /// the description (checked at compile time).
-  pub const fn with_stackless<S: crate::stackless::Shard>(self) -> ShardType {
-    assert!(
-      str_eq(S::NAME, self.desc.name) && S::VERSION == self.desc.version,
-      "stackless implementation does not match the shard description"
-    );
-    ShardType {
-      stackless: Some(crate::stackless::compose_erased::<S>),
+      compose: Some(compose_erased::<S>),
       ..self
     }
   }
@@ -267,68 +376,37 @@ impl ShardType {
     self.desc.name
   }
 
-  /// The backends this shard has an implementation for, derived from what
-  /// is attached.
-  pub fn backends(&self) -> Vec<&'static str> {
-    let mut backends = Vec::new();
-    if self.stackful.is_some() {
-      backends.push("stackful");
+  /// Composes one occurrence of this shard. A described shard with no
+  /// implementation attached is a compose error (`not-implemented`).
+  pub(crate) fn compose_node(
+    &self,
+    args: &Args,
+    ctx: &mut ComposeCtx<'_>,
+  ) -> Result<Composed<Arc<dyn CompiledNode>>> {
+    match self.compose {
+      Some(compose) => compose(args, ctx),
+      None => Err(crate::error::Error::Diagnostic(Box::new(
+        crate::diagnostic::Diagnostic::new(
+          crate::diagnostic::Phase::Compose,
+          "compose-error",
+          "not-implemented",
+          format!("{} is described but has no implementation", self.name()),
+        )
+        .shard(self.name()),
+      ))),
     }
-    if self.stackless.is_some() {
-      backends.push("stackless");
-    }
-    backends
   }
 }
 
 fn compose_erased<S: Shard>(
   args: &Args,
-  ctx: &mut ComposeCtx<'_, Stackful>,
+  ctx: &mut ComposeCtx<'_>,
 ) -> Result<Composed<Arc<dyn CompiledNode>>> {
   let composed = S::compose(args, ctx)?;
   Ok(Composed {
     compiled: Arc::new(Node::<S>(composed.compiled)),
     output: composed.output,
   })
-}
-
-/// The "no implementation for this backend" error.
-pub(crate) fn missing_backend<T>(ty: &ShardType, backend: &str) -> Result<T> {
-  Err(crate::error::Error::Diagnostic(Box::new(
-    crate::diagnostic::Diagnostic::new(
-      crate::diagnostic::Phase::Compose,
-      "compose-error",
-      "backend-unavailable",
-      format!(
-        "{} has no {backend} implementation (available: {})",
-        ty.name(),
-        ty.backends().join(", ")
-      ),
-    )
-    .shard(ty.name()),
-  )))
-}
-
-/// The stackful scheduler's backend (the reference implementation).
-pub struct Stackful;
-
-impl Backend for Stackful {
-  type Node = dyn CompiledNode;
-
-  fn inline(node: &Self::Node) -> Option<crate::inline::InlineOp> {
-    node.inline()
-  }
-
-  fn compose_shard(
-    ty: &ShardType,
-    args: &Args,
-    ctx: &mut ComposeCtx<'_, Stackful>,
-  ) -> Result<Composed<Arc<dyn CompiledNode>>> {
-    match ty.stackful {
-      Some(compose) => compose(args, ctx),
-      None => missing_backend(ty, "stackful"),
-    }
-  }
 }
 
 /// One shard in a wire definition: its kind and its arguments.

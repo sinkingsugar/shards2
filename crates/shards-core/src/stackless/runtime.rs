@@ -1,6 +1,5 @@
-//! Stackless mesh scheduling over the directly resumable frame runner.
-//! Each tick resumes the active innermost leaf; a Suspend parks its frame.
-//! Wake modes, instance isolation and terminal cleanup match the reference.
+//! The mesh: scheduling over the directly resumable frame runner. Each tick
+//! resumes the active innermost leaf; a Suspend parks its frame.
 
 use std::collections::{HashMap, HashSet};
 use std::mem::size_of;
@@ -8,16 +7,17 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 use std::task::Waker;
 
-use super::{ActivationCtx, Engine, Stackless, Step};
+use super::Engine;
 use crate::compose::{CacheStats, CompiledWire, ComposeCache, ComposeEnv, FrameLayout, WireDef};
 use crate::error::{Error, Result, panic_message};
 use crate::instance::{InstanceCtx, InstanceId, InstanceMemory, Outcome, WakeFlag, WakeMode};
+use crate::shard::{ActivationCtx, Step};
 use crate::types::Type;
 use crate::var::Var;
 
 struct Instance {
   id: InstanceId,
-  wire: Arc<CompiledWire<Stackless>>,
+  wire: Arc<CompiledWire>,
   input: Var,
   locals: Vec<Var>,
   /// `None` until instantiated (on the instance's first tick), and after
@@ -35,13 +35,13 @@ struct Instance {
 }
 
 pub struct Mesh {
-  inline_calls: crate::reload::Revisions<Stackless>,
+  inline_calls: crate::reload::Revisions,
   layout: FrameLayout,
   frame: Vec<Var>,
-  spawn_queue: Vec<(Arc<CompiledWire<Stackless>>, Var)>,
+  spawn_queue: Vec<(Arc<CompiledWire>, Var)>,
   wires: HashMap<String, WireDef>,
-  cache: ComposeCache<Stackless>,
-  prepared_calls: crate::reload::InlineRegistry<Stackless>,
+  cache: ComposeCache,
+  prepared_calls: crate::reload::InlineRegistry,
   instances: Vec<Instance>,
   next_id: InstanceId,
   wake_mode: WakeMode,
@@ -59,7 +59,7 @@ impl Mesh {
     Mesh::with_cache(ComposeCache::default())
   }
 
-  pub fn with_cache(cache: ComposeCache<Stackless>) -> Mesh {
+  pub fn with_cache(cache: ComposeCache) -> Mesh {
     Mesh {
       inline_calls: Default::default(),
       layout: FrameLayout::default(),
@@ -125,7 +125,7 @@ impl Mesh {
     self.frame[slot.index] = value;
   }
 
-  pub fn compile(&mut self, name: &str, input: Type) -> Result<Arc<CompiledWire<Stackless>>> {
+  pub fn compile(&mut self, name: &str, input: Type) -> Result<Arc<CompiledWire>> {
     let def = self
       .wires
       .get(name)
@@ -158,7 +158,7 @@ impl Mesh {
     next
   }
 
-  pub fn can_retain(&self, wire: &CompiledWire<Stackless>) -> bool {
+  pub fn can_retain(&self, wire: &CompiledWire) -> bool {
     crate::reload::reusable(
       wire,
       &ComposeEnv {
@@ -246,7 +246,7 @@ impl Mesh {
     self.cache.stats
   }
 
-  pub fn spawn(&mut self, wire: &Arc<CompiledWire<Stackless>>, input: Var) -> Result<InstanceId> {
+  pub fn spawn(&mut self, wire: &Arc<CompiledWire>, input: Var) -> Result<InstanceId> {
     let env = ComposeEnv {
       mesh_layout: &self.layout,
       wires: &self.wires,
@@ -270,7 +270,7 @@ impl Mesh {
     Ok(self.start(wire.clone(), input))
   }
 
-  fn start(&mut self, wire: Arc<CompiledWire<Stackless>>, input: Var) -> InstanceId {
+  fn start(&mut self, wire: Arc<CompiledWire>, input: Var) -> InstanceId {
     let id = self.next_id;
     self.next_id += 1;
     let wake = Arc::new(WakeFlag::default());
@@ -308,7 +308,6 @@ impl Mesh {
       if instance.outcome.is_some() {
         continue;
       }
-      // Same rule as the stackful scheduler.
       let woken = instance.wake.take();
       if notify_only && instance.waiting && !woken {
         continue;
@@ -424,8 +423,8 @@ impl Drop for Mesh {
 fn step(
   instance: &mut Instance,
   frame: &mut Vec<Var>,
-  spawn_queue: &mut Vec<(Arc<CompiledWire<Stackless>>, Var)>,
-  inline_calls: &crate::reload::Revisions<Stackless>,
+  spawn_queue: &mut Vec<(Arc<CompiledWire>, Var)>,
+  inline_calls: &crate::reload::Revisions,
   max_call_depth: usize,
 ) {
   if !instance.started {
@@ -451,7 +450,6 @@ fn step(
           state_bytes: state.state_size()
             + instance.locals.len() * size_of::<Var>()
             + size_of::<Vec<Var>>(),
-          stack_reserved: 0,
         };
         instance.state = Some(state);
       }
@@ -462,7 +460,7 @@ fn step(
     }
   }
 
-  // The instance is the panic boundary, as in the stackful scheduler.
+  // The instance is the panic boundary.
   let result = {
     let Instance {
       id,

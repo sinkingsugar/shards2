@@ -323,7 +323,7 @@ pub enum OutputDesc {
   Dynamic(&'static str),
 }
 
-/// Where a shard can run, beyond which backends implement it.
+/// Where a shard can run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Targets {
   All,

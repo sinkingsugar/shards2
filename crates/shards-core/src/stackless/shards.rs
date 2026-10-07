@@ -1,17 +1,17 @@
 //! Composite adapters expose immutable child code to the iterative runner.
-use super::{ActivationCtx, Control, Shard, Stackless, Step};
+use super::Control;
 use crate::args::Args;
 use crate::compose::{CompiledWire, ComposeCtx};
 use crate::error::Result;
 use crate::flow::CompiledFlow;
 use crate::instance::InstanceCtx;
-use crate::shard::Composed;
+use crate::shard::{ActivationCtx, Composed, Shard, Step};
 use crate::shards::control;
 use crate::shards::*;
 use crate::var::Var;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-type Ctx<'a, 'b> = &'a mut ComposeCtx<'b, Stackless>;
+type Ctx<'a, 'b> = &'a mut ComposeCtx<'b>;
 macro_rules! leaf_instantiate {
   ($compiled:ty) => {
     fn instantiate(_: &$compiled, _: &mut InstanceCtx) -> Result<()> {
@@ -22,18 +22,18 @@ macro_rules! leaf_instantiate {
 pub struct Spawn;
 
 impl Shard for Spawn {
-  type Compiled = Arc<CompiledWire<Stackless>>;
+  type Compiled = Arc<CompiledWire>;
   type State = ();
   const NAME: &'static str = SPAWN_DESC.name;
   const VERSION: u32 = SPAWN_DESC.version;
 
-  fn compose(args: &Args, ctx: Ctx) -> Result<Composed<Arc<CompiledWire<Stackless>>>> {
+  fn compose(args: &Args, ctx: Ctx) -> Result<Composed<Arc<CompiledWire>>> {
     compose_spawn(args, ctx)
   }
-  leaf_instantiate!(Arc<CompiledWire<Stackless>>);
+  leaf_instantiate!(Arc<CompiledWire>);
 
   fn activate(
-    wire: &Arc<CompiledWire<Stackless>>,
+    wire: &Arc<CompiledWire>,
     _: &mut (),
     ctx: &mut ActivationCtx<'_>,
     input: &Var,
@@ -111,61 +111,43 @@ macro_rules! composite {
     }
   };
 }
-composite!(
-  Do,
-  Arc<crate::reload::InlineCall<Stackless>>,
-  DO_DESC,
-  compose_do,
-  Do
-);
-composite!(When, Predicated<Stackless>, WHEN_DESC, compose_when, When);
-composite!(
-  While,
-  Predicated<Stackless>,
-  WHILE_DESC,
-  compose_while,
-  While
-);
-composite!(Sub, CompiledFlow<Stackless>, SUB_DESC, compose_sub, Sub);
-composite!(Once, CompiledFlow<Stackless>, ONCE_DESC, compose_once, Once);
-composite!(
-  Repeat,
-  RepeatCompiled<Stackless>,
-  REPEAT_DESC,
-  compose_repeat,
-  Repeat
-);
+composite!(Do, Arc<crate::reload::InlineCall>, DO_DESC, compose_do, Do);
+composite!(When, Predicated, WHEN_DESC, compose_when, When);
+composite!(While, Predicated, WHILE_DESC, compose_while, While);
+composite!(Sub, CompiledFlow, SUB_DESC, compose_sub, Sub);
+composite!(Once, CompiledFlow, ONCE_DESC, compose_once, Once);
+composite!(Repeat, RepeatCompiled, REPEAT_DESC, compose_repeat, Repeat);
 composite!(
   If,
-  control::IfCompiled<Stackless>,
+  control::IfCompiled,
   control::IF_DESC,
   control::compose_if,
   If
 );
 composite!(
   Match,
-  control::MatchCompiled<Stackless>,
+  control::MatchCompiled,
   control::MATCH_DESC,
   control::compose_match,
   Match
 );
 composite!(
   Maybe,
-  control::MaybeCompiled<Stackless>,
+  control::MaybeCompiled,
   control::MAYBE_DESC,
   control::compose_maybe,
   Maybe
 );
 composite!(
   All,
-  control::ConditionsCompiled<Stackless>,
+  control::ConditionsCompiled,
   control::ALL_DESC,
   |args, ctx| control::compose_conditions(args, ctx, "All", false),
   Conditions
 );
 composite!(
   Any,
-  control::ConditionsCompiled<Stackless>,
+  control::ConditionsCompiled,
   control::ANY_DESC,
   |args, ctx| control::compose_conditions(args, ctx, "Any", true),
   Conditions

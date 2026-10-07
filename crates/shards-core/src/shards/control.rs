@@ -1,15 +1,15 @@
 //! Control flow added for real scripts: `If`, `Match`, `Maybe`, `All`,
-//! `Any`. Descriptions, compose and compiled types live here, shared by
-//! both schedulers; execution is in `stackful.rs` and
-//! `stackless/shards.rs`. Every compiled type keeps its nested flows in one
-//! list ([`ControlFlows::flows`]) so instantiation, cleanup and size
-//! accounting are one helper per scheduler.
+//! `Any`. Descriptions, compose and compiled types live here; the engine
+//! runs them (`stackless/engine.rs`, adapters in `stackless/shards.rs`).
+//! Every compiled type keeps its nested flows in one list
+//! ([`ControlFlows::flows`]) so instantiation, cleanup and size accounting
+//! are one helper.
 
 use super::*;
 
 /// The nested flows of a control shard, in a fixed order.
-pub trait ControlFlows<B: Backend> {
-  fn flows(&self) -> &[CompiledFlow<B>];
+pub trait ControlFlows {
+  fn flows(&self) -> &[CompiledFlow];
 }
 
 fn compose_error(
@@ -27,15 +27,15 @@ fn compose_error(
 }
 
 /// A predicate flow, which must output Bool.
-fn compose_predicate<B: Backend>(
-  ctx: &mut ComposeCtx<'_, B>,
+fn compose_predicate(
+  ctx: &mut ComposeCtx<'_>,
   flow: &[ShardDef],
   input: Type,
   conditional: bool,
   shard: &str,
   param: &str,
   index: usize,
-) -> Result<CompiledFlow<B>> {
+) -> Result<CompiledFlow> {
   let compiled = if conditional {
     ctx.compose_flow_conditional(flow, input)?
   } else {
@@ -114,21 +114,18 @@ pub const IF_DESC: ShardDesc = ShardDesc {
 };
 
 /// `flows`: `[predicate, then]` or `[predicate, then, else]`.
-pub struct IfCompiled<B: Backend> {
-  pub(crate) flows: Vec<CompiledFlow<B>>,
+pub struct IfCompiled {
+  pub(crate) flows: Vec<CompiledFlow>,
   pub(crate) passthrough: bool,
 }
 
-impl<B: Backend> ControlFlows<B> for IfCompiled<B> {
-  fn flows(&self) -> &[CompiledFlow<B>] {
+impl ControlFlows for IfCompiled {
+  fn flows(&self) -> &[CompiledFlow] {
     &self.flows
   }
 }
 
-pub(crate) fn compose_if<B: Backend>(
-  args: &Args,
-  ctx: &mut ComposeCtx<'_, B>,
-) -> Result<Composed<IfCompiled<B>>> {
+pub(crate) fn compose_if(args: &Args, ctx: &mut ComposeCtx<'_>) -> Result<Composed<IfCompiled>> {
   let input = ctx.input();
   let pred = compose_predicate(
     ctx,
@@ -197,20 +194,20 @@ pub const MATCH_DESC: ShardDesc = ShardDesc {
   lifetime: crate::signature::Lifetime::Stateless,
 };
 
-pub struct MatchCompiled<B: Backend> {
+pub struct MatchCompiled {
   /// One value per case flow.
   pub(crate) values: Vec<Var>,
   /// The case flows, then the default flow if there is one.
-  pub(crate) flows: Vec<CompiledFlow<B>>,
+  pub(crate) flows: Vec<CompiledFlow>,
 }
 
-impl<B: Backend> ControlFlows<B> for MatchCompiled<B> {
-  fn flows(&self) -> &[CompiledFlow<B>] {
+impl ControlFlows for MatchCompiled {
+  fn flows(&self) -> &[CompiledFlow] {
     &self.flows
   }
 }
 
-impl<B: Backend> MatchCompiled<B> {
+impl MatchCompiled {
   /// The flow to run for `input`: the first equal case, else the default.
   /// Compose proved one of them exists for every input of its type.
   pub(crate) fn find(&self, input: &Var) -> Result<usize> {
@@ -240,10 +237,10 @@ fn finite_values(ty: Type) -> Option<Vec<Var>> {
   }
 }
 
-pub(crate) fn compose_match<B: Backend>(
+pub(crate) fn compose_match(
   args: &Args,
-  ctx: &mut ComposeCtx<'_, B>,
-) -> Result<Composed<MatchCompiled<B>>> {
+  ctx: &mut ComposeCtx<'_>,
+) -> Result<Composed<MatchCompiled>> {
   let input = ctx.input();
   let cases = args.cases("cases").expect("decoded Cases");
   let mut values = Vec::with_capacity(cases.len());
@@ -349,21 +346,21 @@ pub const MAYBE_DESC: ShardDesc = ShardDesc {
 };
 
 /// `flows`: `[action]` or `[action, else]`.
-pub struct MaybeCompiled<B: Backend> {
-  pub(crate) flows: Vec<CompiledFlow<B>>,
+pub struct MaybeCompiled {
+  pub(crate) flows: Vec<CompiledFlow>,
   pub(crate) silent: bool,
 }
 
-impl<B: Backend> ControlFlows<B> for MaybeCompiled<B> {
-  fn flows(&self) -> &[CompiledFlow<B>] {
+impl ControlFlows for MaybeCompiled {
+  fn flows(&self) -> &[CompiledFlow] {
     &self.flows
   }
 }
 
-pub(crate) fn compose_maybe<B: Backend>(
+pub(crate) fn compose_maybe(
   args: &Args,
-  ctx: &mut ComposeCtx<'_, B>,
-) -> Result<Composed<MaybeCompiled<B>>> {
+  ctx: &mut ComposeCtx<'_>,
+) -> Result<Composed<MaybeCompiled>> {
   let input = ctx.input();
   // Action may stop partway, so what it assigns is not definitely assigned.
   let action = ctx.compose_flow_conditional(args.flow("action").expect("decoded"), input)?;
@@ -452,25 +449,25 @@ pub(crate) enum Condition {
   Flow(usize),
 }
 
-pub struct ConditionsCompiled<B: Backend> {
+pub struct ConditionsCompiled {
   pub(crate) conditions: Vec<Condition>,
-  pub(crate) flows: Vec<CompiledFlow<B>>,
+  pub(crate) flows: Vec<CompiledFlow>,
   /// `All` stops at the first false, `Any` at the first true.
   pub(crate) stop_on: bool,
 }
 
-impl<B: Backend> ControlFlows<B> for ConditionsCompiled<B> {
-  fn flows(&self) -> &[CompiledFlow<B>] {
+impl ControlFlows for ConditionsCompiled {
+  fn flows(&self) -> &[CompiledFlow] {
     &self.flows
   }
 }
 
-pub(crate) fn compose_conditions<B: Backend>(
+pub(crate) fn compose_conditions(
   args: &Args,
-  ctx: &mut ComposeCtx<'_, B>,
+  ctx: &mut ComposeCtx<'_>,
   shard: &'static str,
   stop_on: bool,
-) -> Result<Composed<ConditionsCompiled<B>>> {
+) -> Result<Composed<ConditionsCompiled>> {
   let input = ctx.input();
   let items = args.variadic("conditions");
   if items.is_empty() {

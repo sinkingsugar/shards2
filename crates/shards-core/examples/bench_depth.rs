@@ -5,7 +5,7 @@
 use std::time::Instant;
 
 use shards_core::args::Args;
-use shards_core::compose::{Backend, ComposeCtx};
+use shards_core::compose::ComposeCtx;
 use shards_core::instance::LeafCtx;
 use shards_core::shards::async_shard::{AsyncShard, async_type};
 use shards_core::shards::defs::*;
@@ -34,7 +34,7 @@ impl AsyncShard for Wait {
   type Compiled = ();
   type Op = Pending;
   const DESC: ShardDesc = ShardDesc::undocumented("Bench.Wait", 1);
-  fn compose<B: Backend>(_: &Args, _: &mut ComposeCtx<'_, B>) -> Result<Composed<()>> {
+  fn compose(_: &Args, _: &mut ComposeCtx<'_>) -> Result<Composed<()>> {
     Ok(Composed {
       compiled: (),
       output: Type::none(),
@@ -140,16 +140,12 @@ macro_rules! run_depth {
 }
 
 fn main() {
-  let stackless = std::env::args().any(|a| a == "--stackless");
   let progress = std::env::args().any(|a| a == "--progress");
-  let scheduler = if stackless { "stackless" } else { "stackful" };
+  // The `scheduler` field is kept in the output for the archived runners.
+  let scheduler = "stackless";
   // Include the root/callee levels within the current 48-level compose limit.
   for depth in [1, 4, 16, 32] {
-    let (pending_ns, completion_ns) = if stackless {
-      run_depth!(shards_core::stackless::Mesh::new(), depth, progress)
-    } else {
-      run_depth!(shards_core::StackfulMesh::new(), depth, progress)
-    };
+    let (pending_ns, completion_ns) = run_depth!(shards_core::Mesh::new(), depth, progress);
     let phases = if progress {
       vec![("progress", pending_ns)]
     } else {

@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
 
 use shards_core::args::Args;
-use shards_core::compose::{Backend, ComposeCtx};
+use shards_core::compose::ComposeCtx;
 use shards_core::instance::LeafCtx;
 use shards_core::shards::async_shard::{AsyncShard, async_type};
 use shards_core::shards::defs::*;
@@ -59,7 +59,7 @@ impl AsyncShard for Wait {
   type Compiled = ();
   type Op = Pending;
   const DESC: ShardDesc = ShardDesc::undocumented("Test.Wait", 1);
-  fn compose<B: Backend>(_: &Args, _: &mut ComposeCtx<'_, B>) -> Result<Composed<()>> {
+  fn compose(_: &Args, _: &mut ComposeCtx<'_>) -> Result<Composed<()>> {
     Ok(Composed {
       compiled: (),
       output: Type::int(),

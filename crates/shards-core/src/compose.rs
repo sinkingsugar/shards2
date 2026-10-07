@@ -15,27 +15,9 @@ use crate::diagnostic::PathStep;
 use crate::error::Result;
 use crate::flow::CompiledFlow;
 use crate::reload::{InlineCall, InlineKey, InlineRegistry, InlineSignature, SiteStep};
-use crate::shard::{Composed, ShardDef, ShardType};
+use crate::shard::{ShardDef, ShardType};
 use crate::signature::{Analysis, Occurrence};
 use crate::types::Type;
-
-/// A scheduler's kind of compiled node. Compose is shared by both schedulers:
-/// the same wire definitions, cache, dependency recording and checks. Only the
-/// compiled nodes (and how they activate) differ.
-pub trait Backend: Sized + 'static {
-  type Node: ?Sized + Send + Sync + 'static;
-
-  #[doc(hidden)]
-  fn inline(_node: &Self::Node) -> Option<crate::inline::InlineOp> {
-    None
-  }
-
-  fn compose_shard(
-    ty: &ShardType,
-    args: &Args,
-    ctx: &mut ComposeCtx<'_, Self>,
-  ) -> Result<Composed<Arc<Self::Node>>>;
-}
 
 /// A wire as the loader produces it.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -164,21 +146,21 @@ impl Dep {
 }
 
 /// A compiled wire: shared, immutable, and free of per-instance data.
-pub struct CompiledWire<B: Backend> {
+pub struct CompiledWire {
   pub name: String,
   pub looped: bool,
   pub input: Type,
-  pub flow: CompiledFlow<B>,
+  pub flow: CompiledFlow,
   /// Layout of each instance's local frame.
   pub locals: FrameLayout,
   /// Everything this compose read, for revalidation (e.g. by another mesh).
   pub deps: Vec<Dep>,
   pub(crate) definition: Arc<WireDef>,
   pub(crate) restart_deps: Vec<Dep>,
-  pub(crate) inline_calls: InlineRegistry<B>,
+  pub(crate) inline_calls: InlineRegistry,
 }
 
-impl<B: Backend> CompiledWire<B> {
+impl CompiledWire {
   /// A process signature with exact composed types and inferred mesh access.
   pub fn signature(&self) -> crate::signature::Signature<'_> {
     use crate::signature::{Lifetime, Signature, SignatureInput, SignatureOutput};
@@ -213,16 +195,16 @@ pub(crate) enum Child {
 }
 
 /// The context a shard's `compose` receives.
-pub struct ComposeCtx<'a, B: Backend> {
+pub struct ComposeCtx<'a> {
   analysis: Analysis,
   input: Type,
   locals: FrameLayout,
   env: &'a ComposeEnv<'a>,
-  cache: &'a mut ComposeCache<B>,
+  cache: &'a mut ComposeCache,
   composing: &'a mut Vec<String>,
   deps: Vec<Dep>,
   restart_deps: Vec<Dep>,
-  inline_calls: InlineRegistry<B>,
+  inline_calls: InlineRegistry,
   site: InlineKey,
   next_flow: usize,
   // Structural declaration origins for reload diagnostics, never source spans.
@@ -242,13 +224,13 @@ pub struct ComposeCtx<'a, B: Backend> {
 }
 
 /// How deeply flows may nest, counting wires inlined by `Do` (they run in
-/// the caller's flow) and composed for `Spawn`. Activation recurses once
-/// per level, on the stackful scheduler on a fixed coroutine stack, and
-/// compose recurses too: past this, compose reports `too-deep` instead of
-/// letting the stack overflow. Real scripts stay far below.
+/// the caller's flow) and composed for `Spawn`. Compose recurses once per
+/// level: past this, it reports `too-deep` instead of letting the stack
+/// overflow. Real scripts stay far below. Activation does not recurse
+/// (golden path §6.3); its separate limit is `Mesh::set_max_call_depth`.
 pub const MAX_FLOW_DEPTH: usize = 48;
 
-impl<B: Backend> ComposeCtx<'_, B> {
+impl ComposeCtx<'_> {
   /// The input type of the shard being composed.
   pub fn input(&self) -> Type {
     self.input
@@ -386,7 +368,7 @@ impl<B: Backend> ComposeCtx<'_, B> {
     &mut self,
     flow: &[ShardDef],
     input: Type,
-  ) -> Result<CompiledFlow<B>> {
+  ) -> Result<CompiledFlow> {
     let before = self.initialized.clone();
     let result = self.compose_flow(flow, input);
     for (i, init) in self.initialized.iter_mut().enumerate() {
@@ -424,7 +406,7 @@ impl<B: Backend> ComposeCtx<'_, B> {
   /// Composes a nested flow (e.g. a `When` body) with the given input type,
   /// into the same local frame. The flow is a block: names it declares are
   /// not visible after it (golden-path.md §3.2).
-  pub fn compose_flow(&mut self, flow: &[ShardDef], input: Type) -> Result<CompiledFlow<B>> {
+  pub fn compose_flow(&mut self, flow: &[ShardDef], input: Type) -> Result<CompiledFlow> {
     let child = Child::Flow(flow.as_ptr());
     let visible = self.locals.visible();
     self.blocks += 1;
@@ -440,7 +422,7 @@ impl<B: Backend> ComposeCtx<'_, B> {
 
   /// Composes a flow whose declarations stay visible after it: a wire body,
   /// or a wire inlined by `Do`, which shares its caller's variables.
-  fn compose_flow_unscoped(&mut self, flow: &[ShardDef], input: Type) -> Result<CompiledFlow<B>> {
+  fn compose_flow_unscoped(&mut self, flow: &[ShardDef], input: Type) -> Result<CompiledFlow> {
     if self.depth >= MAX_FLOW_DEPTH {
       return Err(crate::Error::Diagnostic(Box::new(
         crate::diagnostic::Diagnostic::new(
@@ -476,7 +458,7 @@ impl<B: Backend> ComposeCtx<'_, B> {
     result
   }
 
-  fn compose_flow_at_depth(&mut self, flow: &[ShardDef], input: Type) -> Result<CompiledFlow<B>> {
+  fn compose_flow_at_depth(&mut self, flow: &[ShardDef], input: Type) -> Result<CompiledFlow> {
     let saved = self.input;
     let mut analysis = Analysis::default();
     let mut nodes = Vec::with_capacity(flow.len());
@@ -517,7 +499,7 @@ impl<B: Backend> ComposeCtx<'_, B> {
         check_input(def.ty, self.input)?;
         let args = Arc::new(args);
         let parent_args = self.current_args.replace(args.clone());
-        let result = B::compose_shard(def.ty, &args, self).map_err(|err| {
+        let result = def.ty.compose_node(&args, self).map_err(|err| {
           // An error from a nested flow or wire: name the parameter
           // holding it.
           match self.failed_child.take().and_then(|c| args.param_of(&c)) {
@@ -568,7 +550,7 @@ impl<B: Backend> ComposeCtx<'_, B> {
         }],
       );
       code.push(crate::inline::Instruction::new(
-        B::inline(&composed.compiled),
+        composed.compiled.inline(),
         def.ty.name(),
         composed.output,
       ));
@@ -601,7 +583,7 @@ impl<B: Backend> ComposeCtx<'_, B> {
   }
 
   /// Composes another wire inline, sharing this wire's local frame (`Do`).
-  pub fn compose_inline(&mut self, name: &str, input: Type) -> Result<CompiledFlow<B>> {
+  pub fn compose_inline(&mut self, name: &str, input: Type) -> Result<CompiledFlow> {
     let Some(def) = self.wire_def(name) else {
       return Err(wire_error("unknown-wire", format!("unknown wire: {name}")));
     };
@@ -637,11 +619,7 @@ impl<B: Backend> ComposeCtx<'_, B> {
   /// Composes a Do call with a mesh-local replacement boundary. The complete
   /// dependency list still validates caches; dependencies inside this call
   /// do not force an otherwise unchanged caller to restart.
-  pub fn compose_reloadable_inline(
-    &mut self,
-    name: &str,
-    input: Type,
-  ) -> Result<Arc<InlineCall<B>>> {
+  pub fn compose_reloadable_inline(&mut self, name: &str, input: Type) -> Result<Arc<InlineCall>> {
     let key = self.site.clone();
     let before = self.locals.clone();
     let initialized_before = self.initialized.clone();
@@ -676,7 +654,7 @@ impl<B: Backend> ComposeCtx<'_, B> {
 
   /// Compiles another wire on its own (`Spawn`), through the cache. Its
   /// dependencies become dependencies of the wire being composed.
-  pub fn compose_wire(&mut self, name: &str, input: Type) -> Result<Arc<CompiledWire<B>>> {
+  pub fn compose_wire(&mut self, name: &str, input: Type) -> Result<Arc<CompiledWire>> {
     let Some(def) = self.wire_def(name) else {
       return Err(wire_error("unknown-wire", format!("unknown wire: {name}")));
     };
@@ -805,10 +783,10 @@ pub struct CacheStats {
   pub shard_composes: u64,
 }
 
-struct Entry<B: Backend> {
+struct Entry {
   def: WireDef,
   input: Type,
-  compiled: Arc<CompiledWire<B>>,
+  compiled: Arc<CompiledWire>,
 }
 
 pub type HashFn = fn(&WireDef, Type) -> u64;
@@ -821,21 +799,21 @@ fn default_hash(def: &WireDef, input: Type) -> u64 {
 }
 
 /// Compose cache with two-step lookup (contract §4).
-pub struct ComposeCache<B: Backend> {
-  entries: HashMap<u64, Vec<Entry<B>>>,
+pub struct ComposeCache {
+  entries: HashMap<u64, Vec<Entry>>,
   hash_fn: HashFn,
   pub stats: CacheStats,
 }
 
-impl<B: Backend> Default for ComposeCache<B> {
-  fn default() -> ComposeCache<B> {
+impl Default for ComposeCache {
+  fn default() -> ComposeCache {
     ComposeCache::with_hash_fn(default_hash)
   }
 }
 
-impl<B: Backend> ComposeCache<B> {
+impl ComposeCache {
   /// A cache with a custom primary-key hash (tests force collisions with it).
-  pub fn with_hash_fn(hash_fn: HashFn) -> ComposeCache<B> {
+  pub fn with_hash_fn(hash_fn: HashFn) -> ComposeCache {
     ComposeCache {
       entries: HashMap::new(),
       hash_fn,
@@ -850,7 +828,7 @@ impl<B: Backend> ComposeCache<B> {
     env: &ComposeEnv<'_>,
     composing: &mut Vec<String>,
     depth: usize,
-  ) -> Result<Arc<CompiledWire<B>>> {
+  ) -> Result<Arc<CompiledWire>> {
     let key = (self.hash_fn)(def, input);
     // Step 1: candidates by primary key (the hash only indexes; equality
     // decides). Step 2: revalidate each candidate's recorded dependencies.

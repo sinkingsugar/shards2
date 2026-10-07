@@ -1,11 +1,11 @@
 //! The prototype's shard subset: enough to express the 1.x benchmark's entity
 //! wire and the nested suspension acceptance test (design doc §5).
 //!
-//! Shards that cannot suspend have one implementation for both schedulers
-//! ([`leaf`]). Shards that suspend or run nested flows have a stackful
-//! implementation ([`stackful`]) and a stackless one
-//! ([`crate::stackless::shards`]); their compose logic and compiled types are
-//! still shared, here, generic over the scheduler's [`Backend`].
+//! Shards that cannot suspend implement [`leaf::LeafShard`]; shards that wait
+//! on async work implement [`async_shard::AsyncShard`]. Control-flow shards
+//! (which suspend or run nested flows) keep their descriptions, compose
+//! logic and compiled types here and in [`control`]; the engine runs them
+//! ([`crate::stackless::shards`]).
 //!
 //! [`defs`] has helpers that build [`ShardDef`]s, standing in for the parser.
 
@@ -15,7 +15,6 @@ pub mod data;
 pub mod leaf;
 pub mod math;
 pub mod sim;
-pub mod stackful;
 pub mod values;
 
 use std::cell::RefCell;
@@ -23,7 +22,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::args::Args;
-use crate::compose::{Backend, Binding, CompiledWire, ComposeCtx};
+use crate::compose::{Binding, CompiledWire, ComposeCtx};
 use crate::describe::{
   DefaultValue, Forms, InputDesc, OutputDesc, ParamDecl, Params, Requirement, ShardDesc, Targets,
   TypeName,
@@ -32,7 +31,7 @@ use crate::diagnostic::{Diagnostic, Phase, TypeRef};
 use crate::error::{Error, Result};
 use crate::flow::CompiledFlow;
 use crate::instance::{Frames, InstanceId};
-use crate::shard::{Composed, ParamValue, ShardDef, ShardType, Stackful};
+use crate::shard::{Composed, ParamValue, ShardDef, ShardType};
 use crate::stackless::shards as sl;
 use crate::types::{Type, TypeDesc};
 use crate::var::Var;
@@ -49,45 +48,19 @@ pub static INC: ShardType = leaf_type::<leaf::Inc>();
 pub static ADD: ShardType = leaf_type::<leaf::Add>();
 pub static IS_LESS: ShardType = leaf_type::<leaf::IsLess>();
 pub static IS_MORE_EQUAL: ShardType = leaf_type::<leaf::IsMoreEqual>();
-pub static WHEN: ShardType = ShardType::new(WHEN_DESC)
-  .with_stackful::<stackful::When>()
-  .with_stackless::<sl::When>();
-pub static IF: ShardType = ShardType::new(control::IF_DESC)
-  .with_stackful::<stackful::If>()
-  .with_stackless::<sl::If>();
-pub static MATCH: ShardType = ShardType::new(control::MATCH_DESC)
-  .with_stackful::<stackful::Match>()
-  .with_stackless::<sl::Match>();
-pub static MAYBE: ShardType = ShardType::new(control::MAYBE_DESC)
-  .with_stackful::<stackful::Maybe>()
-  .with_stackless::<sl::Maybe>();
-pub static ALL: ShardType = ShardType::new(control::ALL_DESC)
-  .with_stackful::<stackful::All>()
-  .with_stackless::<sl::All>();
-pub static ANY: ShardType = ShardType::new(control::ANY_DESC)
-  .with_stackful::<stackful::Any>()
-  .with_stackless::<sl::Any>();
-pub static SUB: ShardType = ShardType::new(SUB_DESC)
-  .with_stackful::<stackful::Sub>()
-  .with_stackless::<sl::Sub>();
-pub static ONCE: ShardType = ShardType::new(ONCE_DESC)
-  .with_stackful::<stackful::Once>()
-  .with_stackless::<sl::Once>();
-pub static REPEAT: ShardType = ShardType::new(REPEAT_DESC)
-  .with_stackful::<stackful::Repeat>()
-  .with_stackless::<sl::Repeat>();
-pub static WHILE: ShardType = ShardType::new(WHILE_DESC)
-  .with_stackful::<stackful::While>()
-  .with_stackless::<sl::While>();
-pub static DO: ShardType = ShardType::new(DO_DESC)
-  .with_stackful::<stackful::Do>()
-  .with_stackless::<sl::Do>();
-pub static PAUSE: ShardType = ShardType::new(PAUSE_DESC)
-  .with_stackful::<stackful::Pause>()
-  .with_stackless::<sl::Pause>();
-pub static SPAWN: ShardType = ShardType::new(SPAWN_DESC)
-  .with_stackful::<stackful::Spawn>()
-  .with_stackless::<sl::Spawn>();
+pub static WHEN: ShardType = ShardType::new(WHEN_DESC).implemented_by::<sl::When>();
+pub static IF: ShardType = ShardType::new(control::IF_DESC).implemented_by::<sl::If>();
+pub static MATCH: ShardType = ShardType::new(control::MATCH_DESC).implemented_by::<sl::Match>();
+pub static MAYBE: ShardType = ShardType::new(control::MAYBE_DESC).implemented_by::<sl::Maybe>();
+pub static ALL: ShardType = ShardType::new(control::ALL_DESC).implemented_by::<sl::All>();
+pub static ANY: ShardType = ShardType::new(control::ANY_DESC).implemented_by::<sl::Any>();
+pub static SUB: ShardType = ShardType::new(SUB_DESC).implemented_by::<sl::Sub>();
+pub static ONCE: ShardType = ShardType::new(ONCE_DESC).implemented_by::<sl::Once>();
+pub static REPEAT: ShardType = ShardType::new(REPEAT_DESC).implemented_by::<sl::Repeat>();
+pub static WHILE: ShardType = ShardType::new(WHILE_DESC).implemented_by::<sl::While>();
+pub static DO: ShardType = ShardType::new(DO_DESC).implemented_by::<sl::Do>();
+pub static PAUSE: ShardType = ShardType::new(PAUSE_DESC).implemented_by::<sl::Pause>();
+pub static SPAWN: ShardType = ShardType::new(SPAWN_DESC).implemented_by::<sl::Spawn>();
 pub static PROBE: ShardType = leaf_type::<leaf::Probe>();
 pub static REQUEST: ShardType = async_shard::async_type::<sim::Request>();
 
@@ -218,11 +191,11 @@ pub enum Operand {
 impl Operand {
   /// Like [`Operand::compose_arg`], for a parameter declared
   /// `Requirement::Optional`: `None` when the script did not give it.
-  pub fn compose_optional_arg<B: Backend>(
+  pub fn compose_optional_arg(
     args: &Args,
     name: &str,
     shard: &str,
-    ctx: &mut ComposeCtx<'_, B>,
+    ctx: &mut ComposeCtx<'_>,
   ) -> Result<Option<(Operand, Type)>> {
     match args.get(name) {
       None => Ok(None),
@@ -236,11 +209,11 @@ impl Operand {
   /// parameter). Returns the operand and its type, for the shard to check.
   /// The parameter must be required or have a default; for an optional one
   /// use [`Operand::compose_optional_arg`].
-  pub fn compose_arg<B: Backend>(
+  pub fn compose_arg(
     args: &Args,
     name: &str,
     shard: &str,
-    ctx: &mut ComposeCtx<'_, B>,
+    ctx: &mut ComposeCtx<'_>,
   ) -> Result<(Operand, Type)> {
     match args.get(name).expect("decoded required parameter") {
       ParamValue::Value(v) => Ok((Operand::Const(v.clone()), v.type_of())),
@@ -286,8 +259,8 @@ impl Operand {
 
 // --- descriptions, shared compose logic and compiled types ---
 //
-// Each shard has one description: both backends' implementations, the
-// argument decoder and the catalog read it. Forms, literal types and
+// Each shard has one description: its implementation, the argument decoder
+// and the catalog read it. Forms, literal types and
 // defaults are enforced by the decoder; compose checks what depends on
 // context (bindings, input types, flow outputs, values).
 
@@ -324,11 +297,7 @@ pub(crate) fn compose_const(args: &Args) -> Result<Composed<Var>> {
 /// Checks that a declaration may introduce `name` here: not the reserved
 /// `input`, and not a name already visible (no shadowing, golden-path.md
 /// §3.2). Frontend temporaries (`%` names) are exempt.
-pub(crate) fn check_declaration<B: Backend>(
-  args: &Args,
-  ctx: &mut ComposeCtx<'_, B>,
-  shard: &str,
-) -> Result<()> {
+pub(crate) fn check_declaration(args: &Args, ctx: &mut ComposeCtx<'_>, shard: &str) -> Result<()> {
   let name = variable(args, "variable");
   if name.starts_with('%') {
     return Ok(());
@@ -379,9 +348,9 @@ pub(crate) fn check_declaration<B: Backend>(
 
 /// An error about the variable a shard writes: unknown (with suggestions),
 /// immutable, or of the wrong type.
-pub(crate) fn assignable<B: Backend>(
+pub(crate) fn assignable(
   args: &Args,
-  ctx: &mut ComposeCtx<'_, B>,
+  ctx: &mut ComposeCtx<'_>,
   shard: &str,
 ) -> Result<crate::compose::VarInfo> {
   let name = variable(args, "variable");
@@ -445,10 +414,7 @@ pub const VAR_DESC: ShardDesc = ShardDesc {
 };
 
 /// `Var`: declares a mutable local holding the input.
-pub(crate) fn compose_var<B: Backend>(
-  args: &Args,
-  ctx: &mut ComposeCtx<'_, B>,
-) -> Result<Composed<Binding>> {
+pub(crate) fn compose_var(args: &Args, ctx: &mut ComposeCtx<'_>) -> Result<Composed<Binding>> {
   check_declaration(args, ctx, "Var")?;
   let input = ctx.input();
   Ok(Composed {
@@ -485,10 +451,7 @@ pub const BIND_DESC: ShardDesc = ShardDesc {
 };
 
 /// `= name`: declares an immutable local holding the input.
-pub(crate) fn compose_bind<B: Backend>(
-  args: &Args,
-  ctx: &mut ComposeCtx<'_, B>,
-) -> Result<Composed<Binding>> {
+pub(crate) fn compose_bind(args: &Args, ctx: &mut ComposeCtx<'_>) -> Result<Composed<Binding>> {
   check_declaration(args, ctx, "Bind")?;
   let input = ctx.input();
   // `%` names are frontend temporaries (source cannot name them): each
@@ -538,9 +501,9 @@ pub const KEEP_DESC: ShardDesc = ShardDesc {
 };
 
 /// `Keep`: the slot and its initial value.
-pub(crate) fn compose_keep<B: Backend>(
+pub(crate) fn compose_keep(
   args: &Args,
-  ctx: &mut ComposeCtx<'_, B>,
+  ctx: &mut ComposeCtx<'_>,
 ) -> Result<Composed<(Binding, Var)>> {
   if !ctx.at_top_level() {
     return Err(Error::Diagnostic(Box::new(
@@ -590,10 +553,7 @@ pub const UPDATE_DESC: ShardDesc = ShardDesc {
 };
 
 /// `Update`: assigns the input to an existing mutable variable.
-pub(crate) fn compose_update<B: Backend>(
-  args: &Args,
-  ctx: &mut ComposeCtx<'_, B>,
-) -> Result<Composed<Binding>> {
+pub(crate) fn compose_update(args: &Args, ctx: &mut ComposeCtx<'_>) -> Result<Composed<Binding>> {
   let name = variable(args, "variable");
   let input = ctx.input();
   let info = assignable(args, ctx, "Update")?;
@@ -638,10 +598,7 @@ pub const GET_DESC: ShardDesc = ShardDesc {
   lifetime: crate::signature::Lifetime::Stateless,
 };
 
-pub(crate) fn compose_get<B: Backend>(
-  args: &Args,
-  ctx: &mut ComposeCtx<'_, B>,
-) -> Result<Composed<Binding>> {
+pub(crate) fn compose_get(args: &Args, ctx: &mut ComposeCtx<'_>) -> Result<Composed<Binding>> {
   let name = variable(args, "variable");
   let info = ctx
     .read_var(name, "Get")
@@ -677,17 +634,14 @@ pub const INC_DESC: ShardDesc = ShardDesc {
 };
 
 /// `Math.Inc`: increments an Int variable and outputs the new value.
-pub(crate) fn compose_inc<B: Backend>(
-  args: &Args,
-  ctx: &mut ComposeCtx<'_, B>,
-) -> Result<Composed<Binding>> {
+pub(crate) fn compose_inc(args: &Args, ctx: &mut ComposeCtx<'_>) -> Result<Composed<Binding>> {
   compose_counter(args, ctx, INC_DESC.name)
 }
 
 /// `Math.Inc` and `Math.Dec`: Variable must be a mutable Int.
-pub(crate) fn compose_counter<B: Backend>(
+pub(crate) fn compose_counter(
   args: &Args,
-  ctx: &mut ComposeCtx<'_, B>,
+  ctx: &mut ComposeCtx<'_>,
   shard: &'static str,
 ) -> Result<Composed<Binding>> {
   let name = variable(args, "variable");
@@ -809,9 +763,9 @@ pub const IS_MORE_EQUAL_DESC: ShardDesc = ShardDesc {
   lifetime: crate::signature::Lifetime::Stateless,
 };
 
-pub(crate) fn compose_compare<B: Backend>(
+pub(crate) fn compose_compare(
   args: &Args,
-  ctx: &mut ComposeCtx<'_, B>,
+  ctx: &mut ComposeCtx<'_>,
   shard: &str,
 ) -> Result<Composed<Operand>> {
   let (operand, ty) = Operand::compose_arg(args, "operand", shard, ctx)?;
@@ -884,19 +838,19 @@ pub(crate) fn compare(input: &Var, operand: Var) -> Result<std::cmp::Ordering> {
 }
 
 /// Compiled form of `When` and `While`: a predicate flow and a body flow.
-pub struct Predicated<B: Backend> {
-  pub(crate) pred: CompiledFlow<B>,
-  pub(crate) body: CompiledFlow<B>,
+pub struct Predicated {
+  pub(crate) pred: CompiledFlow,
+  pub(crate) body: CompiledFlow,
 }
 
 /// Composes a predicate flow (which must output Bool) and a body flow that
 /// might not run. Shared by `When` and `While`.
-fn compose_predicate_and_body<B: Backend>(
+fn compose_predicate_and_body(
   pred: &[ShardDef],
   body: &[ShardDef],
-  ctx: &mut ComposeCtx<'_, B>,
+  ctx: &mut ComposeCtx<'_>,
   shard: &str,
-) -> Result<Composed<Predicated<B>>> {
+) -> Result<Composed<Predicated>> {
   let input = ctx.input();
   let pred = ctx.compose_flow(pred, input)?;
   if !Type::bool().accepts(pred.output) {
@@ -960,17 +914,14 @@ pub const WHILE_DESC: ShardDesc = ShardDesc {
   lifetime: crate::signature::Lifetime::Stateless,
 };
 
-pub(crate) fn compose_while<B: Backend>(
-  args: &Args,
-  ctx: &mut ComposeCtx<'_, B>,
-) -> Result<Composed<Predicated<B>>> {
+pub(crate) fn compose_while(args: &Args, ctx: &mut ComposeCtx<'_>) -> Result<Composed<Predicated>> {
   let pred = args.flow("predicate").expect("decoded Predicate flow");
   let body = args.flow("action").expect("decoded Action flow");
   compose_predicate_and_body(pred, body, ctx, "While")
 }
 
-/// `When`'s parameters, shared by its stackful and stackless
-/// implementations, the decoder and the catalog.
+/// `When`'s parameters, shared by its implementation, the decoder and the
+/// catalog.
 pub static WHEN_PARAMS: &[ParamDecl] = &[
   ParamDecl {
     name: "predicate",
@@ -1008,10 +959,7 @@ pub const WHEN_DESC: ShardDesc = ShardDesc {
   lifetime: crate::signature::Lifetime::Stateless,
 };
 
-pub(crate) fn compose_when<B: Backend>(
-  args: &Args,
-  ctx: &mut ComposeCtx<'_, B>,
-) -> Result<Composed<Predicated<B>>> {
+pub(crate) fn compose_when(args: &Args, ctx: &mut ComposeCtx<'_>) -> Result<Composed<Predicated>> {
   // The decoder guarantees both are present flows.
   let pred = args.flow("predicate").expect("decoded Predicate flow");
   let body = args.flow("action").expect("decoded Action flow");
@@ -1044,10 +992,10 @@ pub const ONCE_DESC: ShardDesc = ShardDesc {
   lifetime: crate::signature::Lifetime::Stateful,
 };
 
-pub(crate) fn compose_once<B: Backend>(
+pub(crate) fn compose_once(
   args: &Args,
-  ctx: &mut ComposeCtx<'_, B>,
-) -> Result<Composed<CompiledFlow<B>>> {
+  ctx: &mut ComposeCtx<'_>,
+) -> Result<Composed<CompiledFlow>> {
   let input = ctx.input();
   Ok(Composed {
     compiled: ctx.compose_flow(args.flow("action").expect("decoded Action flow"), input)?,
@@ -1082,22 +1030,19 @@ pub const SUB_DESC: ShardDesc = ShardDesc {
 };
 
 /// `SubFlow` composes like `Once`: the flow always runs, in the caller's frame.
-pub(crate) fn compose_sub<B: Backend>(
-  args: &Args,
-  ctx: &mut ComposeCtx<'_, B>,
-) -> Result<Composed<CompiledFlow<B>>> {
+pub(crate) fn compose_sub(args: &Args, ctx: &mut ComposeCtx<'_>) -> Result<Composed<CompiledFlow>> {
   compose_once(args, ctx)
 }
 
-pub struct RepeatCompiled<B: Backend> {
-  pub(crate) body: CompiledFlow<B>,
+pub struct RepeatCompiled {
+  pub(crate) body: CompiledFlow,
   /// `None`: no limit (Forever, or Until alone).
   pub(crate) times: Option<Operand>,
   /// Checked before each iteration; true stops the repeat.
-  pub(crate) until: Option<CompiledFlow<B>>,
+  pub(crate) until: Option<CompiledFlow>,
 }
 
-impl<B: Backend> RepeatCompiled<B> {
+impl RepeatCompiled {
   /// The iteration limit for this run, read when the repeat starts.
   pub(crate) fn limit(&self, frames: &impl Frames) -> Result<Option<i64>> {
     match &self.times {
@@ -1165,10 +1110,10 @@ pub const REPEAT_DESC: ShardDesc = ShardDesc {
   lifetime: crate::signature::Lifetime::Stateless,
 };
 
-pub(crate) fn compose_repeat<B: Backend>(
+pub(crate) fn compose_repeat(
   args: &Args,
-  ctx: &mut ComposeCtx<'_, B>,
-) -> Result<Composed<RepeatCompiled<B>>> {
+  ctx: &mut ComposeCtx<'_>,
+) -> Result<Composed<RepeatCompiled>> {
   let input = ctx.input();
   // Until runs before each iteration, then action: one region that might
   // not run (Times 0), composed in run order, so a variable Until assigns is
@@ -1265,10 +1210,10 @@ fn wire_ref_error(e: Error, args: &Args, shard: &str) -> Error {
   }
 }
 
-pub(crate) fn compose_do<B: Backend>(
+pub(crate) fn compose_do(
   args: &Args,
-  ctx: &mut ComposeCtx<'_, B>,
-) -> Result<Composed<Arc<crate::reload::InlineCall<B>>>> {
+  ctx: &mut ComposeCtx<'_>,
+) -> Result<Composed<Arc<crate::reload::InlineCall>>> {
   let name = args.wire("wire").expect("decoded Wire");
   let input = ctx.input();
   let flow = ctx
@@ -1307,10 +1252,7 @@ pub const PAUSE_DESC: ShardDesc = ShardDesc {
   lifetime: crate::signature::Lifetime::Stateless,
 };
 
-pub(crate) fn compose_pause<B: Backend>(
-  args: &Args,
-  ctx: &mut ComposeCtx<'_, B>,
-) -> Result<Composed<Duration>> {
+pub(crate) fn compose_pause(args: &Args, ctx: &mut ComposeCtx<'_>) -> Result<Composed<Duration>> {
   let Some(Var::Float(secs)) = args.literal("seconds") else {
     unreachable!("decoded Seconds")
   };
@@ -1355,10 +1297,10 @@ pub const SPAWN_DESC: ShardDesc = ShardDesc {
   lifetime: crate::signature::Lifetime::Stateless,
 };
 
-pub(crate) fn compose_spawn<B: Backend>(
+pub(crate) fn compose_spawn(
   args: &Args,
-  ctx: &mut ComposeCtx<'_, B>,
-) -> Result<Composed<Arc<CompiledWire<B>>>> {
+  ctx: &mut ComposeCtx<'_>,
+) -> Result<Composed<Arc<CompiledWire>>> {
   let name = args.wire("wire").expect("decoded Wire");
   let input = ctx.input();
   Ok(Composed {
@@ -1461,9 +1403,9 @@ pub const PROBE_DESC: ShardDesc = ShardDesc {
 };
 
 /// `Probe`: records its instantiate, activate and cleanup events (for tests).
-pub(crate) fn compose_probe<B: Backend>(
+pub(crate) fn compose_probe(
   args: &Args,
-  ctx: &mut ComposeCtx<'_, B>,
+  ctx: &mut ComposeCtx<'_>,
 ) -> Result<Composed<ProbeCompiled>> {
   let tag: Arc<str> = Arc::from(args.string("tag").expect("decoded Tag"));
   let mode = match args.string("mode") {
@@ -1518,8 +1460,7 @@ pub(crate) fn probe_cleanup(c: &ProbeCompiled, instance: InstanceId) {
   }
 }
 
-/// Helpers that build shard definitions, standing in for the parser. The
-/// same definitions run on either scheduler.
+/// Helpers that build shard definitions, standing in for the parser.
 pub mod defs {
   use super::*;
   use crate::args::Arg;

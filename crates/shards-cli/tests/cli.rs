@@ -31,7 +31,7 @@ fn check_json_reports_located_diagnostics() {
   assert!(out.contains("\"code\":\"input-type-mismatch\""), "{out}");
   assert!(out.contains("\"line\":2,\"column\":7"), "{out}");
 
-  let (code, _, err) = shards2(&["check", "--stackful", &file]);
+  let (code, _, err) = shards2(&["check", &file]);
   assert_eq!(code, 1);
   assert!(
     err.contains("bad.shs:2:7: compose error: Math.Add needs Int, Float, Float2, Float3 or Float4 input, got String"),
@@ -58,13 +58,8 @@ fn check_ok_and_run_with_script_arguments() {
   // Script arguments may come before the file.
   let (code, _, err) = shards2(&["check", "n:hello", &file]);
   assert_eq!(code, 0, "{err}");
-  for backend in [&[][..], &["--stackful"][..]] {
-    let mut args = vec!["run"];
-    args.extend_from_slice(backend);
-    args.extend_from_slice(&[&file, "n:hello"]);
-    let (code, out, err) = shards2(&args);
-    assert_eq!((code, out.as_str()), (0, "root: 42\n"), "{err}");
-  }
+  let (code, out, err) = shards2(&["run", &file, "n:hello"]);
+  assert_eq!((code, out.as_str()), (0, "root: 42\n"), "{err}");
 }
 
 #[test]
@@ -74,17 +69,12 @@ fn run_json_separates_the_log_from_wire_results() {
     "json.shs",
     "@wire(main { 1 | Log(\"main\") Maybe({[1] | Take(3)}) \"a\\\"b\" | Log })\n@mesh(m) @schedule(m,main) @run(m)\n",
   );
-  for backend in [&[][..], &["--stackful"][..]] {
-    let mut args = vec!["run", "--json"];
-    args.extend_from_slice(backend);
-    args.push(&file);
-    let (code, out, err) = shards2(&args);
-    assert_eq!((code, err.as_str()), (0, ""), "{out}");
-    let expected = format!(
-      r#"{{"ok":true,"file":"{file}","diagnostics":[],"log":["main: 1","Maybe: activation error: Take: index 3 is out of range (length 1)","a\"b"],"outcomes":[{{"wire":"main","outcome":"completed","value":"\"a\\\"b\""}}],"spawned_failures":[]}}"#
-    );
-    assert_eq!(out.trim(), expected);
-  }
+  let (code, out, err) = shards2(&["run", "--json", &file]);
+  assert_eq!((code, err.as_str()), (0, ""), "{out}");
+  let expected = format!(
+    r#"{{"ok":true,"file":"{file}","diagnostics":[],"log":["main: 1","Maybe: activation error: Take: index 3 is out of range (length 1)","a\"b"],"outcomes":[{{"wire":"main","outcome":"completed","value":"\"a\\\"b\""}}],"spawned_failures":[]}}"#
+  );
+  assert_eq!(out.trim(), expected);
   let failing = script("fail.shs", "[1] | Take(3)\n");
   let (code, out, _) = shards2(&["run", "--json", &failing]);
   assert_eq!(code, 1);
@@ -144,12 +134,11 @@ fn watch_reloads_atomic_saves_and_keeps_running_after_rejected_edits() {
     }
   }
 
-  for backend in [&[][..], &["--stackful"][..]] {
+  {
     let file = script("watch.shs", "41");
     let mut child = KillOnDrop(
       Command::new(env!("CARGO_BIN_EXE_shards2"))
         .arg("watch")
-        .args(backend)
         .arg(&file)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

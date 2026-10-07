@@ -145,10 +145,7 @@ impl LeafShard for Log {
   type State = ();
   const DESC: ShardDesc = LOG_DESC;
 
-  fn compose<B: Backend>(
-    args: &Args,
-    ctx: &mut ComposeCtx<'_, B>,
-  ) -> Result<Composed<Self::Compiled>> {
+  fn compose(args: &Args, ctx: &mut ComposeCtx<'_>) -> Result<Composed<Self::Compiled>> {
     Ok(Composed {
       compiled: args.string("prefix").map(Arc::from),
       output: ctx.input(),
@@ -201,7 +198,7 @@ impl LeafShard for Stop {
   type State = ();
   const DESC: ShardDesc = STOP_DESC;
 
-  fn compose<B: Backend>(_: &Args, _: &mut ComposeCtx<'_, B>) -> Result<Composed<()>> {
+  fn compose(_: &Args, _: &mut ComposeCtx<'_>) -> Result<Composed<()>> {
     // Never produces a value: a flow ending in Stop fits any expected type.
     Ok(Composed {
       compiled: (),
@@ -279,7 +276,7 @@ impl<S: EqualitySpec> LeafShard for Equality<S> {
   type State = ();
   const DESC: ShardDesc = S::DESC;
 
-  fn compose<B: Backend>(args: &Args, ctx: &mut ComposeCtx<'_, B>) -> Result<Composed<Operand>> {
+  fn compose(args: &Args, ctx: &mut ComposeCtx<'_>) -> Result<Composed<Operand>> {
     let (operand, ty) = Operand::compose_arg(args, "operand", S::DESC.name, ctx)?;
     let input = ctx.input();
     if !comparable(input, ty) {
@@ -377,7 +374,7 @@ impl<S: OrderedSpec> LeafShard for Ordered<S> {
   type State = ();
   const DESC: ShardDesc = S::DESC;
 
-  fn compose<B: Backend>(args: &Args, ctx: &mut ComposeCtx<'_, B>) -> Result<Composed<Operand>> {
+  fn compose(args: &Args, ctx: &mut ComposeCtx<'_>) -> Result<Composed<Operand>> {
     compose_compare(args, ctx, S::DESC.name)
   }
 
@@ -424,7 +421,7 @@ impl LeafShard for IsAny {
   type State = ();
   const DESC: ShardDesc = IS_ANY_DESC;
 
-  fn compose<B: Backend>(args: &Args, ctx: &mut ComposeCtx<'_, B>) -> Result<Composed<Operand>> {
+  fn compose(args: &Args, ctx: &mut ComposeCtx<'_>) -> Result<Composed<Operand>> {
     let (operand, ty) = Operand::compose_arg(args, "values", "IsAny", ctx)?;
     let input = ctx.input();
     let element = match ty.desc() {
@@ -503,7 +500,7 @@ impl LeafShard for ParseInt {
   type State = ();
   const DESC: ShardDesc = PARSE_INT_DESC;
 
-  fn compose<B: Backend>(args: &Args, ctx: &mut ComposeCtx<'_, B>) -> Result<Composed<u32>> {
+  fn compose(args: &Args, ctx: &mut ComposeCtx<'_>) -> Result<Composed<u32>> {
     let input = ctx.input();
     if input != Type::string() {
       return Err(mismatch("ParseInt", input, &[TypeName::String]));
@@ -556,7 +553,7 @@ impl<P: PureOp> LeafShard for Pure<P> {
   type State = ();
   const DESC: ShardDesc = P::DESC;
 
-  fn compose<B: Backend>(_: &Args, ctx: &mut ComposeCtx<'_, B>) -> Result<Composed<()>> {
+  fn compose(_: &Args, ctx: &mut ComposeCtx<'_>) -> Result<Composed<()>> {
     let input = ctx.input();
     match P::output(input) {
       Ok(output) => Ok(Composed {

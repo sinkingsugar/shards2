@@ -245,8 +245,7 @@ def main():
     args.out.mkdir(parents=True, exist_ok=False)
     scripts = args.out / "scripts"
     scripts.mkdir()
-    engines = {"1x": [str(args.shards1)], "2-stackless": [str(args.shards2), "run"],
-               "2-stackful": [str(args.shards2), "run", "--stackful"]}
+    engines = {"1x": [str(args.shards1)], "2-stackless": [str(args.shards2), "run"]}
     (args.out / "metadata.json").write_text(json.dumps(provenance(args, engines), indent=2) + "\n")
     rng = random.Random(args.seed)
     jobs = [(case, width) for case in args.cases for width in args.widths]

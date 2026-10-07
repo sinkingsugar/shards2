@@ -1,4 +1,4 @@
-//! Loading, checking and running a source program on either scheduler.
+//! Loading, checking and running a source program on a mesh.
 //!
 //! `check` reports every problem it can, located in the source: syntax
 //! problems first (lowering a broken tree only cascades), then lowering and
@@ -11,73 +11,12 @@ use std::time::{Duration, Instant};
 use shards_core::diagnostic::{Diagnostic, Phase, json_str};
 use shards_core::diagnostic::{PathStep, path_json};
 use shards_core::signature::{Analysis, Occurrence};
-use shards_core::{Catalog, Error, InstanceId, Outcome, Type, Var, WireDef};
+use shards_core::{Catalog, Error, InstanceId, Mesh, Outcome, Type, Var};
 
 use crate::lower::{Lowered, ROOT_WIRE, lower};
 use crate::parser::parse;
 use crate::problem::locate;
 use crate::source::Source;
-
-/// A scheduler's mesh, as the frontend drives it. Implemented for both.
-pub trait Host {
-  type Wire;
-  fn create() -> Self;
-  fn add_wire(&mut self, def: WireDef);
-  fn compile(&mut self, name: &str) -> shards_core::Result<Self::Wire>;
-  fn analysis(wire: &Self::Wire) -> &Analysis;
-  fn spawn(&mut self, wire: &Self::Wire) -> shards_core::Result<InstanceId>;
-  /// Optional capacity hint for a known batch of entries. No semantic effect.
-  fn reserve_instances(&mut self, _additional: usize) {}
-  fn tick(&mut self) -> usize;
-  fn running(&self) -> usize;
-  fn take_outcome(&mut self, id: InstanceId) -> Option<Outcome>;
-  /// Removes every finished record in one pass: id, wire, outcome.
-  fn take_finished(&mut self) -> Vec<(InstanceId, String, Outcome)>;
-}
-
-macro_rules! host {
-  ($mesh:ty, $backend:ty $(, $reserve:path)?) => {
-    impl Host for $mesh {
-      $(fn reserve_instances(&mut self, additional: usize) { $reserve(self, additional); })?
-      type Wire = std::sync::Arc<shards_core::CompiledWire<$backend>>;
-      fn create() -> Self {
-        <$mesh>::new()
-      }
-      fn add_wire(&mut self, def: WireDef) {
-        <$mesh>::add_wire(self, def)
-      }
-      fn compile(&mut self, name: &str) -> shards_core::Result<Self::Wire> {
-        <$mesh>::compile(self, name, Type::none())
-      }
-      fn analysis(wire: &Self::Wire) -> &Analysis {
-        &wire.flow.analysis
-      }
-      fn spawn(&mut self, wire: &Self::Wire) -> shards_core::Result<InstanceId> {
-        <$mesh>::spawn(self, wire, Var::None)
-      }
-      fn tick(&mut self) -> usize {
-        <$mesh>::tick(self)
-      }
-      fn running(&self) -> usize {
-        <$mesh>::running(self)
-      }
-      fn take_outcome(&mut self, id: InstanceId) -> Option<Outcome> {
-        <$mesh>::take_outcome(self, id)
-      }
-      fn take_finished(&mut self) -> Vec<(InstanceId, String, Outcome)> {
-        <$mesh>::take_finished(self)
-      }
-    }
-  };
-}
-
-host!(
-  shards_core::Mesh,
-  shards_core::Stackless,
-  shards_core::Mesh::reserve_instances
-);
-#[cfg(stackful)]
-host!(shards_core::StackfulMesh, shards_core::Stackful);
 
 /// A source program, parsed and lowered.
 pub struct Program {
@@ -316,23 +255,23 @@ impl Program {
   /// `Spawn` compose with them), then one root per unreachable group.
   /// Returns diagnostics without materializing tooling occurrence reports;
   /// use `analyze` when those source-located reports are needed.
-  pub fn compose<H: Host>(&self) -> Vec<Diagnostic> {
-    self.compose_report::<H>(false).diagnostics
+  pub fn compose(&self) -> Vec<Diagnostic> {
+    self.compose_report(false).diagnostics
   }
 
-  pub fn analyze<H: Host>(&self) -> CheckReport {
-    self.compose_report::<H>(true)
+  pub fn analyze(&self) -> CheckReport {
+    self.compose_report(true)
   }
 
-  fn compose_report<H: Host>(&self, include_analysis: bool) -> CheckReport {
-    let mut mesh = H::create();
+  fn compose_report(&self, include_analysis: bool) -> CheckReport {
+    let mut mesh = Mesh::new();
     for def in &self.lowered.wires {
       mesh.add_wire(def.clone());
     }
     let mut out: Vec<Diagnostic> = Vec::new();
     let mut wires = Vec::new();
     for wire in self.entries().into_iter().chain(self.unreachable_roots()) {
-      match mesh.compile(&wire) {
+      match mesh.compile(&wire, Type::none()) {
         Err(err) => {
           let d = self.diagnostic(&wire, err);
           if !out.contains(&d) {
@@ -340,7 +279,7 @@ impl Program {
           }
         }
         Ok(compiled) if include_analysis => {
-          let analysis = H::analysis(&compiled).clone();
+          let analysis = compiled.flow.analysis.clone();
           let occurrences = analysis
             .occurrences
             .iter()
@@ -374,11 +313,11 @@ impl Program {
     }
   }
 
-  /// Runs the program on `H`: the entry wires, ticked at the `@run` rate
-  /// (as fast as possible without one) until every instance finishes or
-  /// the `iterations` limit is reached.
-  pub fn run<H: Host>(&self) -> Result<RunReport, Vec<Diagnostic>> {
-    let mut mesh = H::create();
+  /// Runs the program on a fresh mesh: the entry wires, ticked at the
+  /// `@run` rate (as fast as possible without one) until every instance
+  /// finishes or the `iterations` limit is reached.
+  pub fn run(&self) -> Result<RunReport, Vec<Diagnostic>> {
+    let mut mesh = Mesh::new();
     for def in &self.lowered.wires {
       mesh.add_wire(def.clone());
     }
@@ -387,8 +326,8 @@ impl Program {
     let mut instances = Vec::with_capacity(entries.len());
     let mut errors = Vec::new();
     for wire in entries {
-      match mesh.compile(&wire) {
-        Ok(compiled) => match mesh.spawn(&compiled) {
+      match mesh.compile(&wire, Type::none()) {
+        Ok(compiled) => match mesh.spawn(&compiled, Var::None) {
           Ok(id) => instances.push((wire, id)),
           Err(err) => errors.push(self.diagnostic(&wire, err)),
         },
@@ -471,12 +410,8 @@ impl RunReport {
   }
 }
 
-/// Checks a source: syntax, lowering and compose, on scheduler `H`.
-pub fn check<H: Host>(
-  source: Source,
-  catalog: &Catalog,
-  defines: &HashMap<String, String>,
-) -> CheckReport {
+/// Checks a source: syntax, lowering and compose.
+pub fn check(source: Source, catalog: &Catalog, defines: &HashMap<String, String>) -> CheckReport {
   let file = source.name.clone();
   match Program::load(source, catalog, defines) {
     Err((_, diagnostics)) => CheckReport {
@@ -484,6 +419,6 @@ pub fn check<H: Host>(
       diagnostics,
       wires: Vec::new(),
     },
-    Ok(program) => program.analyze::<H>(),
+    Ok(program) => program.analyze(),
   }
 }

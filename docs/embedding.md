@@ -4,7 +4,7 @@ How a Rust program (the host) adds its own shards and runs Shards scripts on the
 
 ## 1. Crates
 
-- `shards-core`: values, types, the shard traits, compose, and both schedulers.
+- `shards-core`: values, types, the shard traits, compose, and the scheduler (`Mesh`).
 - `shards-lang`: source to wire definitions, `check` and `run`.
 - `shards-io` (native only): the shared Tokio runtime, `spawn` for async work and `spawn_blocking` for blocking work.
 
@@ -22,11 +22,11 @@ Choose the trait by what the shard does:
 
 | The shard | Implement | Notes |
 |---|---|---|
-| Returns at once (reads, computes, converts) | `LeafShard` | One implementation for both schedulers. "Leaf" means it never suspends, not that it does little work. |
+| Returns at once (reads, computes, converts) | `LeafShard` | "Leaf" means it never suspends, not that it does little work. |
 | Does slow or blocking work (a long scan, a blocking library call, human-paced input) | `AsyncShard`, with `shards_io::runtime::spawn_blocking` | The work runs on the blocking pool. Only the waiting instance suspends; other wires keep running. |
 | Waits on async I/O | `AsyncShard`, with `shards_io::runtime::spawn` | Race every await against the cancellation token. |
 
-Host shards should not need the backend-specific control-flow traits.
+Host shards should not need the full `Shard` contract, which is for control flow.
 
 ### Parameters
 
@@ -62,8 +62,8 @@ Catalog::new(&[shards_core::shards::CATALOG, HOST_CATALOG])
 
 Add `shards_io::CATALOG` if scripts use `Http.Get`. Then:
 
-- **Check without running:** `shards_lang::check::<shards_core::Mesh>(Source::new(path, text), &catalog, &defines)`. It returns the 1.x `{ok, file, diagnostics}` JSON envelope (`to_json()`), and `shards_lang::render` prints a diagnostic for humans.
-- **Run:** `Program::load(source, &catalog, &defines)`, then `program.run::<shards_core::Mesh>()`. The default is the stackless scheduler; `StackfulMesh` is the other one. The report has each entry wire's outcome, plus failures of spawned instances.
+- **Check without running:** `shards_lang::check(Source::new(path, text), &catalog, &defines)`. It returns the 1.x `{ok, file, diagnostics}` JSON envelope (`to_json()`), and `shards_lang::render` prints a diagnostic for humans.
+- **Run:** `Program::load(source, &catalog, &defines)`, then `program.run()`. The report has each entry wire's outcome, plus failures of spawned instances.
 - **Script arguments:** `defines` maps `name` to a string, read as `@name` in scripts.
 - **Logging:** `Log` writes to standard output; values print as text: whole floats without `.0`, other floats exact (1.x rounded to six digits). A host shard can log with `shards_core::log::emit`. `shards_core::log::capture` collects the lines a run logs, including lines logged by work it started through `shards_io` on other threads, which is useful in host tests.
 
@@ -78,14 +78,14 @@ The language is the 1.x syntax with the changes in [surface-syntax-review.md](su
 
 ## 4. Testing a host
 
-Test host shards through scripts, on both schedulers, as `embedding.rs` does: `Program::load`, then `run::<Mesh>()` and `run::<StackfulMesh>()`, with `log::capture` for output. Use `check` for the compose errors your shards report. Run blocking shards against fakes of the host where possible; keep live runs for what only the real host can show.
+Test host shards through scripts, as `embedding.rs` does: `Program::load`, then `run()`, with `log::capture` for output. Use `check` for the compose errors your shards report. Run blocking shards against fakes of the host where possible; keep live runs for what only the real host can show.
 
 ## 5. Warm sessions and hot reload
 
 Use `shards_lang::Session` when the host owns its event loop and long-lived
 services. Keep connections and other expensive resources in the host and
-look them up during shard activation. Both native schedulers support the
-same API; stackless also supports WASI and ESP-IDF.
+look them up during shard activation. The same API runs on native, WASI and
+ESP-IDF.
 
 There are two replacement modes:
 
@@ -213,9 +213,8 @@ An accepted reload resets the revision's tick budget and updates its `fps`;
 `stop` cancels everything and releases the mesh. Dropping the session also
 cancels work, but cannot return cleanup errors.
 
-`ReloadHost` extends `SessionHost` for custom hosts that support isolated
-candidate compilation and validated installation. Compiled artifacts remain
-immutable. Inline revision selection belongs to a mesh; each active `Do`
+`Session` drives a `Mesh` directly; a host configures the mesh it starts
+from through `Session::with_mesh`. Compiled artifacts remain immutable. Inline revision selection belongs to a mesh; each active `Do`
 state retains an `Arc` to its selected immutable body. Candidate caches are
 fresh per revision. Old code remains only while referenced by retained roots
 or call state, not in a cumulative revision history. The process-wide type
@@ -230,7 +229,7 @@ solve every host-side cancellation race.
 
 Offline tests in `crates/shards-cli/tests/embedding.rs` verify warm service
 reuse, cancellation on full reload, and pending-operation completion across
-preserving reload on both schedulers. The shared frontend suite verifies
+preserving reload. The shared frontend suite verifies
 caller counters, unchanged `Once` state, deep call boundaries, mesh values,
 incompatible edits, cleanup failures, and retained spawned specializations.
 Hosts can use the same pattern with recorded inputs to test without live I/O.
@@ -239,7 +238,7 @@ Hosts can use the same pattern with recorded inputs to test without live I/O.
 
 ```sh
 cargo run -p shards-cli -- watch live.shs
-cargo run -p shards-cli -- watch --stackful live.shs key:value
+cargo run -p shards-cli -- watch live.shs key:value
 ```
 
 The CLI polls contents every 100 ms and requires two identical samples before
@@ -262,13 +261,13 @@ suppression, preserving reload and tick pacing. It installs no keyboard,
 signal, logging or async-runtime handlers. For a blocking host loop:
 
 ```rust
-use shards_core::{Catalog, Mesh};
+use shards_core::Catalog;
 use shards_lang::{FileWatcher, Session, WatchControl, WatchEvent};
 use std::collections::HashMap;
 use std::sync::mpsc;
 
 let catalog = Catalog::new(&[shards_core::shards::CATALOG]).unwrap();
-let mut session = Session::<Mesh>::new(); // or Session::with_mesh(...)
+let mut session = Session::new(); // or Session::with_mesh(...)
 let (commands, input) = mpsc::channel::<WatchControl>();
 // Hand `commands` to your UI/input thread. Send Restart or Stop as needed.
 FileWatcher::new("live.shs").run(
@@ -303,6 +302,6 @@ general state migration, cross-revision cache reuse and a network serving
 protocol remain deferred. An embedding host can trigger either reload mode
 from its own watcher or command channel.
 
-### Stackless execution limits (M4)
+### Execution limits (M4)
 
 `Mesh::set_max_call_depth(n)` limits nested named invocations; the default is 256 on native/WASI and 32 on ESP-IDF. Exceeding it reports an activation diagnostic with code `recursion-limit`. Anonymous control blocks do not count as named calls. The compose nesting limit remains separately enforced while compose still recurses. A preserving revision retains the mesh's configured runtime limit. The trampoline resumes the active leaf directly and owns child state centrally; LeafShard and AsyncShard implementations need no changes.

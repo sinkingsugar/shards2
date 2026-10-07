@@ -1,6 +1,6 @@
 # Prototype Shard Contract: Decisions Replacing `shards.h`
 
-**Status:** Agreed (2026-10-04), after review by Astra and the maintainer, and implemented in `crates/shards-core` for both schedulers. Later additions (panic boundary, definite initialization, lifecycle rules, wake modes, shared `LeafShard`/`AsyncShard` APIs) are recorded in the relevant sections and in [`stackless-experiment.md`](stackless-experiment.md).
+**Status:** Agreed (2026-10-04), after review by Astra and the maintainer, and implemented in `crates/shards-core`. Later additions (panic boundary, definite initialization, lifecycle rules, wake modes, shared `LeafShard`/`AsyncShard` APIs) are recorded in the relevant sections and in [`stackless-experiment.md`](stackless-experiment.md).
 **Scope:** The interface decisions the §5 prototype in [`shards-2-compose-split.md`](shards-2-compose-split.md) needs. In 1.x, all of these are fixed by the C ABI in `include/shards/shards.h`. Each decision below is marked as either:
 
 - **Prototype only:** a choice the prototype can make and throw away.
@@ -178,7 +178,9 @@ builds validate every intermediate constructor output as well.
 
 **Follow-up (2026-10-04):** a bounded stackless experiment was run after the prototype: [`stackless-experiment.md`](stackless-experiment.md). Result: the stackless scheduler is the default and both are maintained, one backend per mesh. Suspension is therefore represented both ways: in the stackless contract as `Step::Suspend` returned from `activate` (with resume points in `State`), and in the stackful contract inside `ActivationCtx`. Leaf and async shards are written once over both (`LeafShard`, `AsyncShard`).
 
-**Measurement:** with stackful execution, each instance's memory includes its coroutine stack and continuation overhead, not only its shard state. Report the two separately, so a result "close to `sizeof(State)`" does not hide the scheduler's cost.
+**Follow-up (2026-10-07):** golden path M4 replaced the recursive stackless activation with a directly resumable engine and deleted the stackful scheduler. Suspension is now represented one way: `Step::Suspend` returned from `Shard::activate`, with the resume point in `State` (builtin composites instead expose a `Control` description, and the engine owns their continuations). `LeafShard` keeps the suspension-free `Flow` result. `ActivationCtx` has no suspend call.
+
+**Measurement (historical):** with stackful execution, each instance's memory included its coroutine stack and continuation overhead, not only its shard state; the two were reported separately.
 
 ## 8. Variables
 

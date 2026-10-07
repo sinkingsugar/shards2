@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use shards_core::{Catalog, Diagnostic};
 
-use crate::{Finished, ReloadHost, Session, Source};
+use crate::{Finished, Session, Source};
 
 const POLL: Duration = Duration::from_millis(100);
 const DEFAULT_FRAME: Duration = Duration::from_millis(16);
@@ -69,9 +69,9 @@ impl FileWatcher {
   /// poll/tick; this method does not sleep. `restart` bypasses save stability
   /// and validates the current file immediately, including rejected text.
   /// The host owns shutdown (`Session::stop`) when using this method directly.
-  pub fn poll<H: ReloadHost>(
+  pub fn poll(
     &mut self,
-    session: &mut Session<H>,
+    session: &mut Session,
     catalog: &Catalog,
     defines: &HashMap<String, String>,
     restart: bool,
@@ -129,9 +129,9 @@ impl FileWatcher {
   /// and event callbacks. Stop cancels the session and reports final outcomes.
   /// Sleeps between control checks are capped at 10 ms,
   /// even when script FPS is low. Completion or a failed edit does not exit.
-  pub fn run<H: ReloadHost>(
+  pub fn run(
     &mut self,
-    session: &mut Session<H>,
+    session: &mut Session,
     catalog: &Catalog,
     defines: &HashMap<String, String>,
     mut control: impl FnMut() -> WatchControl,

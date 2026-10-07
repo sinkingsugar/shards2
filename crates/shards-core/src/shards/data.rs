@@ -67,7 +67,7 @@ impl LeafShard for Take {
   type State = ();
   const DESC: ShardDesc = TAKE_DESC;
 
-  fn compose<B: Backend>(args: &Args, ctx: &mut ComposeCtx<'_, B>) -> Result<Composed<Operand>> {
+  fn compose(args: &Args, ctx: &mut ComposeCtx<'_>) -> Result<Composed<Operand>> {
     let (key, key_ty) = Operand::compose_arg(args, "key", "Take", ctx)?;
     let input = ctx.input();
     let literal = match &key {
@@ -228,7 +228,7 @@ impl LeafShard for Push {
   type State = ();
   const DESC: ShardDesc = PUSH_DESC;
 
-  fn compose<B: Backend>(args: &Args, ctx: &mut ComposeCtx<'_, B>) -> Result<Composed<Binding>> {
+  fn compose(args: &Args, ctx: &mut ComposeCtx<'_>) -> Result<Composed<Binding>> {
     let name = variable(args, "variable");
     let input = ctx.input();
     let info = super::assignable(args, ctx, "Push")?;
@@ -308,11 +308,11 @@ pub const SEQ_MAKE_DESC: ShardDesc = ShardDesc {
 };
 
 /// Composes variadic literal-or-variable operands.
-fn compose_operands<B: Backend>(
+fn compose_operands(
   args: &Args,
   param: &str,
   shard: &str,
-  ctx: &mut ComposeCtx<'_, B>,
+  ctx: &mut ComposeCtx<'_>,
 ) -> Result<Vec<(Operand, Type)>> {
   let index = args.param_index(param);
   args
@@ -338,10 +338,7 @@ impl LeafShard for SeqMake {
   type State = ();
   const DESC: ShardDesc = SEQ_MAKE_DESC;
 
-  fn compose<B: Backend>(
-    args: &Args,
-    ctx: &mut ComposeCtx<'_, B>,
-  ) -> Result<Composed<Vec<Operand>>> {
+  fn compose(args: &Args, ctx: &mut ComposeCtx<'_>) -> Result<Composed<Vec<Operand>>> {
     let items = compose_operands(args, "items", "Seq.Make", ctx)?;
     let element = if items.is_empty() {
       Type::any()
@@ -407,10 +404,7 @@ impl LeafShard for TableMake {
   type State = ();
   const DESC: ShardDesc = TABLE_MAKE_DESC;
 
-  fn compose<B: Backend>(
-    args: &Args,
-    ctx: &mut ComposeCtx<'_, B>,
-  ) -> Result<Composed<Vec<(Arc<str>, Operand)>>> {
+  fn compose(args: &Args, ctx: &mut ComposeCtx<'_>) -> Result<Composed<Vec<(Arc<str>, Operand)>>> {
     let bad_keys = || {
       Err(param_error(
         args,
@@ -499,7 +493,7 @@ impl LeafShard for StringFormat {
   type State = ();
   const DESC: ShardDesc = STRING_FORMAT_DESC;
 
-  fn compose<B: Backend>(_: &Args, ctx: &mut ComposeCtx<'_, B>) -> Result<Composed<()>> {
+  fn compose(_: &Args, ctx: &mut ComposeCtx<'_>) -> Result<Composed<()>> {
     let input = ctx.input();
     if !matches!(input.desc(), TypeDesc::Seq(_)) {
       return Err(Error::Diagnostic(Box::new(

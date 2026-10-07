@@ -2,7 +2,7 @@
 
 A new Rust implementation of the [Shards](https://github.com/fragcolor-xyz/shards) runtime.
 
-**Status:** core prototype and language frontend working (2026-10-05): the compiled/state split with two schedulers (stackless default, stackful maintained until golden path M4), real async I/O (`Http.Get`), a hand-written frontend with `check --json`, hot reload, wasm (WASI) and ESP32 (QEMU) builds. **Next:** the language redesign in [`docs/golden-path.md`](docs/golden-path.md) (functions, scope, a direct-resume stackless engine, struct tables). Current status is in `docs/current-state.md`.
+**Status:** core prototype and language frontend working (2026-10-07): the compiled/state split on one directly resumable (stackless) engine, real async I/O (`Http.Get`), a hand-written frontend with `check --json`, hot reload, wasm (WASI) and ESP32 (QEMU) builds. **Next:** the language redesign in [`docs/golden-path.md`](docs/golden-path.md) (functions, scope, struct tables). Current status is in `docs/current-state.md`.
 
 ## Starting work
 
@@ -21,7 +21,7 @@ C++ libraries are still used, but called from Rust; in 1.x, C++ is the host.
 
 - [`docs/shards-2-compose-split.md`](docs/shards-2-compose-split.md): the core design, the 1.x audit behind it, what carries over from 1.x, and the validation plan.
 - [`docs/prototype-shard-contract.md`](docs/prototype-shard-contract.md): the shard contract the prototype implements.
-- [`docs/stackless-experiment.md`](docs/stackless-experiment.md): the two schedulers and the decision, shared shard APIs (`LeafShard`, `AsyncShard`), real I/O, and matched benchmarks against 1.x.
+- [`docs/stackless-experiment.md`](docs/stackless-experiment.md): the scheduler experiment and decision (historical: the stackful scheduler was deleted after golden path M4), shared shard APIs (`LeafShard`, `AsyncShard`), real I/O, and matched benchmarks against 1.x.
 - [`docs/values-and-types.md`](docs/values-and-types.md): tables, float vectors and type sets for the frontend slice.
 - [`docs/embedding.md`](docs/embedding.md): embedding Shards 2.0 in a Rust host and writing host shards.
 - [`docs/surface-syntax-review.md`](docs/surface-syntax-review.md): the 1.x grammar reviewed for agent authoring, and the proposed parser decisions.
@@ -31,22 +31,22 @@ C++ libraries are still used, but called from Rust; in 1.x, C++ is the host.
 
 Matched prototype benchmarks against 1.x (instance creation, memory per instance, steady state, resume depth, HTTP concurrency) are in `docs/stackless-experiment.md` and `docs/shards-2-compose-split.md` §5, with their limits. They support the instance-sharing design; they are not full-application performance claims.
 
-The [runtime performance overview](docs/runtime-performance-overview.md) covers the latest release measurements and optimization headroom. Compose-selected builtin execution brings hot arithmetic chains near 1.x parity; some collection operations remain roughly 3–4× slower. Stackless performs well at large instance counts, with a remaining cost for deeply nested suspended flows. The [VM execution report](docs/vm-execution-benchmarks.md) retains the full before/after measurements.
+The [runtime performance overview](docs/runtime-performance-overview.md) covers the latest release measurements and optimization headroom. Compose-selected builtin execution brings hot arithmetic chains near 1.x parity; some collection operations remain roughly 3–4× slower. The engine scales flat with instance count, and since golden path M4 resuming a suspended leaf costs the same at any nesting depth. The [VM execution report](docs/vm-execution-benchmarks.md) retains the full before/after measurements.
 
 ```sh
-cargo test --workspace                                                        # acceptance tests, both schedulers
-cargo run --release -p shards-core --example bench_instances -- 1000 --stackless  # instance benchmark
-cargo run --release -p shards-core --example bench_depth -- --stackless           # resume cost vs depth
-cargo run --release -p shards-core --example bench_async                          # polling vs notification
+cargo test --workspace                                                        # acceptance tests
+cargo run --release -p shards-core --example bench_instances -- 1000          # instance benchmark
+cargo run --release -p shards-core --example bench_depth                      # resume cost vs depth
+cargo run --release -p shards-core --example bench_async                      # polling vs notification
 bench/shards-1x/run.sh path/to/1.x/shards                                     # the same benchmarks on 1.x
 bench/http-concurrency/run.sh path/to/1.x/shards                              # HTTP concurrency, 1.x vs 2.0
 ```
 
 ## Crates
 
-- `crates/shards-core`: the runtime core: compose, both schedulers, lifecycle helpers, and the prototype shards (shared `LeafShard`/`AsyncShard` implementations, plus per-scheduler control flow).
+- `crates/shards-core`: the runtime core: compose, the scheduler (`stackless/`: frame arena, engine, mesh), lifecycle helpers, and the prototype shards (`LeafShard`/`AsyncShard` implementations, plus control flow).
 - `crates/shards-io`: I/O shards (`Http.Get`) on a shared Tokio runtime, following 1.x's HTTP module. Native only; TLS via the `rustls-ring` or `native-tls` feature.
-- `crates/shards-lang`: the language frontend: parser, lowering to wire definitions with a source map, `check`/`run`, and host-driven `Session` execution with state-preserving nested-wire reload on either scheduler.
+- `crates/shards-lang`: the language frontend: parser, lowering to wire definitions with a source map, `check`/`run`, and host-driven `Session` execution with state-preserving nested-wire reload.
 - `crates/shards-cli`: the `shards2` command: `cargo run -p shards-cli -- check --json file.shs`, `run`, `watch`, `describe`, `search`. File watching and warm host sessions are covered in [the embedding guide](docs/embedding.md#5-warm-sessions-and-hot-reload).
 
 ## Development

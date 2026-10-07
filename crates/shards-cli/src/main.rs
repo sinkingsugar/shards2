@@ -1,9 +1,9 @@
 //! `shards2`: check, run and describe Shards programs.
 //!
 //! ```text
-//! shards2 check [--json] [--stackful] <file> [key:value ...]
-//! shards2 run [--json] [--stackful] <file> [key:value ...]
-//! shards2 watch [--stackful] <file> [key:value ...]
+//! shards2 check [--json] <file> [key:value ...]
+//! shards2 run [--json] <file> [key:value ...]
+//! shards2 watch <file> [key:value ...]
 //! shards2 describe <shard>
 //! shards2 search <text>
 //! shards2 catalog
@@ -22,14 +22,14 @@ use std::process::ExitCode;
 
 use shards_core::diagnostic::{Diagnostic, json_str};
 use shards_core::{Catalog, Outcome};
-use shards_lang::{CheckReport, Host, Program, RunReport, Source, render};
+use shards_lang::{CheckReport, Program, RunReport, Source, render};
 
 mod watch;
 
 const USAGE: &str = "usage:
-  shards2 check [--json] [--stackful] <file> [key:value ...]
-  shards2 run [--json] [--stackful] <file> [key:value ...]
-  shards2 watch [--stackful] <file> [key:value ...]
+  shards2 check [--json] <file> [key:value ...]
+  shards2 run [--json] <file> [key:value ...]
+  shards2 watch <file> [key:value ...]
   shards2 describe <shard>
   shards2 search <text>
   shards2 catalog";
@@ -40,20 +40,17 @@ fn catalog() -> Catalog {
 
 struct Options {
   json: bool,
-  stackful: bool,
   file: String,
   defines: HashMap<String, String>,
 }
 
 fn options(args: &[String]) -> Result<Options, String> {
   let mut json = false;
-  let mut stackful = false;
   let mut file = None;
   let mut defines = HashMap::new();
   for arg in args {
     match arg.as_str() {
       "--json" => json = true,
-      "--stackful" => stackful = true,
       a if a.starts_with("--") => return Err(format!("unknown option {a}")),
       a => match script_argument(a) {
         // In any order: `check a:b file.shs` and `check file.shs a:b`.
@@ -67,7 +64,6 @@ fn options(args: &[String]) -> Result<Options, String> {
   }
   Ok(Options {
     json,
-    stackful,
     file: file.ok_or("missing file")?,
     defines,
   })
@@ -104,11 +100,7 @@ fn print_report(report: &CheckReport, source: &Source, json: bool) {
 fn check(o: &Options) -> Result<ExitCode, String> {
   let source = read(&o.file)?;
   let copy = Source::new(source.name.clone(), source.text.clone());
-  let report = if o.stackful {
-    shards_lang::check::<shards_core::StackfulMesh>(source, &catalog(), &o.defines)
-  } else {
-    shards_lang::check::<shards_core::Mesh>(source, &catalog(), &o.defines)
-  };
+  let report = shards_lang::check(source, &catalog(), &o.defines);
   print_report(&report, &copy, o.json);
   if !o.json && report.ok() {
     eprintln!("{}: ok", o.file);
@@ -135,18 +127,14 @@ fn run(o: &Options) -> Result<ExitCode, String> {
       return Ok(ExitCode::FAILURE);
     }
   };
-  if o.stackful {
-    run_on::<shards_core::StackfulMesh>(&program, o)
-  } else {
-    run_on::<shards_core::Mesh>(&program, o)
-  }
+  run_on(&program, o)
 }
 
-fn run_on<H: Host>(program: &Program, o: &Options) -> Result<ExitCode, String> {
+fn run_on(program: &Program, o: &Options) -> Result<ExitCode, String> {
   let (result, log) = if o.json {
-    shards_core::log::capture(|| program.run::<H>())
+    shards_core::log::capture(|| program.run())
   } else {
-    (program.run::<H>(), Vec::new())
+    (program.run(), Vec::new())
   };
   let report = match result {
     Ok(r) => r,
@@ -247,11 +235,7 @@ fn main() -> ExitCode {
       if o.json {
         return Err("watch does not support --json".into());
       }
-      if o.stackful {
-        watch::watch::<shards_core::StackfulMesh>(&o)
-      } else {
-        watch::watch::<shards_core::Mesh>(&o)
-      }
+      watch::watch(&o)
     }),
     Some("describe") if args.len() == 2 => match catalog().describe_json(&args[1]) {
       Some(json) => {

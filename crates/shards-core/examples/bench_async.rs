@@ -1,8 +1,7 @@
-//! Polling every tick against resuming on notification, on both schedulers.
+//! Polling every tick against resuming on notification.
 //!
 //! N instances each loop on a simulated request with a 50-step latency, so
-//! most ticks have nothing new for most instances. The same service and the
-//! same waker mechanism serve both schedulers. Only `mesh.tick()` is timed
+//! most ticks have nothing new for most instances. Only `mesh.tick()` is timed
 //! (the service's clock step is the same for every configuration). After 10
 //! warm-up ticks, 1000 ticks are timed; completed requests and total future
 //! polls are counted.
@@ -64,17 +63,11 @@ fn completed() -> usize {
 
 fn main() {
   for mode in [WakeMode::PollEveryTick, WakeMode::OnNotify] {
-    for scheduler in ["stackful", "stackless"] {
-      let (tick_ns, polls, completed) = if scheduler == "stackless" {
-        run_async!(shards_core::stackless::Mesh::new(), mode)
-      } else {
-        run_async!(shards_core::StackfulMesh::new(), mode)
-      };
-      println!(
-        "scheduler={scheduler} mode={mode:?} tick_us={:.2} ns_per_instance_tick={:.1} polls={polls} completed_requests={completed}",
-        tick_ns / 1000.0,
-        tick_ns / INSTANCES as f64,
-      );
-    }
+    let (tick_ns, polls, completed) = run_async!(shards_core::Mesh::new(), mode);
+    println!(
+      "scheduler=stackless mode={mode:?} tick_us={:.2} ns_per_instance_tick={:.1} polls={polls} completed_requests={completed}",
+      tick_ns / 1000.0,
+      tick_ns / INSTANCES as f64,
+    );
   }
 }

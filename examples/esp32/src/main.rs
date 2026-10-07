@@ -53,7 +53,7 @@ mod acceptance {
 
 use std::collections::HashMap;
 
-use shards_core::{Catalog, Mesh, Outcome, Var};
+use shards_core::{Catalog, Outcome, Var};
 use shards_lang::{Program, Source};
 
 fn main() {
@@ -66,7 +66,7 @@ fn main() {
     &HashMap::new(),
   )
   .unwrap_or_else(|(_, diagnostics)| panic!("load failed: {diagnostics:?}"));
-  let report = program.run::<Mesh>().expect("compose and run");
+  let report = program.run().expect("compose and run");
   assert_eq!(report.outcomes.len(), 1);
   assert_eq!(report.outcomes[0].1, Some(Outcome::Completed(Var::Int(42))));
   assert!(report.spawned_failures.is_empty());

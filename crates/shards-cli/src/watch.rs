@@ -5,11 +5,11 @@ use std::process::ExitCode;
 use std::sync::mpsc;
 
 use shards_core::Outcome;
-use shards_lang::{FileWatcher, Finished, ReloadHost, Session, WatchControl, WatchEvent, render};
+use shards_lang::{FileWatcher, Finished, Session, WatchControl, WatchEvent, render};
 
 use crate::{Options, catalog};
 
-pub(super) fn watch<H: ReloadHost>(o: &Options) -> Result<ExitCode, String> {
+pub(super) fn watch(o: &Options) -> Result<ExitCode, String> {
   let (quit, input) = mpsc::channel();
   let signal_quit = quit.clone();
   let signal = shards_io::runtime::runtime().spawn(async move {
@@ -38,7 +38,7 @@ pub(super) fn watch<H: ReloadHost>(o: &Options) -> Result<ExitCode, String> {
     o.file
   );
   let catalog = catalog();
-  let mut session = Session::<H>::new();
+  let mut session = Session::new();
   let mut error = None;
   FileWatcher::new(&o.file).run(
     &mut session,

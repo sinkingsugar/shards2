@@ -3,13 +3,13 @@ use std::any::Any;
 use std::sync::Arc;
 
 use super::arena::{Arena, Handle};
-use super::{ActivationCtx, CompiledNode, Stackless, Step};
 use crate::Var;
 use crate::compose::CompiledWire;
 use crate::error::{Error, Result};
 use crate::flow::CompiledFlow;
 use crate::instance::{CleanupCtx, InstanceCtx};
 use crate::reload::InlineCall;
+use crate::shard::{ActivationCtx, CompiledNode, Step};
 use crate::shards::control::{
   self, Condition, ConditionsCompiled, IfCompiled, MatchCompiled, MaybeCompiled,
 };
@@ -19,16 +19,16 @@ use crate::shards::{Predicated, RepeatCompiled};
 /// dispatch; frames retain their compiled owner, never pointers into it.
 #[doc(hidden)]
 pub enum Control<'a> {
-  Do(&'a Arc<InlineCall<Stackless>>),
-  When(&'a Predicated<Stackless>),
-  While(&'a Predicated<Stackless>),
-  Sub(&'a CompiledFlow<Stackless>),
-  Once(&'a CompiledFlow<Stackless>),
-  Repeat(&'a RepeatCompiled<Stackless>),
-  If(&'a IfCompiled<Stackless>),
-  Match(&'a MatchCompiled<Stackless>),
-  Maybe(&'a MaybeCompiled<Stackless>),
-  Conditions(&'a ConditionsCompiled<Stackless>),
+  Do(&'a Arc<InlineCall>),
+  When(&'a Predicated),
+  While(&'a Predicated),
+  Sub(&'a CompiledFlow),
+  Once(&'a CompiledFlow),
+  Repeat(&'a RepeatCompiled),
+  If(&'a IfCompiled),
+  Match(&'a MatchCompiled),
+  Maybe(&'a MaybeCompiled),
+  Conditions(&'a ConditionsCompiled),
 }
 
 impl Control<'_> {
@@ -47,12 +47,12 @@ impl Control<'_> {
 
 #[derive(Clone)]
 enum Code {
-  Root(Arc<CompiledWire<Stackless>>),
+  Root(Arc<CompiledWire>),
   Child(Arc<dyn CompiledNode>, usize),
-  Call(Arc<InlineCall<Stackless>>),
+  Call(Arc<InlineCall>),
 }
 impl Code {
-  fn flow(&self) -> &CompiledFlow<Stackless> {
+  fn flow(&self) -> &CompiledFlow {
     match self {
       Self::Root(w) => &w.flow,
       // Resolve from the retained owner without borrowing the frame arena.
@@ -90,7 +90,7 @@ struct Continuation {
   count: i64,
   limit: Option<i64>,
   once_done: bool,
-  call: Option<Arc<InlineCall<Stackless>>>,
+  call: Option<Arc<InlineCall>>,
   revision: u64,
 }
 impl Continuation {
@@ -135,7 +135,7 @@ pub(crate) struct Engine {
 }
 
 impl Engine {
-  pub fn instantiate(wire: Arc<CompiledWire<Stackless>>, ctx: &mut InstanceCtx) -> Result<Self> {
+  pub fn instantiate(wire: Arc<CompiledWire>, ctx: &mut InstanceCtx) -> Result<Self> {
     let mut engine = Self {
       frames: Arena::default(),
       root: None,

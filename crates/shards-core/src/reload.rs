@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
-use crate::compose::{Backend, CompiledWire, ComposeEnv, Dep, FrameLayout, WireDef};
+use crate::compose::{CompiledWire, ComposeEnv, Dep, FrameLayout, WireDef};
 use crate::diagnostic::{Diagnostic, PathStep, Phase};
 use crate::flow::CompiledFlow;
 use crate::{Error, Result, Type};
@@ -109,29 +109,29 @@ pub(crate) struct InlineSignature {
 }
 
 /// The immutable default for one Do call site, also used as a revision.
-pub struct InlineCall<B: Backend> {
+pub struct InlineCall {
   pub(crate) key: InlineKey,
   pub(crate) name: String,
   pub(crate) signature: InlineSignature,
   pub(crate) deps: Vec<Dep>,
   pub(crate) local_paths: Vec<Vec<PathStep>>,
-  pub(crate) flow: CompiledFlow<B>,
+  pub(crate) flow: CompiledFlow,
 }
 
-pub(crate) type InlineRegistry<B> = HashMap<InlineKey, Arc<InlineCall<B>>>;
+pub(crate) type InlineRegistry = HashMap<InlineKey, Arc<InlineCall>>;
 
 /// A mesh's installed Do revisions. Keys are structural (they hash whole wire
 /// definitions), so a Do consults the registry once per accepted reload, when
 /// `revision` changes, rather than on every call.
-pub(crate) struct Revisions<B: Backend> {
-  pub calls: InlineRegistry<B>,
+pub(crate) struct Revisions {
+  pub calls: InlineRegistry,
   /// Accepted preserving reloads; 0 means the registry was never installed.
   pub revision: u64,
   /// Registry lookups made by Do calls, for tests and diagnostics.
   pub lookups: Cell<u64>,
 }
 
-impl<B: Backend> Default for Revisions<B> {
+impl Default for Revisions {
   fn default() -> Self {
     Self {
       calls: HashMap::new(),
@@ -141,28 +141,28 @@ impl<B: Backend> Default for Revisions<B> {
   }
 }
 
-impl<B: Backend> Revisions<B> {
-  pub fn select(&self, key: &InlineKey) -> Option<Arc<InlineCall<B>>> {
+impl Revisions {
+  pub fn select(&self, key: &InlineKey) -> Option<Arc<InlineCall>> {
     self.lookups.set(self.lookups.get() + 1);
     self.calls.get(key).cloned()
   }
 
-  pub fn install(&mut self, calls: InlineRegistry<B>) {
+  pub fn install(&mut self, calls: InlineRegistry) {
     self.calls = calls;
     self.revision += 1;
   }
 }
 
-pub(crate) fn reusable<B: Backend>(wire: &CompiledWire<B>, env: &ComposeEnv<'_>) -> bool {
+pub(crate) fn reusable(wire: &CompiledWire, env: &ComposeEnv<'_>) -> bool {
   env.wires.get(&wire.name) == Some(wire.definition.as_ref())
     && wire.restart_deps.iter().all(|d| d.still_valid(env))
 }
 
-pub(crate) fn validate<B: Backend>(
-  old: &CompiledWire<B>,
+pub(crate) fn validate(
+  old: &CompiledWire,
   env: &ComposeEnv<'_>,
-  active: &InlineRegistry<B>,
-  next: &InlineRegistry<B>,
+  active: &InlineRegistry,
+  next: &InlineRegistry,
 ) -> Result<()> {
   if !reusable(old, env) {
     return Ok(());
@@ -194,7 +194,7 @@ pub(crate) fn validate<B: Backend>(
   Ok(())
 }
 
-pub(crate) fn reuse_unchanged<B: Backend>(old: &InlineRegistry<B>, next: &mut InlineRegistry<B>) {
+pub(crate) fn reuse_unchanged(old: &InlineRegistry, next: &mut InlineRegistry) {
   for (key, new) in next {
     if let Some(previous) = old.get(key)
       && previous.signature == new.signature

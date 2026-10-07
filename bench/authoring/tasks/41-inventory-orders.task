@@ -1,0 +1,37 @@
+=== prompt
+Prices are {apple: 3 pear: 5 plum: 2}. Process these orders in order: {item: "apple" quantity: "2"}, {item: "pear" quantity: "bad"}, {item: "missing" quantity: "4"}, {item: "plum" quantity: "-1"}, {item: "pear" quantity: "3"}, {item: "apple" quantity: "0"}. Accept an order only if its item exists and its quantity parses as a strictly positive integer. For each accepted order log "ITEM: SUBTOTAL" and add its subtotal to the total; for every other order log "rejected: ITEM" and increment a rejection count. Finally log "total=T rejected=R". Unknown items and malformed quantities must not terminate the program. Build the result from the input records, not literal output lines.
+=== expected
+apple: 6
+rejected: pear
+rejected: missing
+rejected: plum
+pear: 15
+rejected: apple
+total=21 rejected=4
+=== reference
+{apple: 3 pear: 5 plum: 2} = prices
+[{item: "apple" quantity: "2"} {item: "pear" quantity: "bad"} {item: "missing" quantity: "4"} {item: "plum" quantity: "-1"} {item: "pear" quantity: "3"} {item: "apple" quantity: "0"}] = orders
+0 | Var(total)
+0 | Var(rejected)
+0 | Var(i)
+Repeat({
+  orders | Take(i) | ExpectTable = order
+  order.item | ExpectString = item
+  false | Var(accepted)
+  Maybe({
+    order.quantity | ExpectString | ParseInt = quantity
+    prices | Take(item) | ExpectInt = price
+    When({quantity | IsMore(0)} {
+      price | Math.Multiply(quantity) = subtotal
+      subtotal | Math.Add(total) | Update(total)
+      f"{item}: {subtotal}" | Log
+      true | Update(accepted)
+    })
+  } silent: true)
+  When({accepted | Not} {
+    f"rejected: {item}" | Log
+    Inc(rejected)
+  })
+  Inc(i)
+} times: 6)
+f"total={total} rejected={rejected}" | Log

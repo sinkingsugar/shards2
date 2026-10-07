@@ -1,0 +1,35 @@
+=== prompt
+Process ["3" "bad" "-2" "end" "end" "5" "oops" "7" "end" "4"] in order. The string "end" closes a batch: log its valid-integer sum and invalid-string count as "sum=S invalid=E", then reset both counters. Other strings are parsed as integers; a parse failure increments the invalid count without changing the sum. Empty batches must be logged too. After the sequence ends, log the unfinished final batch only if it contains any entries. Use the same algorithm on a second sequence ["end" "2" "end"] to demonstrate that a trailing delimiter does not add an extra empty batch. Do not hardcode the output lines.
+=== expected
+sum=1 invalid=1
+sum=0 invalid=0
+sum=12 invalid=1
+sum=4 invalid=0
+sum=0 invalid=0
+sum=2 invalid=0
+=== reference
+[["3" "bad" "-2" "end" "end" "5" "oops" "7" "end" "4"] ["end" "2" "end"]] = inputs
+0 | Var(batch)
+Repeat({
+  inputs | Take(batch) | ExpectSeq = items
+  0 | Var(sum)
+  0 | Var(errors)
+  false | Var(pending)
+  0 | Var(i)
+  items | Count = count
+  Repeat({
+    items | Take(i) | ExpectString = item
+    If({item | Is("end")} {
+      f"sum={sum} invalid={errors}" | Log
+      0 | Update(sum)
+      0 | Update(errors)
+      false | Update(pending)
+    } {
+      true | Update(pending)
+      Maybe({item | ParseInt | Math.Add(sum) | Update(sum)} {Inc(errors)} silent: true)
+    })
+    Inc(i)
+  } times: count)
+  When({pending} {f"sum={sum} invalid={errors}" | Log})
+  Inc(batch)
+} times: 2)

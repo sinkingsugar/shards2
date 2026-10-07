@@ -51,13 +51,13 @@ The code accepts the M2 syntax plus M5's `@fn`. `Do` is gone: a named body is a 
 
 M2 notes for later milestones:
 
-- Ordinary locals of a *wire* are not yet fresh per root iteration (§3.4); `Keep` is a leaf whose state applies the initial value on first activation. Function invocations get fresh locals (M5); wires still keep theirs across iterations.
+- Ordinary locals of a *wire* are fresh per root iteration (§3.4); `Keep` slots survive, with their initializer applied at frame creation. `a_looped_wire_starts_each_iteration_with_fresh_locals` covers the distinction. Function invocations also get fresh ordinary locals (M5).
 - With block scoping, `possibly-uninitialized` is no longer reachable from the shipped shards (every declaration assigns, and nothing declared in a branch escapes); the check stays for host shards that declare without assigning.
 - `LeafCtx::iteration` lost its only user (Push's clearing) and is kept for per-iteration locals.
 
 ## Baseline findings
 
-- **Near saturation.** Sonnet failed 1 of 114 runs (an off-by-one in its loop), Haiku 4 (three logged one poll too many or too few; one FizzBuzz branch). Haiku leaves some headroom; harder tasks are still needed before the M5 rerun, and the control tag keeps the old syntax runnable to baseline them.
+- **Near saturation.** Sonnet failed 1 of 114 runs (an off-by-one in its loop), Haiku 4 (three logged one poll too many or too few; one FizzBuzz branch). Haiku leaves some headroom. Tasks 40–41 now add batch parsing and inventory validation, with pre-M2 solutions for the control tag; task 39 adds recursive tree folding for M7. All references pass through their respective CLIs (41 current, 40 control), but model reruns are still pending. The [eval README](../bench/authoring/README.md) separates the changed task 25 prompt and the recursion capability from the matched comparison.
 - **First-pass errors** (both models, all trials) are all compose errors except one missing shard: `variable-exists` 6 times (redeclaring with `>=` where `>` was meant; relevant to M2's assignment forms), `input-type-mismatch` 3, `missing-argument` 2, `possibly-uninitialized` 2, and one each of `immutable-variable`, `too-many-arguments`, `unknown-variable`, `wrong-argument-type`. No syntax (parse) errors.
 - Haiku writes about 13 times Sonnet's output tokens (mostly thinking).
 - From the superseded run: a looped wire already yields once per iteration, so a trailing `Pause` makes each iteration take two ticks; the first primer's example showed it and the model copied it. The primer now explains it. M4 kept that rule: a root iteration yields even if a `Pause` already yielded within it.
@@ -72,6 +72,10 @@ M2 notes for later milestones:
 - The external host is porting its shards to 2.0 ([embedding.md](embedding.md)); it must move to the opaque `Table` API (M1) and, with this checkpoint, drop the mesh type parameters from `check`, `run` and `Session`.
 
 ## Verified
+
+**Authoring eval fixture follow-up (2026-10-07, on `b4cf476`):** tasks 39–41 and the two pre-M2 control solutions pass in-process and through the release CLIs (the control runtime is `authoring-control-v1`, `de932c6`). Local Linux x86-64 checks pass: workspace check, debug and release tests, both workspace formatting checks, benchmark Python tests, native/TLS/WASI clippy, docs-off tests, release nesting and all eight WASI acceptance suites under Node. The HTTP tests required access to local listening sockets. No model call was made in this follow-up; reference validation does not supply M5/M7 authoring results.
+
+**Independent verification of the inlining fixes at `15d10b7`:** [Codex](../.agent-handoffs/verifications/2026-10-07-15d10b7-codex-952fcf.md) and [Claude](../.agent-handoffs/verifications/2026-10-07-15d10b7-claude-e2d2cc.md) close the six findings covered by the `d2c26ee` resolution, including preserving component state and iteration boundaries during reload, call-value release and cached initialization rollback. The records distinguish targeted native, WASI and Miri evidence from reported CI. This closes those findings, not the broader milestone reviews or model eval gates.
 
 **M4 gate at `eeab0fc4d6ed313c4ad4ff5f750eeffddb7c3940`** ([verification record](../.agent-handoffs/verifications/2026-10-07-eeab0fc-claude-3b7c1e.md)): the native workflow ([run 37526212486](https://github.com/sinkingsugar/shards2/actions/runs/37526212486)) and the ESP32 workflow on all three chips ([run 37526212515](https://github.com/sinkingsugar/shards2/actions/runs/37526212515)) pass; the [five-trial performance run at c88c59d](../bench/trampoline/README.md#persistent-call-site-prefix-follow-up) passes both soft gates (pending re-polls 0.285× stackful, mixed flows 0.995× M3 stackless), independently confirmed in [2026-10-06-c88c59d-codex-843667](../.agent-handoffs/verifications/2026-10-06-c88c59d-codex-843667.md). Arena Miri was rerun with the M6 commit (below).
 

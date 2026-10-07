@@ -1,0 +1,29 @@
+=== prompt
+Represent a tree by parallel sequences of node values [5 -2 7 4 3 -1] and child-index lists [[1 2] [3 4] [5] [] [] []]. Define a recursive named function that takes a node index and these sequences as parameters and returns the sum of that node and all its descendants. Do not hardcode subtree totals or replace recursion with an explicit traversal stack. Call the same function for nodes 0, 1, 2 and 5 and log each result. Each invocation must keep its own partial sum while it visits its children.
+=== expected
+16
+5
+6
+-1
+=== reference
+@fn(TreeSum input: None output: Int params: {node: Int values: [Int] kids: [[Any]]} {
+  values | Take(node) | ExpectInt | Var(total)
+  kids | Take(node) | ExpectSeq = children
+  children | Count = count
+  0 | Var(i)
+  Repeat({
+    children | Take(i) | ExpectInt = child
+    TreeSum(node: child values: values kids: kids) | Math.Add(total) | Update(total)
+    Inc(i)
+  } times: count)
+  total
+})
+[5 -2 7 4 3 -1] = values
+[[1 2] [3 4] [5] [] [] []] = kids
+[0 1 2 5] = roots
+0 | Var(i)
+Repeat({
+  roots | Take(i) | ExpectInt = node
+  TreeSum(node: node values: values kids: kids) | Log
+  Inc(i)
+} times: 4)

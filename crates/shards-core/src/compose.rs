@@ -137,10 +137,13 @@ const INLINE_BUDGET: usize = 24;
 
 /// How many levels of inlined calls a body may contain and still be inlined
 /// itself (`CompiledFunction::inline_depth`): a chain of small functions
-/// is flattened this deep and called beyond it, which bounds the code and
-/// dependency lists a level copies (a 24-deep chain compiled on the device
-/// otherwise peaked 90 KiB higher).
-const INLINE_DEPTH: u8 = 2;
+/// is flattened this deep and called beyond it. Hosts inline deep, since
+/// every inlined level is a call that costs nothing at run time; the
+/// device stops at two, because each level of a chain holds a copy of the
+/// code and dependency lists below it (a 24-deep chain compiled on ESP-IDF
+/// peaked 90 KiB higher unbounded, past the C3's and the classic ESP32's
+/// heap).
+const INLINE_DEPTH: u8 = if cfg!(target_os = "espidf") { 2 } else { 8 };
 
 /// A flow's code under construction: nodes, instructions and the node each
 /// instruction stands for (`CompiledFlow::pc_nodes`).

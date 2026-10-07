@@ -224,8 +224,8 @@ pub struct CompiledFunction {
   pub(crate) lazy_refs: Vec<String>,
   /// Levels of inlined calls inside the body: 0 when none, else one more
   /// than the deepest inlined callee's. A chain of small functions is
-  /// inlined only `compose::INLINE_DEPTH` levels deep, so a level holds a
-  /// bounded copy of the code below it.
+  /// inlined `compose::INLINE_DEPTH` levels deep (eight on hosts, two on
+  /// the device), so a level holds a bounded copy of the code below it.
   pub(crate) inline_depth: u8,
 }
 

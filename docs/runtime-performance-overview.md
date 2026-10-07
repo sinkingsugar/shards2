@@ -74,6 +74,20 @@ VM suite (precomposed chains, nine samples per cell), 2.0 time over 1.x time at 
 
 The 1.x `Do` case runs as a 2.0 function (`@fn`) called per element; its 2.0 cost fell from 57 to 24.7 ns per call with VM-level calls, and the remaining gap is the per-call argument binding and locals clearing. Constructors and pushes to a shared sequence remain the cases above 1.x. The fixed cost per iteration halved three times over the day (the `Repeat` loop is a VM instruction now) and is twice 1.x's; the slopes at width 64 and above are at or below 1.x for every workload except constructors, shared pushes, `do-int` and Float4 add (1.31× at width 64).
 
+### Flat control flow (`aae5c01`, the same day)
+
+`Repeat`, `While`, `When` and `If` are lowered to flat code with jumps at compose, so an iteration or a branch is a jump inside one VM run and the composite has no frames of its own ([current-state.md](current-state.md)). Same machine and method; [`bench/runtime-overview/results/2026-10-07-aae5c01`](../bench/runtime-overview/results/2026-10-07-aae5c01) and [`bench/vm-execution/results/2026-10-07-aae5c01`](../bench/vm-execution/results/2026-10-07-aae5c01):
+
+| Workload | 1.x | 2.0 at 7bac245 | 2.0 at aae5c01 |
+|---|---:|---:|---:|
+| Entity, 100 / 1,000 / 10,000 instances, ns per instance tick | 111 / 138 / 429 | 101 / 101 / 102 | 87 / 89 / 88 |
+| Entity heap per instance | | 1.68 KiB | 1.30 KiB |
+| Nested resume, depth 1 / 4 / 16 / 32 | 114 / 104 / 104 / 112 | 83 / 84 / 86 / 84 | 37 / 39 / 39 / 39 |
+| VM fixed cost per iteration (width 0) | 5.2 ns | 10.3 ns | 4.3 ns |
+| Function call per element (`do-int`), width 64 / 256 | 571 / 2,440 | 1,581 / 6,319 | 1,460 / 5,973 |
+
+The VM suite's other cells moved within a few percent of 7bac245 (`take-table` 15 percent faster, `add-float4` 12 percent). The `do-int` row is from a supplementary three-round run of that case alone, [`2026-10-07-aae5c01-do-int`](../bench/vm-execution/results/2026-10-07-aae5c01-do-int): in the full run, both `do-int` processes at widths 64 and 256 ran in a slow mode this laptop shows intermittently under background load, where a whole process runs at about 1.7× its usual time for its whole life, presumably on efficiency cores. The full run's `do-int` cells (2,610 and 10,511) are recorded as measured and should not be read as the engine's cost; the nine processes of the supplementary run were all in the normal mode. Comparisons on this machine are only valid interleaved, and the 1.x column of the supplementary run matches the full run's within 2 percent.
+
 ## Lessons from the VM optimization work
 
 Conclusions at `12ef2f0`, after the assembly comparison, controlled layout

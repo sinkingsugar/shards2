@@ -1,0 +1,113 @@
+{
+  "started_utc": "2026-10-07T15:48:14Z",
+  "platform": "macOS-27.0.1-arm64-arm-64bit-Mach-O",
+  "python": "3.14.6 (main, Jun 10 2026, 10:03:53) [Clang 21.0.0 (clang-2100.0.123.102)]",
+  "arguments": {
+    "shards1": "/Users/sugar/devel/shards/build/Release/shards",
+    "shards2": "/Users/sugar/devel/shards2/target/release/shards2",
+    "source1": "../shards",
+    "out": "bench/vm-execution/results/2026-10-07-aae5c01",
+    "cpu": null,
+    "cases": [
+      "const-int",
+      "const-string",
+      "const-seq",
+      "const-table",
+      "get-int",
+      "get-string",
+      "get-seq",
+      "get-table",
+      "update-int",
+      "update-string",
+      "update-seq",
+      "update-table",
+      "assign-int",
+      "assign-string",
+      "assign-seq",
+      "assign-table",
+      "add-int",
+      "add-float",
+      "add-float4",
+      "take-seq",
+      "take-table",
+      "do-int",
+      "push-shared-seq",
+      "make-seq",
+      "make-table"
+    ],
+    "widths": [
+      0,
+      8,
+      64,
+      256
+    ],
+    "rounds": 3,
+    "samples": 3,
+    "warmup": 2,
+    "target_ms": 20,
+    "max_ms": 250,
+    "iterations": null,
+    "timeout": 120,
+    "seed": 7529
+  },
+  "commands": {
+    "1x": [
+      "/Users/sugar/devel/shards/build/Release/shards"
+    ],
+    "2-stackless": [
+      "/Users/sugar/devel/shards2/target/release/shards2",
+      "run"
+    ]
+  },
+  "binaries": {
+    "1x": {
+      "path": "/Users/sugar/devel/shards/build/Release/shards",
+      "sha256": "f2e92b7e449e645e2864ead7c2f74197a32b1966cc931352848f8717d939bb04",
+      "bytes": 200823592
+    },
+    "2": {
+      "path": "/Users/sugar/devel/shards2/target/release/shards2",
+      "sha256": "30cf0bb2175f425d650b688eba63fb6d4747ab0f4d3165dc8bc606b2f95ed03d",
+      "bytes": 4159904
+    }
+  },
+  "repositories": {
+    "2": {
+      "head": "aae5c01bc2adfd624274332e8cedebb1f0978f24",
+      "status": "",
+      "tracked_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "1x": {
+      "head": "727eea88515dc479dee187c63b9474638a6a70d5",
+      "status": "",
+      "tracked_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  },
+  "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8",
+  "cpu": "Apple M4 Max",
+  "affinity": null,
+  "script_generator_sha256": "a167246c67b007baff016a954dbee45273c5b7d19f0bedb28412bc66f075e187",
+  "cmake_settings": [
+    "CMAKE_BUILD_TYPE:STRING=Release",
+    "CMAKE_CXX_COMPILER:FILEPATH=/usr/bin/clang++",
+    "CMAKE_CXX_FLAGS:STRING=",
+    "CMAKE_CXX_FLAGS_ASAN:STRING=-DSH_USE_ASAN -DBOOST_USE_ASAN -fsanitize=address -fno-optimize-sibling-calls -fsanitize-address-use-after-scope -fno-omit-frame-pointer -g -O1",
+    "CMAKE_CXX_FLAGS_DEBUG:STRING=-g",
+    "CMAKE_CXX_FLAGS_LSAN:STRING=-fsanitize=leak -fno-omit-frame-pointer -g -O1",
+    "CMAKE_CXX_FLAGS_MINSIZEREL:STRING=-Os -DNDEBUG",
+    "CMAKE_CXX_FLAGS_MSAN:STRING=-fsanitize=memory -fno-optimize-sibling-calls -fsanitize-memory-track-origins=2 -fno-omit-frame-pointer -g -O2",
+    "CMAKE_CXX_FLAGS_RELEASE:STRING=-O3 -DNDEBUG",
+    "CMAKE_CXX_FLAGS_RELWITHDEBINFO:STRING=-O2 -g -DNDEBUG",
+    "CMAKE_CXX_FLAGS_TSAN:STRING=-DSH_USE_TSAN -fsanitize=thread -g -O1",
+    "CMAKE_CXX_FLAGS_UBSAN:STRING=-fsanitize=undefined",
+    "SHARDS_DEBUGGER:STRING=OFF",
+    "SHARDS_INLINE_EVERYTHING:BOOL=ON",
+    "TRACY_ENABLE:STRING=OFF",
+    "CMAKE_CXX_COMPILER-ADVANCED:INTERNAL=1",
+    "CMAKE_CXX_FLAGS-ADVANCED:INTERNAL=1",
+    "CMAKE_CXX_FLAGS_DEBUG-ADVANCED:INTERNAL=1",
+    "CMAKE_CXX_FLAGS_MINSIZEREL-ADVANCED:INTERNAL=1",
+    "CMAKE_CXX_FLAGS_RELEASE-ADVANCED:INTERNAL=1",
+    "CMAKE_CXX_FLAGS_RELWITHDEBINFO-ADVANCED:INTERNAL=1"
+  ]
+}

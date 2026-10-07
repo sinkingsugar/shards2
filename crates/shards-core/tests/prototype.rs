@@ -212,7 +212,10 @@ fn call_sites_check_the_reload_registry_once_per_revision() {
   use std::collections::HashSet;
   let declare = |mesh: &mut Mesh, both: bool| {
     // The probe keeps the body on the frame path (a small straight-line
-    // body would be inlined into the caller, with no call site to check).
+    // body would be inlined into the caller, with no call site to check);
+    // its events are drained after every tick below, since hundreds of
+    // calls per tick would otherwise grow the probe log past the device's
+    // heap.
     let mut body = vec![inc("a"), probe("f")];
     if both {
       body.push(inc("b"));
@@ -236,6 +239,7 @@ fn call_sites_check_the_reload_registry_once_per_revision() {
   let main = mesh.compile("main", Type::none()).unwrap();
   mesh.spawn(&main, Var::None).unwrap();
   mesh.tick();
+  shards_core::shards::take_probe_events();
   // No reload installed yet: a call never consults the registry.
   assert_eq!(mesh.reload_lookups(), 0);
   assert_eq!(mesh.get_var("a"), Some(Var::Int(100)));
@@ -252,6 +256,7 @@ fn call_sites_check_the_reload_registry_once_per_revision() {
   reload(&mut mesh, true);
   for _ in 0..3 {
     mesh.tick();
+    shards_core::shards::take_probe_events();
   }
   assert_eq!(mesh.reload_lookups(), 1);
   assert_eq!(mesh.get_var("a"), Some(Var::Int(400)));
@@ -261,6 +266,7 @@ fn call_sites_check_the_reload_registry_once_per_revision() {
   reload(&mut mesh, false);
   for _ in 0..3 {
     mesh.tick();
+    shards_core::shards::take_probe_events();
   }
   assert_eq!(mesh.reload_lookups(), 2);
   assert_eq!(mesh.get_var("a"), Some(Var::Int(700)));

@@ -5,6 +5,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
+use shards_core::Mesh;
 use shards_core::args::Args;
 use shards_core::compose::ComposeCtx;
 use shards_core::describe::{InputDesc, OutputDesc, Params, ShardDesc, Targets, TypeName};

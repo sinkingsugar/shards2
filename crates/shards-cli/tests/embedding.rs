@@ -390,8 +390,8 @@ fn preserving_reload_keeps_pending_host_operation_until_its_call_returns() {
     let defines = HashMap::new();
     let load = |session: &mut shards_lang::Session, input| {
       let source = format!(
-        r#"@wire(inner {{{input} Host.Warm}})
-@wire(main {{Keep(n 0) Inc(n) Log Do(inner)}} looped: true)
+        r#"@fn(Inner input: None output: Int params: {{}} {{{input} Host.Warm}})
+@wire(main {{Keep(n 0) Inc(n) Log Inner}} looped: true)
 @mesh(m) @schedule(m main) @run(m)"#
       );
       session

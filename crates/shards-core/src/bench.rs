@@ -47,10 +47,10 @@ pub fn wires() -> Vec<WireDef> {
       looped: true,
       flow: vec![
         keep("energy", Var::Float(0.0)),
-        keep("pos", Var::Float3([0.0, 0.0, 0.0])),
+        keep("pos", Var::float3(0.0, 0.0, 0.0)),
         once(vec![inc("ready-count")]),
         get("pos"),
-        add(val(Var::Float3([0.1, 0.0, 0.0]))),
+        add(val(Var::float3(0.1, 0.0, 0.0))),
         update("pos"),
         get("energy"),
         call("Think", vec![]),

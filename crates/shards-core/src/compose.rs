@@ -827,7 +827,7 @@ impl ComposeCtx<'_> {
         );
       }
       let (operand, ty) = match &arg.value {
-        ParamValue::Value(v) => (Operand::Const(v.clone()), v.type_of()),
+        ParamValue::Value(v) => (Operand::Const(v.clone().into_struct_tables()), v.type_of()),
         ParamValue::Var(var) => {
           let info = self
             .read_var(var, name)
@@ -876,7 +876,7 @@ impl ComposeCtx<'_> {
     for (index, (param, operand)) in fdef.params.iter().zip(given).enumerate() {
       args.push(match (operand, &param.default) {
         (Some(operand), _) => operand,
-        (None, Some(default)) => Operand::Const(default.clone()),
+        (None, Some(default)) => Operand::Const(default.clone().into_struct_tables()),
         (None, None) => {
           return Err(
             fn_error(

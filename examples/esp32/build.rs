@@ -23,6 +23,7 @@ fn acceptance() {
     ),
     ("registry", "../../crates/shards-core/tests/registry.rs"),
     ("functions", "../../crates/shards-core/tests/functions.rs"),
+    ("values", "../../crates/shards-core/tests/values.rs"),
     ("lang", "../../crates/shards-lang/tests/lang.rs"),
     ("trampoline", "../../crates/shards-core/tests/trampoline.rs"),
   ] {

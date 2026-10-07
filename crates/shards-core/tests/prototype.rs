@@ -4,7 +4,8 @@ use shards_core::shards::defs::*;
 use shards_core::shards::sim::{self, RequestState};
 use shards_core::shards::{ProbeEvent, ProbeEventKind, take_probe_events};
 use shards_core::{
-  ComposeCache, FunctionDef, Outcome, ParamValue, Type, Var, WakeMode, WireDef, bench,
+  ComposeCache, Float2, Float3, Float4, FunctionDef, Outcome, ParamValue, Type, Var, WakeMode,
+  WireDef, bench,
 };
 
 use shards_core::Mesh;
@@ -665,8 +666,8 @@ fn diagnostics_carry_the_occurrence_path() {
   // Vectors of different sizes do not mix.
   let bad_add = || {
     vec![
-      konst(Var::Float3([0.0; 3])),
-      add(val(Var::Float2([0.0; 2]))),
+      konst(Var::Float3(Float3([0.0; 3]))),
+      add(val(Var::Float2(Float2([0.0; 2])))),
     ]
   };
   let mut mesh = Mesh::new();
@@ -746,10 +747,10 @@ fn input_mismatches_say_where_the_input_came_from() {
     "through",
     false,
     vec![
-      konst(Var::Float3([0.0; 3])),
+      konst(Var::Float3(Float3([0.0; 3]))),
       declare("x"),
       when(vec![konst(Var::Bool(true))], vec![]),
-      add(val(Var::Float2([0.0; 2]))),
+      add(val(Var::Float2(Float2([0.0; 2])))),
     ],
   ));
   let d = diagnostic(&mut mesh, "through");
@@ -780,10 +781,10 @@ fn input_mismatches_say_where_the_input_came_from() {
     "nested",
     false,
     vec![
-      konst(Var::Float3([0.0; 3])),
+      konst(Var::Float3(Float3([0.0; 3]))),
       when(
         vec![konst(Var::Bool(true))],
-        vec![add(val(Var::Float2([0.0; 2])))],
+        vec![add(val(Var::Float2(Float2([0.0; 2]))))],
       ),
     ],
   ));
@@ -926,7 +927,7 @@ fn take_types_follow_the_input() {
     "w",
     false,
     vec![
-      konst(Var::Float3([1.0, 2.0, 3.0])),
+      konst(Var::Float3(Float3([1.0, 2.0, 3.0]))),
       take(val(Var::Int(2))),
       bind("z"),
       konst(open),
@@ -944,7 +945,10 @@ fn take_types_follow_the_input() {
   mesh.add_wire(wire(
     "oob",
     false,
-    vec![konst(Var::Float2([0.0, 1.0])), take(val(Var::Int(2)))],
+    vec![
+      konst(Var::Float2(Float2([0.0, 1.0]))),
+      take(val(Var::Int(2))),
+    ],
   ));
   let oob = mesh.compile("oob", Type::none()).unwrap();
   let id = mesh.spawn(&oob, Var::None).unwrap();
@@ -1133,7 +1137,7 @@ fn variables_accept_values_by_the_acceptance_rule() {
       declare("p"),
       konst(point(2.0, "b")),
       update("p"),
-      konst(Var::Float4([1.0, 2.0, 3.0, 4.0])),
+      konst(Var::Float4(Float4([1.0, 2.0, 3.0, 4.0]))),
       declare("pose"),
       get("p"),
     ],

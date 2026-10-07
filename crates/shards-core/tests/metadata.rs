@@ -5,7 +5,7 @@ use shards_core::args::decode;
 use shards_core::describe::{Params, TypeName};
 use shards_core::shards::defs::*;
 use shards_core::shards::{ADD, ADD_DESC, CATALOG, WHEN, WHEN_PARAMS};
-use shards_core::{Arg, Catalog, ParamValue, ShardDef, Var};
+use shards_core::{Arg, Catalog, Float2, Float3, Float4, ParamValue, ShardDef, Var};
 
 fn add_with(args: Vec<Arg>) -> ShardDef {
   ShardDef::with_args(&ADD, args)
@@ -181,8 +181,8 @@ fn compose_checks_context_dependent_rules() {
   // mixes (vectors of different sizes do not).
   let d = compile_error(
     vec![
-      konst(Var::Float3([0.0; 3])),
-      add(val(Var::Float2([0.0; 2]))),
+      konst(Var::Float3(Float3([0.0; 3]))),
+      add(val(Var::Float2(Float2([0.0; 2])))),
     ],
     Type::none(),
   );
@@ -749,9 +749,9 @@ fn every_declared_parameter_accepts_exactly_its_documented_forms() {
         Some(TypeName::Bool) => Var::Bool(true),
         Some(TypeName::Int) | None => Var::Int(1),
         Some(TypeName::Float) => Var::Float(1.0),
-        Some(TypeName::Float2) => Var::Float2([1.0, 1.0]),
-        Some(TypeName::Float3) => Var::Float3([1.0, 1.0, 1.0]),
-        Some(TypeName::Float4) => Var::Float4([1.0, 1.0, 1.0, 1.0]),
+        Some(TypeName::Float2) => Var::Float2(Float2([1.0, 1.0])),
+        Some(TypeName::Float3) => Var::Float3(Float3([1.0, 1.0, 1.0])),
+        Some(TypeName::Float4) => Var::Float4(Float4([1.0, 1.0, 1.0, 1.0])),
         Some(TypeName::String) => Var::string("s"),
         Some(TypeName::Seq) => Var::Seq(Default::default()),
         Some(TypeName::Table) => Var::table(Vec::<(&str, Var)>::new()),
@@ -873,7 +873,7 @@ fn table_seq_and_vector_parameters_decode_by_acceptance() {
     &[
       Arg::named("Shape", ParamValue::Value(table.clone())),
       Arg::named("items", ParamValue::Value(mixed)),
-      Arg::named("At", ParamValue::Value(Var::Float2([1.0, 2.0]))),
+      Arg::named("At", ParamValue::Value(Var::Float2(Float2([1.0, 2.0])))),
     ],
   )
   .unwrap();
@@ -898,7 +898,10 @@ fn table_seq_and_vector_parameters_decode_by_acceptance() {
 
   let err = decode(
     &desc,
-    &[Arg::named("At", ParamValue::Value(Var::Float3([0.0; 3])))],
+    &[Arg::named(
+      "At",
+      ParamValue::Value(Var::Float3(Float3([0.0; 3]))),
+    )],
   )
   .err()
   .unwrap();

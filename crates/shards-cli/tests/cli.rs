@@ -182,21 +182,21 @@ fn watch_reloads_atomic_saves_and_keeps_running_after_rejected_edits() {
     std::fs::write(&replacement, "42").unwrap();
     std::fs::rename(&replacement, &file).unwrap();
     wait_for("root: 42");
-    let live = |body| {
+    let live = |output, body| {
       format!(
-        r#"@wire(inner {{{body}}})
-@wire(main {{Keep(n 0) Inc(n) Do(inner)}} looped: true)
+        r#"@fn(Inner input: None output: {output} params: {{n: Int}} {{{body}}})
+@wire(main {{Keep(n 0) Inc(n) Inner(n: n)}} looped: true)
 @mesh(m) @schedule(m main) @run(m fps: 10)"#
       )
     };
-    std::fs::write(&file, live(r#"f"old {n}" Log"#)).unwrap();
+    std::fs::write(&file, live("String", r#"f"old {n}" Log"#)).unwrap();
     wait_for("old 1");
-    std::fs::write(&file, live(r#"f"new {n}" Log"#)).unwrap();
+    std::fs::write(&file, live("String", r#"f"new {n}" Log"#)).unwrap();
     let line = wait_for("new ");
     assert!(line.strip_prefix("new ").unwrap().parse::<i64>().unwrap() > 1);
     // A changed interface is rejected; explicit restart accepts it and
     // resets script locals without restarting the watching process.
-    std::fs::write(&file, live(r#"f"restart {n}" Log 123"#)).unwrap();
+    std::fs::write(&file, live("Int", r#"f"restart {n}" Log 123"#)).unwrap();
     wait_for("edit rejected; previous execution retained");
     child.0.stdin.as_mut().unwrap().write_all(b"r\n").unwrap();
     wait_for("restart 1");

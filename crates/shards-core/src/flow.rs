@@ -14,3 +14,13 @@ pub struct CompiledFlow {
   pub output: Type,
   pub analysis: crate::signature::Analysis,
 }
+
+impl CompiledFlow {
+  /// The kind of instruction each top-level node compiled to (`"fallback"`
+  /// for a node that runs through its shard). For tests that pin which
+  /// builtin a shard lowers to; not a stable API.
+  #[doc(hidden)]
+  pub fn instruction_kinds(&self) -> Vec<&'static str> {
+    self.code.iter().map(|i| i.op.name()).collect()
+  }
+}

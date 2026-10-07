@@ -45,6 +45,10 @@ pub struct TableType {
   /// Sorted by key, keys unique.
   pub keys: Vec<(Arc<str>, Type)>,
   pub rest: Option<Type>,
+  /// The interned key shape of a fixed table (`None` with a rest type):
+  /// a struct value of this type carries the same handle, so admission is
+  /// a handle compare (golden path §7.3).
+  pub shape: Option<Shape>,
 }
 
 impl TableType {
@@ -66,6 +70,94 @@ impl TableType {
 struct Registry {
   descs: Vec<&'static TypeDesc>,
   ids: HashMap<&'static TypeDesc, Type>,
+  shapes: Vec<&'static [Arc<str>]>,
+  shape_ids: HashMap<&'static [Arc<str>], Shape>,
+}
+
+/// An interned sorted key list: the keys of a struct table (golden path
+/// §7.3). Equal key sets intern to the same handle, so comparing shapes is
+/// comparing handles. Shapes live in the type registry, which never frees.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Shape(u32);
+
+impl Shape {
+  /// The shape of these keys, in any order; a repeated key panics (a bug
+  /// in the caller, like a duplicate field in a struct literal).
+  pub fn new<K: Into<Arc<str>>>(keys: impl IntoIterator<Item = K>) -> Shape {
+    let mut keys: Vec<Arc<str>> = keys.into_iter().map(Into::into).collect();
+    keys.sort();
+    if let Some(w) = keys.windows(2).find(|w| w[0] == w[1]) {
+      panic!("duplicate table key {}", w[0]);
+    }
+    Shape::intern_sorted(keys)
+  }
+
+  /// Interns `keys`, already sorted and unique.
+  fn intern_sorted(keys: Vec<Arc<str>>) -> Shape {
+    if let Some(shape) = registry()
+      .read()
+      .expect("type registry poisoned")
+      .shape_ids
+      .get(&keys[..])
+    {
+      return *shape;
+    }
+    let mut reg = registry().write().expect("type registry poisoned");
+    if let Some(shape) = reg.shape_ids.get(&keys[..]) {
+      return *shape;
+    }
+    let shape = Shape(u32::try_from(reg.shapes.len()).expect("too many shapes"));
+    let keys: &'static [Arc<str>] = Box::leak(keys.into_boxed_slice());
+    reg.shapes.push(keys);
+    reg.shape_ids.insert(keys, shape);
+    shape
+  }
+
+  /// How many shapes the process has interned (never freed).
+  pub fn registered() -> usize {
+    registry()
+      .read()
+      .expect("type registry poisoned")
+      .shapes
+      .len()
+  }
+
+  /// The keys, sorted.
+  pub fn keys(self) -> &'static [Arc<str>] {
+    registry().read().expect("type registry poisoned").shapes[self.0 as usize]
+  }
+
+  pub fn len(self) -> usize {
+    self.keys().len()
+  }
+
+  pub fn is_empty(self) -> bool {
+    self.keys().is_empty()
+  }
+
+  /// The slot of `key`, if the shape has it.
+  pub fn index_of(self, key: &str) -> Option<usize> {
+    self.keys().binary_search_by(|k| (**k).cmp(key)).ok()
+  }
+}
+
+impl fmt::Display for Shape {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    write!(f, "{{")?;
+    for (i, k) in self.keys().iter().enumerate() {
+      if i > 0 {
+        write!(f, " ")?;
+      }
+      write!(f, "{}", key_text(k))?;
+    }
+    write!(f, "}}")
+  }
+}
+
+impl fmt::Debug for Shape {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    write!(f, "Shape#{} {self}", self.0)
+  }
 }
 
 fn registry() -> &'static RwLock<Registry> {
@@ -158,7 +250,21 @@ impl Type {
     if let Some(w) = keys.windows(2).find(|w| w[0].0 == w[1].0) {
       panic!("duplicate table key {}", w[0].0);
     }
-    Type::intern(TypeDesc::Table(TableType { keys, rest }))
+    let shape = rest
+      .is_none()
+      .then(|| Shape::intern_sorted(keys.iter().map(|(k, _)| k.clone()).collect()));
+    Type::intern(TypeDesc::Table(TableType { keys, rest, shape }))
+  }
+
+  /// The fixed table of `shape` with one value type per key, in key order.
+  pub fn fixed_table_of(shape: Shape, types: impl IntoIterator<Item = Type>) -> Type {
+    let keys: Vec<(Arc<str>, Type)> = shape.keys().iter().cloned().zip(types).collect();
+    assert_eq!(keys.len(), shape.len(), "one type per key of {shape}");
+    Type::intern(TypeDesc::Table(TableType {
+      keys,
+      rest: None,
+      shape: Some(shape),
+    }))
   }
 
   /// A fixed table: exactly these keys.
@@ -221,6 +327,18 @@ impl Type {
       | (TypeDesc::String, Var::String(_)) => true,
       (TypeDesc::Seq(e), Var::Seq(items)) => items.iter().all(|v| e.admits(v)),
       (TypeDesc::Table(t), Var::Table(entries)) => {
+        if let (Some(expected), Some(actual)) = (t.shape, entries.shape()) {
+          // A struct value of a fixed type: the shape handle says whether
+          // the keys match; the slots are checked where outputs are
+          // (debug builds and `output-checks`), as the plan allows.
+          return expected == actual
+            && (!crate::shards::leaf::OUTPUT_CHECKS
+              || t
+                .keys
+                .iter()
+                .zip(entries.values())
+                .all(|((_, kt), v)| kt.admits(v)));
+        }
         t.keys
           .iter()
           .all(|(k, kt)| entries.get(k).is_some_and(|v| kt.admits(v)))
@@ -507,6 +625,12 @@ mod tests {
   #[should_panic(expected = "duplicate table key a")]
   fn a_repeated_table_key_panics() {
     Type::fixed_table([("a", Type::int()), ("a", Type::float())]);
+  }
+
+  #[test]
+  #[should_panic(expected = "duplicate table key a")]
+  fn a_repeated_shape_key_panics() {
+    Shape::new(["a", "b", "a"]);
   }
 
   #[test]

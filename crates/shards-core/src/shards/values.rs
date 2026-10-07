@@ -900,7 +900,7 @@ impl<const N: usize> PureOp for ToVector<N> {
   fn apply(input: &Var) -> Result<Var> {
     let mut c = [0.0f64; 4];
     match input {
-      Var::Float2(v) => c[..2].copy_from_slice(v),
+      Var::Float2(v) => v.iter().enumerate().for_each(|(i, x)| c[i] = f64::from(*x)),
       Var::Float3(v) => v.iter().enumerate().for_each(|(i, x)| c[i] = f64::from(*x)),
       Var::Float4(v) => v.iter().enumerate().for_each(|(i, x)| c[i] = f64::from(*x)),
       Var::Seq(items) if items.len() == N => {
@@ -920,10 +920,12 @@ impl<const N: usize> PureOp for ToVector<N> {
       }
       _ => return Err(fail(Self::NAME, "input type mismatch")),
     }
+    // Rounded once to f32; out-of-range values become infinite.
+    let c = c.map(|x| x as f32);
     Ok(match N {
-      2 => Var::Float2([c[0], c[1]]),
-      3 => Var::Float3([c[0] as f32, c[1] as f32, c[2] as f32]),
-      _ => Var::Float4([c[0] as f32, c[1] as f32, c[2] as f32, c[3] as f32]),
+      2 => Var::float2(c[0], c[1]),
+      3 => Var::float3(c[0], c[1], c[2]),
+      _ => Var::float4(c[0], c[1], c[2], c[3]),
     })
   }
 }

@@ -205,8 +205,10 @@ future optimization will be cheap.
 - **Table storage is a concrete data-layout target.** A known fixed shape could
   share its keys and address values by compose-resolved slots instead of a
   BTreeMap lookup. Sorted iteration, dynamic tables, snapshots and mutation must
-  keep their defined semantics. Public `Var::Table` currently exposes the map
-  representation, so this would affect host code, not just the private executor.
+  keep their defined semantics. (Done in golden path M6: struct tables with an
+  interned shape, slot-indexed `Take`, in-place same-shape rebuilds; the
+  `BTreeMap` is gone. [`bench/values`](../bench/values/README.md) records a
+  16-key build-and-read going from 614 ns and 4 allocations to 123 ns and 1.)
 - **Stackless continuation traversal is the largest measured control-flow
   limitation.** An explicit continuation stack/program counter could avoid
   re-entering every suspended ancestor. That requires reworking control shards,

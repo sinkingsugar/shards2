@@ -55,7 +55,7 @@ const TICKS: u32 = 1000;
 /// callees (golden path §3.1).
 fn functions(depth: usize, progress: bool) -> Vec<FunctionDef> {
   let level = |n: usize, body: Vec<ShardDef>| {
-    FunctionDef::new(&format!("Level{n}"), Type::none(), Type::none())
+    FunctionDef::new(&format!("Level{n}"), Type::none(), Type::any())
       .uses(&["resumes"])
       .mutates(&["resumes"])
       .body(body)

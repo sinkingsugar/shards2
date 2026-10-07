@@ -14,8 +14,8 @@ use crate::error::{Error, Result};
 use crate::shards::Operand;
 use crate::shards::data;
 use crate::shards::leaf::{self, LeafShard};
-use crate::types::Type;
-use crate::var::Var;
+use crate::types::{Shape, Type};
+use crate::var::{Float4, Table, Var};
 
 /// Opaque internal optimization hook. Ordinary shards use the default `None`.
 #[doc(hidden)]
@@ -36,16 +36,48 @@ pub(crate) enum Op {
   SetDrop(Binding),
   IncDrop(Binding),
   Take(Operand),
+  /// A literal key resolved on a fixed table (golden path §7.3).
+  TakeSlot(usize),
   Push(Binding),
   SeqMake(Vec<Operand>),
-  // Scalar before Vec keeps this repr(u8) variant within 32 bytes on x86-64.
-  TableMake(Type, Vec<(std::sync::Arc<str>, Operand)>),
+  /// A struct table: its shape and one operand per slot, in key order.
+  TableMake(Shape, Vec<Operand>),
   AddIntConst(i64),
   AddIntBound(Binding),
   AddFloatConst(f64),
   AddFloatBound(Binding),
-  AddFloat4Const([f32; 4]),
+  AddFloat4Const(Float4),
   AddFloat4Bound(Binding),
+}
+
+impl Op {
+  /// The instruction's kind, for tests and diagnostics.
+  pub(crate) fn name(&self) -> &'static str {
+    match self {
+      Op::Fallback => "fallback",
+      Op::Const(_) => "const",
+      Op::GetLocal(_) => "get-local",
+      Op::GetMesh(_) => "get-mesh",
+      Op::Set(_) => "set",
+      Op::Inc(_) => "inc",
+      Op::ConstDrop(_) => "const-drop",
+      Op::GetLocalDrop(_) => "get-local-drop",
+      Op::GetMeshDrop(_) => "get-mesh-drop",
+      Op::SetDrop(_) => "set-drop",
+      Op::IncDrop(_) => "inc-drop",
+      Op::Take(_) => "take",
+      Op::TakeSlot(_) => "take-slot",
+      Op::Push(_) => "push",
+      Op::SeqMake(_) => "seq-make",
+      Op::TableMake(..) => "table-make",
+      Op::AddIntConst(_) => "add-int-const",
+      Op::AddIntBound(_) => "add-int-bound",
+      Op::AddFloatConst(_) => "add-float-const",
+      Op::AddFloatBound(_) => "add-float-bound",
+      Op::AddFloat4Const(_) => "add-float4-const",
+      Op::AddFloat4Bound(_) => "add-float4-bound",
+    }
+  }
 }
 
 /// Byte offset constructed only from a Var slot index. Its alignment is thus
@@ -120,6 +152,7 @@ pub(crate) fn lower_scratch_releases(code: &mut [Instruction]) {
       | Op::SeqMake(_)
       | Op::TableMake(..)
       | Op::Take(_)
+      | Op::TakeSlot(_)
       | Op::Push(_)
       | Op::AddFloat4Const(_)
       | Op::AddFloat4Bound(_) => may_own = true,
@@ -154,15 +187,15 @@ pub(crate) fn leaf<L: LeafShard>(c: &L::Compiled, output: Type) -> Option<Inline
   } else if id == TypeId::of::<leaf::Inc>() {
     Op::Inc(*c.downcast_ref::<Binding>()?)
   } else if id == TypeId::of::<data::Take>() {
-    Op::Take(c.downcast_ref::<Operand>()?.clone())
+    match c.downcast_ref::<data::TakeCode>()? {
+      data::TakeCode::Key(key) => Op::Take(key.clone()),
+      data::TakeCode::Slot(index) => Op::TakeSlot(*index),
+    }
   } else if id == TypeId::of::<data::SeqMake>() {
     Op::SeqMake(c.downcast_ref::<Vec<Operand>>()?.clone())
   } else if id == TypeId::of::<data::TableMake>() {
-    let mut entries = c
-      .downcast_ref::<Vec<(std::sync::Arc<str>, Operand)>>()?
-      .clone();
-    entries.sort_unstable_by(|a, b| a.0.cmp(&b.0));
-    Op::TableMake(output, entries)
+    let code = c.downcast_ref::<data::TableCode>()?;
+    Op::TableMake(code.shape, code.values.clone())
   } else if id == TypeId::of::<data::Push>() {
     Op::Push(*c.downcast_ref::<Binding>()?)
   } else if id == TypeId::of::<leaf::Add>() {
@@ -335,6 +368,10 @@ pub(crate) fn run(
           scratch = data::take_value(&*value, key)?;
           value = &scratch;
         }
+        Op::TakeSlot(index) => {
+          scratch = data::take_slot(&*value, *index)?;
+          value = &scratch;
+        }
         Op::Push(b) => {
           // Snapshot before mutating the slot: the input may alias the
           // destination (including a sequence pushing itself).
@@ -387,7 +424,7 @@ pub(crate) fn run(
         Op::AddFloat4Const(rhs) => {
           if let Var::Float4(lhs) = &*value {
             let result = std::array::from_fn(|i| lhs[i] + rhs[i]);
-            numeric.write(Var::Float4(result));
+            numeric.write(Var::Float4(Float4(result)));
             value = numeric.as_ptr();
           } else {
             scratch = add_generic(&*value, &Var::Float4(*rhs))?;
@@ -398,7 +435,7 @@ pub(crate) fn run(
           let rhs = &*frames.slot(*b);
           if let (Var::Float4(lhs), Var::Float4(rhs)) = (&*value, rhs) {
             let result = std::array::from_fn(|i| lhs[i] + rhs[i]);
-            numeric.write(Var::Float4(result));
+            numeric.write(Var::Float4(Float4(result)));
             value = numeric.as_ptr();
           } else {
             scratch = add_generic(&*value, rhs)?;
@@ -471,40 +508,35 @@ pub(crate) fn construct(
         value = Var::Seq(Arc::new(output));
       }
       Op::TableMake(..) => {
+        // Consume the old output: a struct table of the same shape that
+        // nobody else holds is overwritten in place; anything else is left
+        // to its owners and a new table is built. There are no callbacks
+        // or frame writes between constructors.
         let mut output = match std::mem::take(&mut value) {
-          Var::Table(entries) => entries.into_unique().unwrap_or_default(),
-          _ => std::collections::BTreeMap::new(),
+          Var::Table(table) => Some(table),
+          _ => None,
         };
-        let mut table_shape = None;
         while let Some(instruction) = code.get(index) {
-          let Op::TableMake(shape, entries) = &instruction.op else {
+          let Op::TableMake(shape, operands) = &instruction.op else {
             break;
           };
-          if table_shape == Some(*shape) || output.keys().eq(entries.iter().map(|(key, _)| key)) {
-            // Compiled entries and BTreeMap use sorted keys. A matching
-            // fixed output type proves equal key sets within this segment;
-            // there are no callbacks or frame writes between constructors.
-            for (slot, (_, operand)) in output.values_mut().zip(entries) {
-              *slot = read(operand);
+          match output.as_mut().and_then(|t| t.unique_slots(*shape)) {
+            Some(slots) => {
+              for (slot, operand) in slots.iter_mut().zip(operands) {
+                *slot = read(operand);
+              }
             }
-          } else {
-            output.clear();
-            output.extend(
-              entries
-                .iter()
-                .map(|(key, operand)| (key.clone(), read(operand))),
-            );
+            None => output = Some(Table::with_shape(*shape, operands.iter().map(&read))),
           }
-          table_shape = Some(*shape);
           #[cfg(any(debug_assertions, feature = "output-checks"))]
           leaf::check_output(
             instruction.check.0,
             instruction.check.1,
-            &Var::Table(crate::var::Table::from_map(output.clone())),
+            &Var::Table(output.clone().expect("built above")),
           )?;
           index += 1;
         }
-        value = Var::Table(crate::var::Table::from_map(output));
+        value = Var::Table(output.expect("a constructor ran"));
       }
       _ => break,
     }
@@ -768,17 +800,17 @@ mod tests {
         Op::AddFloatBound(Binding::Local(0)),
       ),
       (
-        Var::Float4([1.0, -0.0, f32::MIN_POSITIVE, f32::MAX]),
-        Var::Float4([2.0, -0.0, -f32::MIN_POSITIVE, f32::MAX]),
+        Var::Float4(Float4([1.0, -0.0, f32::MIN_POSITIVE, f32::MAX])),
+        Var::Float4(Float4([2.0, -0.0, -f32::MIN_POSITIVE, f32::MAX])),
         Op::AddFloat4Bound(Binding::Local(0)),
       ),
       (
         Var::Int(2),
-        Var::Float4([1.0; 4]),
+        Var::Float4(Float4([1.0; 4])),
         Op::AddFloat4Bound(Binding::Local(0)),
       ),
       (
-        Var::Float4([1.0; 4]),
+        Var::Float4(Float4([1.0; 4])),
         Var::Int(2),
         Op::AddFloat4Bound(Binding::Local(0)),
       ),

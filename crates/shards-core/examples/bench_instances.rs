@@ -81,6 +81,9 @@ macro_rules! run_bench {
     for (name, value, mutable) in bench::mesh_vars(n) {
       mesh.declare_var(name, value, mutable);
     }
+    for def in bench::functions() {
+      mesh.add_function(def);
+    }
     for def in bench::wires() {
       mesh.add_wire(def);
     }

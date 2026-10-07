@@ -878,8 +878,7 @@ mod tests {
       let source = shards_lang::Source::new(&task.id, task.reference.clone().unwrap());
       let program = shards_lang::Program::load(source, &catalog, &Default::default())
         .unwrap_or_else(|(_, d)| panic!("{}: {d:?}", task.id));
-      let (report, lines) =
-        shards_core::log::capture(|| program.run::<shards_core::Mesh>().unwrap());
+      let (report, lines) = shards_core::log::capture(|| program.run().unwrap());
       assert!(report.succeeded(), "{}", task.id);
       assert_eq!(lines, task.expected, "{}", task.id);
     }

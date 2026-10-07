@@ -123,7 +123,7 @@ fn components(v: &Var) -> Option<([f64; 4], Option<usize>)> {
       None
     }
     Var::Float2(x) => {
-      c[..2].copy_from_slice(x);
+      x.iter().enumerate().for_each(|(i, v)| c[i] = f64::from(*v));
       Some(2)
     }
     Var::Float3(x) => {
@@ -164,10 +164,12 @@ pub fn arith(op: BinOp, name: &str, input: &Var, operand: &Var) -> Result<Var> {
   // A number on either side applies to every component.
   let at = |c: &[f64; 4], n: Option<usize>, i: usize| if n.is_some() { c[i] } else { c[0] };
   let r: [f64; 4] = std::array::from_fn(|i| op.f64(at(&a, na, i), at(&b, nb, i)));
+  // Components are computed in f64 and rounded once to f32.
+  let r = r.map(|x| x as f32);
   Ok(match size {
-    2 => Var::Float2([r[0], r[1]]),
-    3 => Var::Float3([r[0] as f32, r[1] as f32, r[2] as f32]),
-    _ => Var::Float4([r[0] as f32, r[1] as f32, r[2] as f32, r[3] as f32]),
+    2 => Var::float2(r[0], r[1]),
+    3 => Var::float3(r[0], r[1], r[2]),
+    _ => Var::float4(r[0], r[1], r[2], r[3]),
   })
 }
 
@@ -498,9 +500,9 @@ impl<S: UnarySpec> LeafShard for Unary<S> {
           .ok_or_else(|| Error::Activation(format!("{}: integer overflow", S::DESC.name)))?,
       ),
       Var::Float(v) => Var::Float(S::float(*v)),
-      Var::Float2(v) => Var::Float2(v.map(S::float)),
-      Var::Float3(v) => Var::Float3(v.map(f32op)),
-      Var::Float4(v) => Var::Float4(v.map(f32op)),
+      Var::Float2(v) => Var::from(v.map(f32op)),
+      Var::Float3(v) => Var::from(v.map(f32op)),
+      Var::Float4(v) => Var::from(v.map(f32op)),
       _ => {
         return Err(Error::Activation(format!(
           "{}: input type mismatch",
@@ -550,7 +552,7 @@ impl LeafShard for Length {
 
   fn activate(_: &(), _: &mut (), _: &mut impl LeafCtx, input: &Var) -> Result<Flow> {
     let squares: f64 = match input {
-      Var::Float2(v) => v.iter().map(|x| x * x).sum(),
+      Var::Float2(v) => v.iter().map(|x| f64::from(*x).powi(2)).sum(),
       Var::Float3(v) => v.iter().map(|x| f64::from(*x).powi(2)).sum(),
       Var::Float4(v) => v.iter().map(|x| f64::from(*x).powi(2)).sum(),
       _ => {

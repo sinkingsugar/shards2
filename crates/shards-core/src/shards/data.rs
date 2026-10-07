@@ -11,6 +11,8 @@ use super::*;
 use crate::diagnostic::closest;
 use crate::instance::{InstanceCtx, LeafCtx};
 use crate::shard::Flow;
+use crate::types::Shape;
+use crate::var::Table;
 
 pub static TAKE: ShardType = leaf_type::<Take>();
 pub static PUSH: ShardType = leaf_type::<Push>();
@@ -62,18 +64,27 @@ pub const TAKE_DESC: ShardDesc = ShardDesc {
 
 pub struct Take;
 
+/// What a `Take` does at activation: look a key up, or read the slot a
+/// literal key resolved to on a fixed table (golden path §7.3).
+#[derive(Clone, Debug)]
+pub enum TakeCode {
+  Key(Operand),
+  Slot(usize),
+}
+
 impl LeafShard for Take {
-  type Compiled = Operand;
+  type Compiled = TakeCode;
   type State = ();
   const DESC: ShardDesc = TAKE_DESC;
 
-  fn compose(args: &Args, ctx: &mut ComposeCtx<'_>) -> Result<Composed<Operand>> {
+  fn compose(args: &Args, ctx: &mut ComposeCtx<'_>) -> Result<Composed<TakeCode>> {
     let (key, key_ty) = Operand::compose_arg(args, "key", "Take", ctx)?;
     let input = ctx.input();
     let literal = match &key {
       Operand::Const(v) => Some(v.clone()),
       Operand::Bound(_) => None,
     };
+    let mut code = TakeCode::Key(key);
     let key_error = |expected: TypeName| {
       Err(
         compose_error(
@@ -106,9 +117,14 @@ impl LeafShard for Take {
           return key_error(TypeName::String);
         }
         match literal {
-          Some(Var::String(k)) => match table.keys.iter().find(|(name, _)| **name == *k) {
-            Some((_, ty)) => *ty,
-            None => match table.rest {
+          Some(Var::String(k)) => match table.keys.binary_search_by(|(name, _)| (**name).cmp(&k)) {
+            Ok(index) => {
+              if table.is_fixed() {
+                code = TakeCode::Slot(index);
+              }
+              table.keys[index].1
+            }
+            Err(_) => match table.rest {
               // An open table may not have the key at runtime.
               Some(rest) => Type::union([rest, Type::none()]),
               None => {
@@ -157,18 +173,38 @@ impl LeafShard for Take {
       }
     };
     Ok(Composed {
-      compiled: key,
+      compiled: code,
       output,
     })
   }
 
-  fn instantiate(_: &Operand, _: &mut InstanceCtx) -> Result<()> {
+  fn instantiate(_: &TakeCode, _: &mut InstanceCtx) -> Result<()> {
     Ok(())
   }
 
-  fn activate(key: &Operand, _: &mut (), ctx: &mut impl LeafCtx, input: &Var) -> Result<Flow> {
-    let key = key.get(ctx);
-    take_value(input, &key).map(Flow::Next)
+  fn activate(code: &TakeCode, _: &mut (), ctx: &mut impl LeafCtx, input: &Var) -> Result<Flow> {
+    match code {
+      TakeCode::Key(key) => {
+        let key = key.get(ctx);
+        take_value(input, &key).map(Flow::Next)
+      }
+      TakeCode::Slot(index) => take_slot(input, *index).map(Flow::Next),
+    }
+  }
+}
+
+/// The value at `index` in key order of a table admitted by a fixed type.
+#[inline]
+pub(crate) fn take_slot(input: &Var, index: usize) -> Result<Var> {
+  match input {
+    Var::Table(table) => table.slot(index).cloned().ok_or_else(|| {
+      Error::Activation(format!(
+        "Take: the table has {} keys, not the {} its type declares",
+        table.len(),
+        index + 1
+      ))
+    }),
+    _ => Err(Error::Activation("Take: input type mismatch".into())),
   }
 }
 
@@ -183,7 +219,7 @@ pub(crate) fn take_value(input: &Var, key: &Var) -> Result<Var> {
   };
   let value = match input {
     Var::Seq(items) => items[index(items.len())?].clone(),
-    Var::Float2(v) => Var::Float(v[index(2)?]),
+    Var::Float2(v) => Var::Float(f64::from(v[index(2)?])),
     Var::Float3(v) => Var::Float(f64::from(v[index(3)?])),
     Var::Float4(v) => Var::Float(f64::from(v[index(4)?])),
     Var::Table(entries) => match &key {
@@ -402,12 +438,20 @@ pub const TABLE_MAKE_DESC: ShardDesc = ShardDesc {
 
 pub struct TableMake;
 
+/// A struct table under construction: its shape and one operand per key,
+/// in key order.
+#[derive(Clone, Debug)]
+pub struct TableCode {
+  pub shape: Shape,
+  pub values: Vec<Operand>,
+}
+
 impl LeafShard for TableMake {
-  type Compiled = Vec<(Arc<str>, Operand)>;
+  type Compiled = TableCode;
   type State = ();
   const DESC: ShardDesc = TABLE_MAKE_DESC;
 
-  fn compose(args: &Args, ctx: &mut ComposeCtx<'_>) -> Result<Composed<Vec<(Arc<str>, Operand)>>> {
+  fn compose(args: &Args, ctx: &mut ComposeCtx<'_>) -> Result<Composed<TableCode>> {
     let bad_keys = || {
       Err(param_error(
         args,
@@ -442,32 +486,28 @@ impl LeafShard for TableMake {
         format!("{} keys but {} values", keys.len(), values.len()),
       ));
     }
-    let output = Type::fixed_table(keys.iter().cloned().zip(values.iter().map(|(_, t)| *t)));
+    let mut entries: Vec<(Arc<str>, (Operand, Type))> = keys.into_iter().zip(values).collect();
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    let shape = Shape::new(entries.iter().map(|(k, _)| k.clone()));
+    let output = Type::fixed_table_of(shape, entries.iter().map(|(_, (_, t))| *t));
     Ok(Composed {
-      compiled: keys
-        .into_iter()
-        .zip(values.into_iter().map(|(o, _)| o))
-        .collect(),
+      compiled: TableCode {
+        shape,
+        values: entries.into_iter().map(|(_, (o, _))| o).collect(),
+      },
       output,
     })
   }
 
-  fn instantiate(_: &Vec<(Arc<str>, Operand)>, _: &mut InstanceCtx) -> Result<()> {
+  fn instantiate(_: &TableCode, _: &mut InstanceCtx) -> Result<()> {
     Ok(())
   }
 
-  fn activate(
-    entries: &Vec<(Arc<str>, Operand)>,
-    _: &mut (),
-    ctx: &mut impl LeafCtx,
-    _: &Var,
-  ) -> Result<Flow> {
-    Ok(Flow::Next(Var::Table(
-      entries
-        .iter()
-        .map(|(k, o)| (k.clone(), o.get(ctx)))
-        .collect(),
-    )))
+  fn activate(code: &TableCode, _: &mut (), ctx: &mut impl LeafCtx, _: &Var) -> Result<Flow> {
+    Ok(Flow::Next(Var::Table(Table::with_shape(
+      code.shape,
+      code.values.iter().map(|o| o.get(ctx)),
+    ))))
   }
 }
 

@@ -262,7 +262,10 @@ fn repeated_suspend_complete_cycles_do_not_grow_live_allocations_or_owners() {
   mesh.add_wire(wire(nested(32), true));
   let code = mesh.compile("root", Type::int()).unwrap();
   let id = mesh.spawn(&code, Var::Int(7)).unwrap();
-  let cycle = |mesh: &mut Mesh| {
+  mesh.tick();
+  let live = allocations::live();
+  let owners = Arc::strong_count(&gate);
+  for _ in 0..1000 {
     for _ in 0..3 {
       mesh.tick();
     }
@@ -271,14 +274,6 @@ fn repeated_suspend_complete_cycles_do_not_grow_live_allocations_or_owners() {
     gate.wakes.lock().unwrap().clear();
     gate.ready.store(false, Ordering::Relaxed);
     mesh.tick();
-  };
-  mesh.tick();
-  // The first exit populates the arena's free list; measure after it.
-  cycle(&mut mesh);
-  let live = allocations::live();
-  let owners = Arc::strong_count(&gate);
-  for _ in 0..1000 {
-    cycle(&mut mesh);
     assert_eq!(allocations::live(), live);
     assert_eq!(Arc::strong_count(&gate), owners);
   }
@@ -367,10 +362,7 @@ fn invocation_frames_are_released_on_every_exit() {
   mesh.add_wire(wire(flow, true));
   let code = mesh.compile("root", Type::int()).unwrap();
   let id = mesh.spawn(&code, Var::Int(7)).unwrap();
-  mesh.tick();
-  let live = allocations::live();
-  let owners = Arc::strong_count(&gate);
-  for _ in 0..1000 {
+  let cycle = |mesh: &mut Mesh| {
     for _ in 0..3 {
       mesh.tick();
     }
@@ -379,6 +371,14 @@ fn invocation_frames_are_released_on_every_exit() {
     gate.wakes.lock().unwrap().clear();
     gate.ready.store(false, Ordering::Relaxed);
     mesh.tick();
+  };
+  mesh.tick();
+  // The first exit populates the arena's free list; measure after it.
+  cycle(&mut mesh);
+  let live = allocations::live();
+  let owners = Arc::strong_count(&gate);
+  for _ in 0..1000 {
+    cycle(&mut mesh);
     assert_eq!(allocations::live(), live);
     assert_eq!(Arc::strong_count(&gate), owners);
   }

@@ -13,7 +13,7 @@ python3 bench/runtime-overview/run.py ../shards/build/Release/shards /tmp/schedu
 bash bench/http-concurrency/run.sh ../shards/build/Release/shards 3 > /tmp/http.txt
 ```
 
-On macOS there is no `taskset`; a shim on `PATH` that drops the pinning arguments runs the same sequence unpinned (the 2026-10-07 results were taken that way, on a laptop).
+On macOS there is no `taskset`; a shim on `PATH` that drops the pinning arguments runs the same sequence unpinned (the 2026-10-07 results were taken that way, on a laptop: `results/2026-10-07-e706cfb` after the review fixes and `results/2026-10-07-7bac245` after the VM-level steps, both summarized in [the report's 2026-10-07 section](../../docs/runtime-performance-overview.md#golden-path-refresh-2026-10-07)).
 
 `run.py` checks entity iteration counts, depth resume counts and equal nonzero
 async completions. The recorded HTTP refresh was separately validated: all 36

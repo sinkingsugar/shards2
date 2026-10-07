@@ -17,6 +17,8 @@ removes redundant scratch checks. Its full VM rerun and the
 opcode decoding and frame binding costs. The historical tables below retain
 their original snapshot.
 
+**Golden path refresh:** the [2026-10-07 section](#golden-path-refresh-2026-10-07) below has the current engine (functions, recursion, 32-byte values, VM-level steps) against 1.x on the scheduler and VM workloads; the historical tables further down describe the 2026-10-05 snapshot.
+
 **Latest internal layout:** [explicit opcode tags and specialized Get offsets](vm-execution-benchmarks.md#explicit-opcode-tags-and-specialized-get-addressing)
 were adopted after an alternating four-way experiment and full VM rerun.
 Const(Int) is now 1.02× and Get(Int) 1.13× 1.x at width 256. The
@@ -36,6 +38,41 @@ The new trampoline replaces the recursive stackless engine. [Five alternating tr
 | Short mixed entity flow | 105.50 ns | 133.50 ns | 105.00 ns |
 
 The M4 soft gate passes: pending re-polls cost 0.285× stackful, and short mixed flows cost 0.995× M3 (limit 1.10×). Structural tests prove zero ancestor dispatches during pending re-polls and one per parent during completion at depths 1/4/16/32. Measured state in the mixed workload is 1,306 bytes per instance versus 978 for M3 stackless (down from 1,930 before exact reservation). Instance state and creation cost still increase with the explicit arena; the raw log retains those measurements. Historical tables below retain their original snapshots, and their old recursive-stackless depth numbers no longer describe the current engine. The stackful scheduler was deleted after this gate (2026-10-07); its column here is its last measurement.
+
+## Golden path refresh (2026-10-07)
+
+Measured at `7bac245` on an Apple Silicon laptop (aarch64, macOS, Rust 1.98.1 release, unpinned, three rounds with 1.x and 2.0 alternating; see [the harness notes](../bench/runtime-overview/README.md)), against the same 1.x release binary as the day's earlier runs. The engine is the trampoline after the function, recursion and value milestones and two optimization commits: review fixes (`e706cfb`) and VM-level steps (`51525a6`: calls to straight-line bodies, loops and branches run inside a VM segment; a call site is prepared and entered in one step; leaf child flows run inside their composite's dispatch). The numbers in this section are medians from [`bench/runtime-overview/results/2026-10-07-7bac245`](../bench/runtime-overview/results/2026-10-07-7bac245) and [`bench/vm-execution/results/2026-10-07-7bac245`](../bench/vm-execution/results/2026-10-07-7bac245); the e706cfb column is the same harness earlier the same day.
+
+Scheduler workloads, ns per instance per tick:
+
+| Workload | 1.x | 2.0 at e706cfb | 2.0 at 7bac245 |
+|---|---:|---:|---:|
+| Entity, 100 instances | 113.7 | 108.4 | 101.4 |
+| Entity, 1,000 instances | 141.9 | 103.9 | 100.5 |
+| Entity, 10,000 instances | 406.1 | 103.4 | 101.9 |
+| Nested resume, depth 1 | 108.0 | 83.1 | 82.8 |
+| Nested resume, depth 4 | 109.7 | 83.1 | 83.9 |
+| Nested resume, depth 16 | 104.3 | 87.7 | 85.7 |
+| Nested resume, depth 32 | 108.9 | 89.3 | 84.4 |
+
+The entity's think step is a function since M5 (`bench::functions`), so the entity rows are not the M4 gate's workload; against the gate's own engine on this machine, back to back, the entity ticks in 98 µs per 1,000 instances against the gate's 99 and e706cfb's 101, with 1.68 KiB of heap per instance against the gate's 1.66 (the price of the 32-byte value). Every run verified `instances × 500` iterations and 1,000,000 resumes.
+
+VM suite (precomposed chains, nine samples per cell), 2.0 time over 1.x time at width 256, with the fixed per-iteration cost at width 0:
+
+| Workload | 2.0 / 1.x at 7bac245 | at e706cfb |
+|---|---:|---:|
+| Fixed cost per iteration (width 0) | 10.3 ns vs 5.1 | 28.9 ns |
+| Int / Float / Float4 Add | 0.36× / 0.85× / 0.38× | 0.38× / 0.93× / 0.41× |
+| Constants (Int, String, Seq, Table) | 0.70× / 0.67× / 0.57× / 0.53× | 0.76× / 0.73× / 0.62× / 0.58× |
+| Get (Int, String, Seq, Table) | 0.73× / 0.72× / 0.62× / 0.56× | 0.77× / 0.74× / 0.65× / 0.59× |
+| Update (Int, String, Seq, Table) | 0.55× / 0.39× / 0.34× / 0.32× | 0.59× / 0.42× / 0.37× / 0.34× |
+| Assign sequence / table / string | 0.09× / 0.06× / 0.46× | 0.09× / 0.06× / 0.46× |
+| Take sequence / table | 0.62× / 0.83× | 0.56× / 0.86× |
+| Construct sequence / table | 1.62× / 1.11× | 1.65× / 1.09× |
+| Push to shared sequence | 1.60× | 1.87× |
+| Function call per element (`do-int`, 1.x `Do`) | 2.47× | 5.70× |
+
+The 1.x `Do` case runs as a 2.0 function (`@fn`) called per element; its 2.0 cost fell from 57 to 24.7 ns per call with VM-level calls, and the remaining gap is the per-call argument binding and locals clearing. Constructors and pushes to a shared sequence remain the cases above 1.x. The fixed cost per iteration halved three times over the day (the `Repeat` loop is a VM instruction now) and is twice 1.x's; the slopes at width 64 and above are at or below 1.x for every workload except constructors, shared pushes, `do-int` and Float4 add (1.31× at width 64).
 
 ## Lessons from the VM optimization work
 

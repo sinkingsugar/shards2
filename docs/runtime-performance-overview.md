@@ -231,7 +231,13 @@ future optimization will be cheap.
   correspondence; activation/lifecycle state is still indexed by node. Fusing
   instructions or flattening calls requires an explicit mapping back to logical
   nodes for cleanup, errors, source locations and reload boundaries. A lowering
-  pass is feasible within this design, but is not implemented today.
+  pass is feasible within this design, but is not implemented today. (Done in
+  the golden path, 2026-10-07: `CompiledFlow::pc_nodes` maps every instruction
+  to the node it stands for, and `Repeat`, `While`, `When` and `If` are lowered
+  to flat code with jumps and hidden slots at compose, their children's nodes
+  merged into the parent frame. Calls, `Match`, `Once`, `Sub`, `Maybe` and
+  `Conditions` still keep frames; see the [2026-10-07
+  section](#golden-path-refresh-2026-10-07).)
 - **Owned values at generic boundaries have a cost.** Builtins can borrow within
   a segment; generic shards return owned `Var`s, and suspension preserves owned
   input snapshots. More ownership-aware builtins and liveness-based elimination

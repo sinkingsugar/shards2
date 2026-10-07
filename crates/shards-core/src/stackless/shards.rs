@@ -176,56 +176,13 @@ macro_rules! composite {
     }
   };
 }
-/// A `When` or `While` whose predicate and action are straight-line code
-/// is a VM instruction: the branch runs on this frame's locals without
-/// engine steps for the predicate and the action.
-fn inline_branch(c: &Predicated, looping: bool) -> Option<crate::inline::InlineOp> {
-  use crate::inline::{InlineOp, Op, VmBranch, straight_line};
-  (straight_line(&c.pred.code) && straight_line(&c.body.code)).then(|| {
-    InlineOp(Op::VmBranch(Box::new(VmBranch {
-      pred: Arc::clone(&c.pred),
-      body: Arc::clone(&c.body),
-      looping,
-    })))
-  })
-}
-composite!(
-  When,
-  Predicated,
-  WHEN_DESC,
-  compose_when,
-  When,
-  inline = |c: &Predicated| inline_branch(c, false)
-);
-composite!(
-  While,
-  Predicated,
-  WHILE_DESC,
-  compose_while,
-  While,
-  inline = |c: &Predicated| inline_branch(c, true)
-);
+// `When`, `While` and `Repeat` are lowered to flat code by compose
+// (`ComposeCtx::flatten`); their descriptions here compose the children.
+composite!(When, Predicated, WHEN_DESC, compose_when, When);
+composite!(While, Predicated, WHILE_DESC, compose_while, While);
 composite!(Sub, CompiledFlow, SUB_DESC, compose_sub, Sub);
 composite!(Once, CompiledFlow, ONCE_DESC, compose_once, Once);
-composite!(
-  Repeat,
-  RepeatCompiled,
-  REPEAT_DESC,
-  compose_repeat,
-  Repeat,
-  inline = |c: &RepeatCompiled| {
-    use crate::inline::{InlineOp, Op, VmLoop, straight_line};
-    let straight =
-      straight_line(&c.body.code) && c.until.as_ref().is_none_or(|u| straight_line(&u.code));
-    straight.then(|| {
-      InlineOp(Op::VmRepeat(Box::new(VmLoop {
-        body: Arc::clone(&c.body),
-        times: c.times.clone(),
-        until: c.until.clone(),
-      })))
-    })
-  }
-);
+composite!(Repeat, RepeatCompiled, REPEAT_DESC, compose_repeat, Repeat);
 composite!(
   If,
   control::IfCompiled,

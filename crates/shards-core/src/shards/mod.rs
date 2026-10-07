@@ -859,8 +859,7 @@ pub(crate) fn compare(input: &Var, operand: Var) -> Result<std::cmp::Ordering> {
 
 /// Compiled form of `When` and `While`: a predicate flow and a body flow.
 pub struct Predicated {
-  /// Shared with the VM's `vm-branch` instruction when both flows are
-  /// straight-line code.
+  /// Lowered into the parent flow's code at compose (`ComposeCtx::flatten`).
   pub(crate) pred: Arc<CompiledFlow>,
   pub(crate) body: Arc<CompiledFlow>,
 }
@@ -1078,26 +1077,12 @@ pub(crate) fn compose_sub(args: &Args, ctx: &mut ComposeCtx<'_>) -> Result<Compo
 }
 
 pub struct RepeatCompiled {
-  /// Shared with the VM's `vm-repeat` instruction when the body is
-  /// straight-line code.
+  /// Lowered into the parent flow's code at compose (`ComposeCtx::flatten`).
   pub(crate) body: Arc<CompiledFlow>,
   /// `None`: no limit (Forever, or Until alone).
   pub(crate) times: Option<Operand>,
   /// Checked before each iteration; true stops the repeat.
   pub(crate) until: Option<Arc<CompiledFlow>>,
-}
-
-impl RepeatCompiled {
-  /// The iteration limit for this run, read when the repeat starts.
-  pub(crate) fn limit(&self, frames: &impl Frames) -> Result<Option<i64>> {
-    match &self.times {
-      None => Ok(None),
-      Some(op) => match op.get(frames) {
-        Var::Int(t) => Ok(Some(t.max(0))),
-        _ => Err(Error::Activation("Repeat: times is not an Int".into())),
-      },
-    }
-  }
 }
 
 pub static REPEAT_PARAMS: &[ParamDecl] = &[

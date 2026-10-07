@@ -986,9 +986,9 @@ fn a_looped_wire_starts_each_iteration_with_fresh_locals() {
   mesh.cancel(id);
 }
 
-/// `When` and `While` whose predicate and action are straight-line code
-/// are one VM instruction each: no composite step for the predicate or
-/// the action, the input passed through, errors raised like any VM error.
+/// `When` and `While` are flat code with jumps: no composite step for the
+/// predicate or the action, the input passed through, errors raised like
+/// any VM error.
 #[test]
 fn straight_line_branches_run_inside_the_vm() {
   let mut mesh = Mesh::new();
@@ -1025,8 +1025,12 @@ fn straight_line_branches_run_inside_the_vm() {
   let compiled = mesh.compile("root", Type::none()).unwrap();
   let kinds = compiled.flow.instruction_kinds();
   assert_eq!(
-    kinds.iter().filter(|k| **k == "vm-branch").count(),
-    3,
+    kinds.iter().filter(|k| **k == "fallback").count(),
+    2,
+    "only Log and Maybe activate through the engine: {kinds:?}"
+  );
+  assert!(
+    kinds.contains(&"jump-if-not") && kinds.contains(&"jump"),
     "{kinds:?}"
   );
   let before = mesh.composite_dispatches();

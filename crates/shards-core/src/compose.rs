@@ -19,6 +19,7 @@ use crate::reload::{FunctionKey, FunctionRegistry};
 use crate::shard::{CompiledNode, Composed, ParamValue, ShardDef, ShardType};
 use crate::shards::Operand;
 use crate::signature::{Analysis, Effects, Lifetime, Occurrence};
+use crate::stackless::Control;
 use crate::types::Type;
 use crate::var::Var;
 
@@ -79,6 +80,18 @@ impl FrameLayout {
     slot
   }
 
+  /// A slot no name reaches: a flattened composite keeps its input or a
+  /// loop counter there (`ComposeCtx::declare_hidden`).
+  pub(crate) fn declare_hidden(&mut self, ty: Type) -> Slot {
+    let slot = Slot {
+      index: self.slots.len(),
+      ty,
+      mutable: true,
+    };
+    self.slots.push((String::new(), slot));
+    slot
+  }
+
   /// The names visible now, for restoring at the end of a block.
   pub(crate) fn visible(&self) -> HashMap<String, usize> {
     self.index.clone()
@@ -114,6 +127,69 @@ impl FrameLayout {
 
   pub fn is_empty(&self) -> bool {
     self.slots.is_empty()
+  }
+}
+
+/// A flow's code under construction: nodes, instructions and the node each
+/// instruction stands for (`CompiledFlow::pc_nodes`).
+struct Flat {
+  nodes: Vec<Arc<dyn CompiledNode>>,
+  code: Vec<crate::inline::Instruction>,
+  pc_nodes: Vec<u32>,
+}
+
+impl Flat {
+  /// The next instruction's index.
+  fn here(&self) -> u32 {
+    u32::try_from(self.code.len()).expect("flow code fits u32")
+  }
+
+  /// A node of this flow with its one instruction.
+  fn node(&mut self, node: Arc<dyn CompiledNode>, name: &'static str, output: Type) {
+    self
+      .pc_nodes
+      .push(u32::try_from(self.nodes.len()).expect("node count fits u32"));
+    self
+      .code
+      .push(crate::inline::Instruction::new(node.inline(), name, output));
+    self.nodes.push(node);
+  }
+
+  /// A control instruction standing for no node; returns its index (for
+  /// `target`).
+  fn op(&mut self, op: crate::inline::Op, output: Type) -> u32 {
+    let at = self.here();
+    self.pc_nodes.push(crate::flow::NO_NODE);
+    self.code.push(crate::inline::Instruction::new(
+      Some(crate::inline::InlineOp(op)),
+      "",
+      output,
+    ));
+    at
+  }
+
+  /// Points the jump at `at` to the next instruction.
+  fn target(&mut self, at: u32) {
+    let here = self.here();
+    self.code[at as usize].retarget(here);
+  }
+
+  /// Appends a child flow: its nodes, and its code with jump targets
+  /// relocated and node references offset.
+  fn append(&mut self, flow: &CompiledFlow) {
+    let base = self.here();
+    let node_base = u32::try_from(self.nodes.len()).expect("node count fits u32");
+    for (instruction, node) in flow.code.iter().zip(&flow.pc_nodes) {
+      let mut instruction = instruction.clone();
+      instruction.relocate(base);
+      self.code.push(instruction);
+      self.pc_nodes.push(if *node == crate::flow::NO_NODE {
+        crate::flow::NO_NODE
+      } else {
+        node + node_base
+      });
+    }
+    self.nodes.extend(flow.nodes.iter().cloned());
   }
 }
 
@@ -452,6 +528,101 @@ impl ComposeCtx<'_> {
     }
   }
 
+  /// A frame slot without a name, for the flat code of a composite (its
+  /// saved input, a loop counter). Cleared like any ordinary local.
+  fn declare_hidden(&mut self, ty: Type) -> usize {
+    let slot = self.locals.declare_hidden(ty);
+    self.initialized.push(true);
+    self.local_paths.push(self.diagnostic_path.clone());
+    slot.index
+  }
+
+  /// Lowers a `Repeat`, `While`, `When` or `If` to flat code in the parent
+  /// flow: its children's nodes and instructions, with jumps and hidden
+  /// slots for its own control. An iteration or a branch is then a jump
+  /// inside one VM run instead of a frame entered and completed through
+  /// the engine, and the composite needs no frames of its own. Children
+  /// that must suspend keep their nodes: the engine activates them where
+  /// the run stops and continues the flat code after them. `false` for
+  /// any other node, which stays a node of its own.
+  fn flatten(&mut self, node: &Arc<dyn CompiledNode>, input: Type, flat: &mut Flat) -> bool {
+    use crate::inline::Op;
+    let Some(control) = node.control() else {
+      return false;
+    };
+    match control {
+      Control::When(p) | Control::While(p) => {
+        let looping = matches!(control, Control::While(_));
+        let saved = Binding::Local(self.declare_hidden(input));
+        flat.op(Op::Set(saved), input);
+        let top = flat.here();
+        flat.append(&p.pred);
+        let exit = flat.op(Op::JumpIfNot(0), Type::any());
+        flat.op(Op::get(saved), input);
+        flat.append(&p.body);
+        if looping {
+          flat.op(Op::get(saved), input);
+          flat.op(Op::Jump(top), Type::any());
+        }
+        flat.target(exit);
+        flat.op(Op::get(saved), input);
+      }
+      Control::Repeat(r) => {
+        let saved = Binding::Local(self.declare_hidden(input));
+        flat.op(Op::Set(saved), input);
+        let counter = r.times.as_ref().map(|times| {
+          let counter = Binding::Local(self.declare_hidden(Type::int()));
+          match times {
+            Operand::Const(v) => flat.op(Op::Const(v.clone()), Type::any()),
+            Operand::Bound(b) => flat.op(Op::get(*b), Type::any()),
+          };
+          flat.op(Op::Set(counter), Type::any());
+          counter
+        });
+        let top = flat.here();
+        let mut exits = Vec::new();
+        if let Some(counter) = counter {
+          exits.push(flat.op(Op::LoopTest(counter, 0), Type::any()));
+        }
+        if let Some(until) = &r.until {
+          flat.op(Op::get(saved), input);
+          flat.append(until);
+          exits.push(flat.op(Op::JumpIf(0), Type::any()));
+        }
+        flat.op(Op::get(saved), input);
+        flat.append(&r.body);
+        flat.op(Op::Jump(top), Type::any());
+        for exit in exits {
+          flat.target(exit);
+        }
+        flat.op(Op::get(saved), input);
+      }
+      Control::If(i) => {
+        let saved = Binding::Local(self.declare_hidden(input));
+        flat.op(Op::Set(saved), input);
+        flat.append(&i.flows[0]);
+        let to_else = flat.op(Op::JumpIfNot(0), Type::any());
+        flat.op(Op::get(saved), input);
+        flat.append(&i.flows[1]);
+        if i.passthrough {
+          flat.op(Op::get(saved), input);
+        }
+        let to_end = flat.op(Op::Jump(0), Type::any());
+        flat.target(to_else);
+        flat.op(Op::get(saved), input);
+        if let Some(els) = i.flows.get(2) {
+          flat.append(els);
+          if i.passthrough {
+            flat.op(Op::get(saved), input);
+          }
+        }
+        flat.target(to_end);
+      }
+      _ => return false,
+    }
+    true
+  }
+
   /// Records that the shard being composed assigns this variable. Inside a
   /// function body a mesh variable may be assigned only when declared in
   /// `mutates` (`undeclared-mesh-access` otherwise; the caller names the
@@ -586,8 +757,11 @@ impl ComposeCtx<'_> {
   fn compose_flow_at_depth(&mut self, flow: &[ShardDef], input: Type) -> Result<CompiledFlow> {
     let saved = self.input;
     let mut analysis = Analysis::default();
-    let mut nodes = Vec::with_capacity(flow.len());
-    let mut code = Vec::with_capacity(flow.len());
+    let mut flat = Flat {
+      nodes: Vec::with_capacity(flow.len()),
+      code: Vec::with_capacity(flow.len()),
+      pc_nodes: Vec::with_capacity(flow.len()),
+    };
     let mut ty = input;
     // Once a shard never produces a value (`Stop`), the rest of the flow is
     // unreachable but still checked: the next shard gets a None input (it
@@ -672,12 +846,9 @@ impl ComposeCtx<'_> {
           name: def.name().into(),
         }],
       );
-      code.push(crate::inline::Instruction::new(
-        composed.compiled.inline(),
-        def.ty.name(),
-        composed.output,
-      ));
-      nodes.push(composed.compiled);
+      if !self.flatten(&composed.compiled, node_input, &mut flat) {
+        flat.node(composed.compiled, def.ty.name(), composed.output);
+      }
       if composed.output == Type::never() {
         diverged = true;
       }
@@ -685,6 +856,11 @@ impl ComposeCtx<'_> {
     }
     self.input = saved;
     let output = if diverged { Type::never() } else { ty };
+    let Flat {
+      nodes,
+      mut code,
+      pc_nodes,
+    } = flat;
     crate::inline::lower_scratch_releases(&mut code);
     let leaf = crate::inline::leaf_code(&code);
     Ok(CompiledFlow {
@@ -693,6 +869,7 @@ impl ComposeCtx<'_> {
       code,
       output,
       leaf,
+      pc_nodes,
     })
   }
 
@@ -1564,12 +1741,10 @@ impl ComposeCache {
       flow.analysis.lifetime != Lifetime::Stateless || functions.values().any(|f| f.native_state);
     let vm_only = !def.stateful && crate::inline::straight_line(&flow.code);
     let vm_leaf = vm_only
-      && !flow.code.iter().any(|i| {
-        matches!(
-          i.op,
-          crate::inline::Op::VmCall | crate::inline::Op::VmRepeat(_)
-        )
-      });
+      && !flow
+        .code
+        .iter()
+        .any(|i| matches!(i.op, crate::inline::Op::VmCall));
     let scratch_slots: Vec<usize> = (0..locals.len())
       .filter(|slot| *slot != input_slot && !param_slots.contains(slot))
       .collect();

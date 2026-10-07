@@ -526,9 +526,3 @@ pub(crate) fn compose_conditions(
 }
 
 // --- Repeat: Until and Forever (compose and compiled type in mod.rs) ---
-
-/// Whether the repeat should stop before its next iteration because of
-/// `times` (`done` iterations so far).
-pub(crate) fn repeat_exhausted(times: Option<i64>, done: i64) -> bool {
-  times.is_some_and(|t| done >= t)
-}

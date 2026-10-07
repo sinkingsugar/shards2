@@ -40,9 +40,8 @@ impl Control<'_> {
     match self {
       Self::Call(_) => 0,
       Self::Sub(_) | Self::Once(_) => 1,
-      Self::When(_) | Self::While(_) => 2,
-      Self::Repeat(c) => 1 + usize::from(c.until.is_some()),
-      Self::If(c) => c.flows.len(),
+      // Lowered to flat code at compose: never a node, never framed.
+      Self::When(_) | Self::While(_) | Self::Repeat(_) | Self::If(_) => 0,
       Self::Match(c) => c.flows.len(),
       Self::Maybe(c) => c.flows.len(),
       Self::Conditions(c) => c.flows.len(),
@@ -72,26 +71,14 @@ impl Code {
 /// Child flow `i` of a composite (the frame `Code::Child(_, i)` runs).
 fn child_flow<'a>(control: &Control<'a>, i: usize) -> &'a CompiledFlow {
   match control {
-    Control::When(c) | Control::While(c) => {
-      if i == 0 {
-        &c.pred
-      } else {
-        &c.body
-      }
-    }
     Control::Sub(c) | Control::Once(c) => c,
-    Control::Repeat(c) => {
-      if i == 0 {
-        &c.body
-      } else {
-        c.until.as_ref().expect("until")
-      }
-    }
-    Control::If(c) => &c.flows[i],
     Control::Match(c) => &c.flows[i],
     Control::Maybe(c) => &c.flows[i],
     Control::Conditions(c) => &c.flows[i],
     Control::Call(_) => unreachable!("a call's frame holds its function"),
+    Control::When(_) | Control::While(_) | Control::Repeat(_) | Control::If(_) => {
+      unreachable!("lowered to flat code at compose")
+    }
   }
 }
 
@@ -110,8 +97,6 @@ struct Continuation {
   /// the flow this frame runs, which outlives the frame.
   vm: Option<std::ptr::NonNull<CallCompiled>>,
   phase: u32,
-  count: i64,
-  limit: Option<i64>,
   once_done: bool,
   /// The body a call site selected at its last entry (golden path §11);
   /// `None` until a reload offered one.
@@ -121,8 +106,6 @@ struct Continuation {
 impl Continuation {
   fn reset(&mut self) {
     self.phase = 0;
-    self.count = 0;
-    self.limit = None;
   }
 }
 enum State {
@@ -197,6 +180,11 @@ impl Frame {
       call_depth: 0,
       generation: std::num::NonZeroU32::MIN,
     }
+  }
+
+  /// The node the current instruction stands for.
+  fn node(&self) -> usize {
+    self.flow().node_at(self.pc())
   }
 
   fn pc(&self) -> usize {
@@ -440,8 +428,8 @@ impl Engine {
 
   fn continuation(&mut self, h: Handle) -> &mut Continuation {
     let f = self.frames.get_mut(h).expect("frame");
-    let pc = f.pc();
-    match &mut f.states[pc] {
+    let node = f.node();
+    match &mut f.states[node] {
       State::Control(c) => c,
       _ => unreachable!(),
     }
@@ -466,8 +454,8 @@ impl Engine {
       } else {
         f.value.clone()
       };
-      let pc = f.pc();
-      let State::Control(c) = &mut f.states[pc] else {
+      let node = f.node();
+      let State::Control(c) = &mut f.states[node] else {
         unreachable!("a call site is a composite")
       };
       (
@@ -823,7 +811,7 @@ impl Engine {
     // site not ready) falls through to the composite path of that node.
     let mut vm_error = None;
     let vm = completed.is_none()
-      && index < flow.nodes.len()
+      && index < flow.code.len()
       && !matches!(flow.code[index].op, crate::inline::Op::Fallback);
     let f = if vm {
       let value = std::mem::replace(&mut f.value, Var::None);
@@ -865,11 +853,14 @@ impl Engine {
     // For a call being entered: whether the callee ignores its input (so the
     // enter path asks the node nothing).
     let mut call_entry: Option<bool> = None;
-    let result = if index == flow.nodes.len() {
+    // The instruction the VM stopped at stands for a node: the one
+    // activated or dispatched here (flat control code never stops a run).
+    let node = flow.node_at(index);
+    let result = if index == flow.code.len() {
       Request::Complete(Ok(Step::Next(std::mem::replace(&mut f.value, Var::None))))
-    } else if let State::Control(c) = &mut f.states[index] {
+    } else if let State::Control(c) = &mut f.states[node] {
       self.dispatches += 1;
-      let control = flow.nodes[index].control().expect("composite");
+      let control = flow.nodes[node].control().expect("composite");
       let stateless_call = match &control {
         Control::Call(call) if !call.stateful() => {
           Some(matches!(call.target, CallTarget::Lazy { .. }))
@@ -901,16 +892,16 @@ impl Engine {
       Request::Complete(Err(err))
     } else {
       debug_assert!(completed.is_none());
-      let State::Leaf(state) = &mut f.states[index] else {
+      let State::Leaf(state) = &mut f.states[node] else {
         unreachable!()
       };
-      Request::Complete(flow.nodes[index].activate(state.as_mut(), ctx, &f.value))
+      Request::Complete(flow.nodes[node].activate(state.as_mut(), ctx, &f.value))
     };
     let next = match result {
       Request::Prepare => {
         // The call site is read through the frame's flow, whose reference
         // is not tied to the frame borrow (the frame stays current).
-        let Some(Control::Call(call)) = flow.nodes[index].control() else {
+        let Some(Control::Call(call)) = flow.nodes[node].control() else {
           unreachable!("only a call asks to be prepared")
         };
         match self.prepare_function_call(h, call, ctx) {
@@ -918,7 +909,7 @@ impl Engine {
             // Prepared: entered in this step, not the next (`dispatch`
             // would answer `enter(c, 0, 2)`).
             let f = self.frames.get_mut(h).expect("live frame");
-            let State::Control(c) = &mut f.states[index] else {
+            let State::Control(c) = &mut f.states[node] else {
               unreachable!("a call site is a composite")
             };
             c.phase = 2;
@@ -933,7 +924,7 @@ impl Engine {
           }
           Err(err) => {
             let f = self.frames.get_mut(h).expect("live frame");
-            if let State::Control(c) = &mut f.states[index] {
+            if let State::Control(c) = &mut f.states[node] {
               c.reset();
             }
             f.pc = 0;
@@ -965,7 +956,7 @@ impl Engine {
         self.enter_child(h, child, input, depth, ctx)
       }
       Request::Complete(Ok(Step::Suspend)) => Next::Finish(Ok(Step::Suspend)),
-      Request::Complete(Ok(Step::Next(value))) if index < flow.nodes.len() => {
+      Request::Complete(Ok(Step::Next(value))) if index < flow.code.len() => {
         f.pc += 1;
         f.value = value;
         Next::Continue
@@ -1140,43 +1131,9 @@ fn dispatch_once(
         enter(c, 0, 1)
       }
     }
-    Control::When(_) | Control::While(_) => {
-      let looping = matches!(control, Control::While(_));
-      match c.phase {
-        0 => enter(c, 0, 1),
-        1 => {
-          if boolean(value.expect("predicate"))? {
-            enter(c, 1, 2)
-          } else {
-            next(input.clone())
-          }
-        }
-        _ => {
-          if looping {
-            enter(c, 0, 1)
-          } else {
-            next(input.clone())
-          }
-        }
-      }
+    Control::When(_) | Control::While(_) | Control::If(_) | Control::Repeat(_) => {
+      unreachable!("lowered to flat code at compose")
     }
-    Control::If(i) => match c.phase {
-      0 => enter(c, 0, 1),
-      1 => {
-        if boolean(value.expect("predicate"))? {
-          enter(c, 1, 2)
-        } else if i.flows.len() > 2 {
-          enter(c, 2, 2)
-        } else {
-          next(input.clone())
-        }
-      }
-      _ => next(if i.passthrough {
-        input.clone()
-      } else {
-        value.expect("branch")
-      }),
-    },
     Control::Maybe(m) => {
       if let Some(value) = value {
         next(if m.flows.len() < 2 {
@@ -1186,28 +1143,6 @@ fn dispatch_once(
         })
       } else {
         enter(c, 0, 1)
-      }
-    }
-    Control::Repeat(r) => {
-      match c.phase {
-        0 => {
-          c.limit = r.limit(ctx)?;
-          c.count = 0;
-        }
-        1 => {
-          if boolean(value.expect("until"))? {
-            return next(input.clone());
-          }
-          return enter(c, 0, 2);
-        }
-        _ => c.count += 1,
-      }
-      if control::repeat_exhausted(c.limit, c.count) {
-        next(input.clone())
-      } else if r.until.is_some() {
-        enter(c, 1, 1)
-      } else {
-        enter(c, 0, 2)
       }
     }
     Control::Conditions(conditions) => {
@@ -1234,7 +1169,7 @@ fn dispatch_once(
   }
 }
 
-/// The engine's side of the VM's call sites and loops (`inline::VmCalls`)
+/// The engine's side of the VM's call sites (`inline::VmCalls`)
 /// for one frame. Copyable: a nested run gets its own for the frame it
 /// runs in (a callee's kept frame, a loop's child frame).
 #[derive(Clone, Copy)]
@@ -1275,7 +1210,7 @@ impl EngineCalls {
   )> {
     let frames = self.arena();
     let f = frames.get(self.h)?;
-    let State::Control(c) = f.states.get(site)? else {
+    let State::Control(c) = f.states.get(f.flow().node_at(site))? else {
       return None;
     };
     if !c.is_call || c.phase != 0 || c.revision != self.revision || self.depth >= self.max_depth {
@@ -1343,21 +1278,6 @@ impl crate::inline::VmCalls for EngineCalls {
     };
     crate::inline::vm_ready(&body.flow.code, &calls)
   }
-
-  fn child(&self, site: usize, i: usize) -> Option<Self> {
-    let f = self.arena().get(self.h)?;
-    let State::Control(c) = f.states.get(site)? else {
-      return None;
-    };
-    let child = *c.children.get(i)?;
-    Some(EngineCalls {
-      frames: self.frames,
-      h: child,
-      revision: self.revision,
-      max_depth: self.max_depth,
-      depth: self.depth,
-    })
-  }
 }
 
 #[cfg(test)]
@@ -1368,7 +1288,7 @@ mod layout {
       assert_eq!(std::mem::size_of::<super::Frame>(), 128);
       assert_eq!(std::mem::size_of::<Option<super::Frame>>(), 128);
       assert_eq!(std::mem::size_of::<super::State>(), 16);
-      assert_eq!(std::mem::size_of::<super::Continuation>(), 80);
+      assert_eq!(std::mem::size_of::<super::Continuation>(), 56);
     }
   }
 }

@@ -132,6 +132,19 @@ const DEPTHS: [usize; 4] = if cfg!(target_os = "espidf") {
   [1, 4, 16, 32]
 };
 
+/// The levels of `nested` that are frames of their own: `Maybe` and `Sub`.
+/// `If` and `Repeat` are flat code in their parent's frame and dispatch
+/// nothing.
+fn framed(depth: usize) -> u64 {
+  (0..depth).filter(|i| i % 4 >= 2).count() as u64
+}
+
+/// The levels of `nested_with_functions` that are frames of their own: the
+/// call, `Maybe` and `Sub`.
+fn framed_with_functions(depth: usize) -> u64 {
+  (0..depth).filter(|i| i % 4 != 1).count() as u64
+}
+
 #[test]
 fn pending_repolls_dispatch_zero_ancestors_at_every_depth() {
   for depth in DEPTHS {
@@ -142,7 +155,7 @@ fn pending_repolls_dispatch_zero_ancestors_at_every_depth() {
     let id = mesh.spawn(&code, Var::Int(7)).unwrap();
     mesh.tick();
     let dispatches = mesh.composite_dispatches();
-    assert!(dispatches >= depth as u64);
+    assert!(dispatches >= framed(depth));
     let owners = Arc::strong_count(&gate);
     for _ in 0..100 {
       mesh.tick();
@@ -227,7 +240,7 @@ fn completing_nested_frames_dispatches_each_parent_once() {
     let before = mesh.composite_dispatches();
     gate.ready.store(true, Ordering::Relaxed);
     mesh.tick();
-    assert_eq!(mesh.composite_dispatches() - before, depth as u64);
+    assert_eq!(mesh.composite_dispatches() - before, framed(depth));
     mesh.cancel(id);
   }
 }
@@ -395,7 +408,7 @@ fn function_frames_in_the_nesting_resume_pending_leaves_directly() {
     let id = mesh.spawn(&code, Var::Int(7)).unwrap();
     mesh.tick();
     let dispatches = mesh.composite_dispatches();
-    assert!(dispatches >= depth as u64);
+    assert!(dispatches >= framed_with_functions(depth));
     let owners = Arc::strong_count(&gate);
     for _ in 0..100 {
       mesh.tick();
@@ -405,10 +418,14 @@ fn function_frames_in_the_nesting_resume_pending_leaves_directly() {
     assert_eq!(gate.polls.load(Ordering::Relaxed), 101);
     assert_eq!(Arc::strong_count(&gate), owners);
     // Completing through every level, invocation frames included, costs
-    // one dispatch per parent, and the next iteration enters fresh frames.
+    // one dispatch per framed parent (a Repeat level is flat code), and the
+    // next iteration enters fresh frames.
     gate.ready.store(true, Ordering::Relaxed);
     mesh.tick();
-    assert_eq!(mesh.composite_dispatches() - dispatches, depth as u64);
+    assert_eq!(
+      mesh.composite_dispatches() - dispatches,
+      framed_with_functions(depth)
+    );
     assert_eq!(gate.drops.load(Ordering::Relaxed), 1);
     assert_eq!(gate.starts.load(Ordering::Relaxed), 1);
     gate.ready.store(false, Ordering::Relaxed);

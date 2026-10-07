@@ -14,10 +14,34 @@ pub struct CompiledFlow {
   pub output: Type,
   pub analysis: crate::signature::Analysis,
   /// The code runs through one `inline::run` call with no engine help: no
-  /// node activates through its shard, no call site, loop or branch, no
-  /// constructor (`inline::leaf_code`). A composite runs such a child flow
-  /// inside its own step instead of entering a frame for it.
+  /// node activates through its shard, no call site, no constructor
+  /// (`inline::leaf_code`). A composite runs such a child flow inside its
+  /// own step instead of entering a frame for it.
   pub(crate) leaf: bool,
+  /// For every instruction, the node it stands for (an index into
+  /// `nodes`): what the engine activates, or dispatches, when the VM stops
+  /// at it. A composite lowered to flat code (`Repeat`, `While`, `When`,
+  /// `If`) contributes its children's nodes and its own control
+  /// instructions, which stand for no node (`NO_NODE`).
+  pub(crate) pc_nodes: Vec<u32>,
+}
+
+/// The `pc_nodes` entry of a control instruction: never activated.
+pub(crate) const NO_NODE: u32 = u32::MAX;
+
+impl CompiledFlow {
+  /// The node instruction `pc` stands for; `nodes.len()` at the end of
+  /// the code. A control instruction stands for none and is never asked.
+  #[inline]
+  pub(crate) fn node_at(&self, pc: usize) -> usize {
+    match self.pc_nodes.get(pc) {
+      Some(&node) => {
+        debug_assert!(node != NO_NODE, "a control instruction stopped a run");
+        node as usize
+      }
+      None => self.nodes.len(),
+    }
+  }
 }
 
 impl CompiledFlow {

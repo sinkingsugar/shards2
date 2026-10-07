@@ -143,7 +143,6 @@ macro_rules! composite {
     }
   };
 }
-composite!(Do, Arc<crate::reload::InlineCall>, DO_DESC, compose_do, Do);
 composite!(When, Predicated, WHEN_DESC, compose_when, When);
 composite!(While, Predicated, WHILE_DESC, compose_while, While);
 composite!(Sub, CompiledFlow, SUB_DESC, compose_sub, Sub);

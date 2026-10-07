@@ -58,7 +58,6 @@ pub static SUB: ShardType = ShardType::new(SUB_DESC).implemented_by::<sl::Sub>()
 pub static ONCE: ShardType = ShardType::new(ONCE_DESC).implemented_by::<sl::Once>();
 pub static REPEAT: ShardType = ShardType::new(REPEAT_DESC).implemented_by::<sl::Repeat>();
 pub static WHILE: ShardType = ShardType::new(WHILE_DESC).implemented_by::<sl::While>();
-pub static DO: ShardType = ShardType::new(DO_DESC).implemented_by::<sl::Do>();
 pub static PAUSE: ShardType = ShardType::new(PAUSE_DESC).implemented_by::<sl::Pause>();
 pub static SPAWN: ShardType = ShardType::new(SPAWN_DESC).implemented_by::<sl::Spawn>();
 pub static PROBE: ShardType = leaf_type::<leaf::Probe>();
@@ -133,7 +132,6 @@ pub static CATALOG: &[&ShardType] = &[
   &values::EXPECT_FLOAT4,
   &REPEAT,
   &WHILE,
-  &DO,
   &PAUSE,
   &SPAWN,
   &RETURN,
@@ -460,8 +458,7 @@ pub(crate) fn compose_bind(args: &Args, ctx: &mut ComposeCtx<'_>) -> Result<Comp
   check_declaration(args, ctx, "Bind")?;
   let input = ctx.input();
   // `%` names are frontend temporaries (source cannot name them): each
-  // occurrence declares a fresh slot, so a wire inlined twice by Do with
-  // different input types still composes.
+  // occurrence declares a fresh slot.
   Ok(Composed {
     compiled: ctx
       .declare_local(variable(args, "variable"), input, false)
@@ -1218,30 +1215,6 @@ pub(crate) fn compose_repeat(
   })
 }
 
-pub static DO_PARAMS: &[ParamDecl] = &[decl(
-  "wire",
-  crate::shard_doc!("The wire to run inline. It shares the caller's variables."),
-  Forms::WIRE,
-  NONE_TYPES,
-  Requirement::Required,
-)];
-
-pub const DO_DESC: ShardDesc = ShardDesc {
-  name: "Do",
-  version: 1,
-  summary: crate::shard_doc!("Runs another wire inline, sharing the caller's variables."),
-  help: crate::shard_doc!(
-    "The wire receives Do's input and is composed into the caller's frame. A Return inside it ends only that wire, and its value becomes Do's output. A Stop or Restart propagates. A wire cannot run itself, directly or indirectly."
-  ),
-  params: Params::Declared(DO_PARAMS),
-  input: InputDesc::Any,
-  output: OutputDesc::Dynamic(crate::shard_doc!("the wire's output")),
-  targets: Targets::All,
-  aliases: &[],
-  effects: crate::signature::Effects::NONE,
-  lifetime: crate::signature::Lifetime::Stateless,
-};
-
 /// Attributes an error from resolving a `wire` argument to the calling shard
 /// and its `wire` parameter, but only when the error is about the reference
 /// itself. Diagnostics from shards inside the called wire keep their owner.
@@ -1252,22 +1225,6 @@ fn wire_ref_error(e: Error, args: &Args, shard: &str) -> Error {
       .with_param("wire", args.param_index("wire")),
     _ => e,
   }
-}
-
-pub(crate) fn compose_do(
-  args: &Args,
-  ctx: &mut ComposeCtx<'_>,
-) -> Result<Composed<Arc<crate::reload::InlineCall>>> {
-  let name = args.wire("wire").expect("decoded Wire");
-  let input = ctx.input();
-  let flow = ctx
-    .compose_reloadable_inline(name, input)
-    .map_err(|e| wire_ref_error(e, args, "Do"))?;
-  let output = flow.flow.output;
-  Ok(Composed {
-    compiled: flow,
-    output,
-  })
 }
 
 pub static PAUSE_PARAMS: &[ParamDecl] = &[decl(
@@ -1672,9 +1629,6 @@ pub mod defs {
   }
   pub fn repeat(body: Vec<ShardDef>, times: ParamValue) -> ShardDef {
     ShardDef::new(&REPEAT, vec![ParamValue::Flow(body), times])
-  }
-  pub fn do_(wire: &str) -> ShardDef {
-    ShardDef::new(&DO, vec![ParamValue::Wire(wire.to_string())])
   }
   pub fn pause() -> ShardDef {
     ShardDef::new(&PAUSE, vec![])

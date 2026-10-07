@@ -1,18 +1,13 @@
 === prompt
-Define a reusable named routine `clamp` that clamps a value to a lower and an upper bound, and call it (do not copy its body) three times: 5 with bounds 0..3, -2 with bounds 0..3, and 2 with bounds 0..3. Log each result.
+Define a reusable named routine `Clamp` that clamps its input to a lower and an upper bound given as parameters, and call it (do not copy its body) three times: 5 with bounds 0..3, -2 with bounds 0..3, and 2 with bounds 0..3. Log each result.
 === expected
 3
 0
 2
 === reference
-@wire(clamp {
-  If({value | IsLess(lo)} {lo} {If({value | IsMore(hi)} {hi} {value})})
+@fn(Clamp input: Int output: Int params: {lo: Int hi: Int} {
+  If({IsLess(lo)} {lo} {If({IsMore(hi)} {hi} {input})})
 })
-0 = lo
-3 = hi
-5 | Var(value)
-Do(clamp) | Log
--2 | Update(value)
-Do(clamp) | Log
-2 | Update(value)
-Do(clamp) | Log
+5 | Clamp(lo: 0 hi: 3) | Log
+-2 | Clamp(lo: 0 hi: 3) | Log
+2 | Clamp(lo: 0 hi: 3) | Log

@@ -186,6 +186,9 @@ pub struct KeepSlot {
 /// never cloned into callers.
 pub struct CompiledFunction {
   pub def: Arc<FunctionDef>,
+  /// The input type the body was composed for (`None` when the function
+  /// ignores its input).
+  pub input: Type,
   pub flow: CompiledFlow,
   /// The invocation frame: parameters, `input`, then the body's locals
   /// (`Keep` slots among them, listed in `keeps`).
@@ -196,6 +199,8 @@ pub struct CompiledFunction {
   pub keeps: Vec<KeepSlot>,
   /// Everything the body's compose read, for revalidation by callers.
   pub deps: Vec<Dep>,
+  /// The bodies this one calls, directly or through callees, as composed.
+  pub functions: crate::reload::FunctionRegistry,
 }
 
 impl CompiledFunction {

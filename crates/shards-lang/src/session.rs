@@ -5,7 +5,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use shards_core::diagnostic::{Diagnostic, PathStep};
-use shards_core::{Catalog, CompiledWire, InstanceId, Mesh, Outcome, Type, Var};
+use shards_core::{
+  Catalog, CompiledWire, InstanceId, Mesh, Outcome, ReloadReport, ResetPolicy, Type, Var,
+};
 
 use crate::{Program, Source};
 
@@ -35,8 +37,8 @@ struct Execution {
 /// A reloadable program on a host-owned event loop.
 ///
 /// `reload` validates all wires and explicitly restarts the whole mesh.
-/// `reload_preserving` retains compatible callers,
-/// locals and mesh values, selecting nested Do bodies at call boundaries.
+/// `reload_preserving` retains compatible callers, locals and mesh values,
+/// and call sites select edited function bodies at their next entry.
 /// Rejected edits leave execution untouched. Host services live outside this
 /// object and survive either mode. Each revision owns its compose cache.
 ///
@@ -45,6 +47,7 @@ struct Execution {
 /// external work still requires cooperative cancellation by the host shard.
 pub struct Session {
   active: Option<Execution>,
+  reset_policy: ResetPolicy,
 }
 
 impl Default for Session {
@@ -55,14 +58,35 @@ impl Default for Session {
 
 impl Session {
   pub fn new() -> Self {
-    Self { active: None }
+    Self {
+      active: None,
+      reset_policy: ResetPolicy::default(),
+    }
+  }
+
+  /// What a preserving reload does when a stateful function's state would
+  /// reset (golden path §11): reject the edit (the embedding default) or
+  /// apply the resets and report them (what `shards2 watch` does).
+  pub fn set_reset_policy(&mut self, policy: ResetPolicy) {
+    self.reset_policy = policy;
+    if let Some(active) = &mut self.active {
+      active.mesh.set_reset_policy(policy);
+    }
+  }
+
+  /// What the last accepted preserving reload retained, reset and
+  /// restarted, by name; `None` without an active revision.
+  pub fn reload_report(&self) -> Option<&ReloadReport> {
+    self.active.as_ref().map(|a| a.mesh.reload_report())
   }
 
   /// Starts with a host-configured, idle mesh. Use `reload_preserving` to
-  /// keep its declared mesh variables across source revisions.
+  /// keep its declared mesh variables across source revisions. The mesh's
+  /// reset policy is the session's.
   pub fn with_mesh(mesh: Mesh) -> Self {
     assert_eq!(mesh.running(), 0, "Session requires an idle mesh");
     Self {
+      reset_policy: mesh.reset_policy(),
       active: Some(Execution {
         mesh,
         entries: Vec::new(),
@@ -90,6 +114,7 @@ impl Session {
   ) -> Result<Vec<Finished>, (Source, Vec<Diagnostic>)> {
     let program = Program::load(source, catalog, defines)?;
     let mut mesh = program.mesh();
+    mesh.set_reset_policy(self.reset_policy);
     let entries = match compose_entries(&program, &mut mesh) {
       Ok(entries) => entries,
       Err(diagnostics) => return Err((program.source, diagnostics)),
@@ -186,14 +211,15 @@ fn drain(mesh: &mut Mesh) -> Vec<Finished> {
 
 impl Session {
   /// Retains unchanged callers and their locals, Once state and suspended
-  /// execution. Changed Do bodies take effect on their next call; a call
-  /// already in flight pins its body until it returns. Compatible mesh
+  /// execution. Edited function bodies take effect at their next entry; an
+  /// invocation already in flight finishes on its body. Compatible mesh
   /// variables remain in the same frame. Changes to a root's own definition
   /// or static dependencies restart that root; removed roots are cancelled.
   ///
-  /// An incompatible Do interface or binding layout rejects the whole edit.
-  /// Use `reload` for an explicit full restart. Unchanged completed entries
-  /// stay finished; failed entries retry after an accepted reload.
+  /// An incompatible function interface rejects the whole edit, and so does
+  /// a reset of persistent state under the default policy. Use `reload` for
+  /// an explicit full restart. Unchanged completed entries stay finished;
+  /// failed entries retry after an accepted reload.
   pub fn reload_preserving(
     &mut self,
     source: Source,

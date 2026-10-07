@@ -285,22 +285,19 @@ fn call_depth_limit_is_checked_before_entering_the_named_body() {
   let gate = gate();
   let mut mesh = Mesh::new();
   mesh.set_max_call_depth(2);
-  mesh.add_wire(WireDef {
-    name: "deep".into(),
-    looped: false,
-    flow: vec![ShardDef::new(&WAIT, vec![])],
-  });
-  mesh.add_wire(WireDef {
-    name: "middle".into(),
-    looped: false,
-    flow: vec![do_("deep")],
-  });
-  mesh.add_wire(WireDef {
-    name: "outer".into(),
-    looped: false,
-    flow: vec![do_("middle")],
-  });
-  mesh.add_wire(wire(vec![do_("outer")], false));
+  mesh.add_function(
+    shards_core::FunctionDef::new("Deep", Type::int(), Type::int())
+      .body(vec![ShardDef::new(&WAIT, vec![])]),
+  );
+  mesh.add_function(
+    shards_core::FunctionDef::new("Middle", Type::int(), Type::int())
+      .body(vec![call("Deep", vec![])]),
+  );
+  mesh.add_function(
+    shards_core::FunctionDef::new("Outer", Type::int(), Type::int())
+      .body(vec![call("Middle", vec![])]),
+  );
+  mesh.add_wire(wire(vec![call("Outer", vec![])], false));
   let code = mesh.compile("root", Type::int()).unwrap();
   let id = mesh.spawn(&code, Var::Int(7)).unwrap();
   mesh.tick();

@@ -12,6 +12,7 @@ use crate::compose::{CacheStats, CompiledWire, ComposeCache, ComposeEnv, FrameLa
 use crate::error::{Error, Result, panic_message};
 use crate::function::{CompiledFunction, FunctionDef};
 use crate::instance::{InstanceCtx, InstanceId, InstanceMemory, Outcome, WakeFlag, WakeMode};
+use crate::reload::{FunctionRegistry, ReloadReport, ResetPolicy, Revisions};
 use crate::shard::{ActivationCtx, Step};
 use crate::types::Type;
 use crate::var::Var;
@@ -36,14 +37,18 @@ struct Instance {
 }
 
 pub struct Mesh {
-  inline_calls: crate::reload::Revisions,
+  /// The bodies call sites select at entry, after accepted reloads.
+  revisions: Revisions,
   layout: FrameLayout,
   frame: Vec<Var>,
   spawn_queue: Vec<(Arc<CompiledWire>, Var)>,
   wires: HashMap<String, WireDef>,
   functions: HashMap<String, FunctionDef>,
   cache: ComposeCache,
-  prepared_calls: crate::reload::InlineRegistry,
+  /// Every function body compiled wires were composed against, by key.
+  prepared_functions: FunctionRegistry,
+  reset_policy: ResetPolicy,
+  report: ReloadReport,
   instances: Vec<Instance>,
   next_id: InstanceId,
   wake_mode: WakeMode,
@@ -63,14 +68,16 @@ impl Mesh {
 
   pub fn with_cache(cache: ComposeCache) -> Mesh {
     Mesh {
-      inline_calls: Default::default(),
+      revisions: Revisions::default(),
       layout: FrameLayout::default(),
       frame: Vec::new(),
       spawn_queue: Vec::new(),
       wires: HashMap::new(),
       functions: HashMap::new(),
       cache,
-      prepared_calls: HashMap::new(),
+      prepared_functions: HashMap::new(),
+      reset_policy: ResetPolicy::default(),
+      report: ReloadReport::default(),
       instances: Vec::new(),
       next_id: 0,
       wake_mode: WakeMode::default(),
@@ -89,6 +96,23 @@ impl Mesh {
 
   pub fn set_wake_mode(&mut self, mode: WakeMode) {
     self.wake_mode = mode;
+  }
+
+  /// What a preserving reload does when a stateful function's state would
+  /// reset (golden path §11). Rejecting is the embedding default; a
+  /// candidate from `revision` inherits the policy.
+  pub fn set_reset_policy(&mut self, policy: ResetPolicy) {
+    self.reset_policy = policy;
+  }
+
+  pub fn reset_policy(&self) -> ResetPolicy {
+    self.reset_policy
+  }
+
+  /// What the last accepted preserving reload retained, reset and
+  /// restarted, by name.
+  pub fn reload_report(&self) -> &ReloadReport {
+    &self.report
   }
 
   /// Reserves space for a known batch of additional instances without the
@@ -167,12 +191,12 @@ impl Mesh {
     let wire = self
       .cache
       .get_or_compose(&def, input, &env, &mut Vec::new(), 0)?;
-    self.prepared_calls.extend(
-      wire
-        .inline_calls
-        .iter()
-        .map(|(k, v)| (k.clone(), v.clone())),
-    );
+    for (key, body) in &wire.functions {
+      self
+        .prepared_functions
+        .entry(key.clone())
+        .or_insert_with(|| body.clone());
+    }
     Ok(wire)
   }
 
@@ -184,6 +208,7 @@ impl Mesh {
     next.frame = self.frame.clone();
     next.wake_mode = self.wake_mode;
     next.max_call_depth = self.max_call_depth;
+    next.reset_policy = self.reset_policy;
     next
   }
 
@@ -198,7 +223,11 @@ impl Mesh {
     )
   }
 
-  /// Checks all live callers before committing a preserving reload.
+  /// Checks all live callers before committing a preserving reload: every
+  /// retained instance's call sites must admit the candidate's bodies
+  /// (golden path §11), and resets of persistent state are allowed only
+  /// under the `Apply` policy. The candidate's report lists what an
+  /// install will retain, reset and restart.
   pub fn validate_reload(&self, next: &mut Self, removed: &HashSet<InstanceId>) -> Result<()> {
     if self.layout != next.layout {
       return Err(Error::Compose(
@@ -206,7 +235,7 @@ impl Mesh {
       ));
     }
     // Detached children may have input specializations not reached by the
-    // new entry graph. Prepare those too before selecting their next Do call.
+    // new entry graph. Prepare those too before selecting their bodies.
     for instance in &self.instances {
       if !removed.contains(&instance.id)
         && instance.outcome.is_none()
@@ -215,26 +244,70 @@ impl Mesh {
         next.compile(&instance.wire.name, instance.wire.input)?;
       }
     }
-    let env = ComposeEnv {
-      mesh_layout: &next.layout,
-      wires: &next.wires,
-      functions: &next.functions,
-    };
+    let mut report = ReloadReport::default();
+    let mut seen = HashSet::new();
     for instance in &self.instances {
-      if !removed.contains(&instance.id) && instance.outcome.is_none() {
-        crate::reload::validate(
-          &instance.wire,
-          &env,
-          &self.inline_calls.calls,
-          &next.prepared_calls,
-        )?;
+      if removed.contains(&instance.id) || instance.outcome.is_some() {
+        continue;
+      }
+      if !next.can_retain(&instance.wire) {
+        report.restarted.push(instance.wire.name.clone());
+        continue;
+      }
+      let mut keys: Vec<_> = instance.wire.functions.keys().collect();
+      keys.sort_by(|a, b| a.name.cmp(&b.name));
+      for key in keys {
+        let old = &instance.wire.functions[key];
+        let Some(new) = next.prepared_functions.get(key) else {
+          return Err(crate::Error::Diagnostic(Box::new(
+            crate::diagnostic::Diagnostic::new(
+              crate::diagnostic::Phase::Compose,
+              "reload-incompatible",
+              "reload-incompatible",
+              format!(
+                "cannot preserve callers of {}: it is no longer declared; use a full restart (press r in watch)",
+                key.name
+              ),
+            )
+            .shard(&key.name),
+          )));
+        };
+        if crate::reload::same_body(old, new) {
+          continue;
+        }
+        crate::reload::admit(old, new)?;
+        if old.def.stateful && seen.insert(key.clone()) {
+          let plan = crate::reload::keep_plan(old, new);
+          report.retained.extend(plan.retained);
+          report.reset.extend(plan.reset);
+        }
       }
     }
+    if self.reset_policy == ResetPolicy::Reject
+      && let Some(first) = report.reset.first()
+    {
+      let _ = first;
+      return Err(crate::Error::Diagnostic(Box::new(
+        crate::diagnostic::Diagnostic::new(
+          crate::diagnostic::Phase::Compose,
+          "reload-incompatible",
+          "reload-resets-state",
+          format!(
+            "the edit would reset persistent state ({}); the host rejects resets (apply them with ResetPolicy::Apply, as watch does), or use a full restart (press r in watch)",
+            report.reset.join(", ")
+          ),
+        ),
+      )));
+    }
+    report.restarted.sort();
+    report.restarted.dedup();
+    next.report = report;
     Ok(())
   }
 
   /// Installs a validated, unstarted candidate from `revision`. Compatible
   /// instances and mesh values remain; changed/removed instances are cancelled.
+  /// Unchanged bodies keep their identity, so call sites see no new body.
   pub fn install_revision(&mut self, mut next: Self, removed: &HashSet<InstanceId>) {
     self
       .validate_reload(&mut next, removed)
@@ -247,20 +320,21 @@ impl Mesh {
         finish(instance, Outcome::Cancelled);
       }
     }
-    let mut calls = std::mem::take(&mut next.prepared_calls);
-    crate::reload::reuse_unchanged(&self.prepared_calls, &mut calls);
-    crate::reload::reuse_unchanged(&self.inline_calls.calls, &mut calls);
-    self.prepared_calls = calls.clone();
-    self.inline_calls.install(calls);
+    let mut functions = std::mem::take(&mut next.prepared_functions);
+    crate::reload::reuse_unchanged(&self.prepared_functions, &mut functions);
+    crate::reload::reuse_unchanged(&self.revisions.functions, &mut functions);
+    self.prepared_functions = functions.clone();
+    self.revisions.install(functions);
+    self.report = std::mem::take(&mut next.report);
     self.wires = std::mem::take(&mut next.wires);
     self.functions = std::mem::take(&mut next.functions);
     self.cache = std::mem::take(&mut next.cache);
   }
 
-  /// How many times Do calls consulted the reload registry. A call site
+  /// How many times call sites consulted the reload registry. A call site
   /// checks it once per accepted preserving reload, not on every call.
   pub fn reload_lookups(&self) -> u64 {
-    self.inline_calls.lookups.get()
+    self.revisions.lookups.get()
   }
 
   /// Composite entries and completion handlers dispatched by live instances.
@@ -333,7 +407,7 @@ impl Mesh {
       instances,
       frame,
       spawn_queue,
-      inline_calls,
+      revisions,
       max_call_depth,
       ..
     } = self;
@@ -346,7 +420,7 @@ impl Mesh {
         continue;
       }
       instance.waiting = false;
-      step(instance, frame, spawn_queue, inline_calls, *max_call_depth);
+      step(instance, frame, spawn_queue, revisions, *max_call_depth);
     }
     for (wire, input) in std::mem::take(&mut self.spawn_queue) {
       self.start(wire, input);
@@ -457,7 +531,7 @@ fn step(
   instance: &mut Instance,
   frame: &mut Vec<Var>,
   spawn_queue: &mut Vec<(Arc<CompiledWire>, Var)>,
-  inline_calls: &crate::reload::Revisions,
+  revisions: &Revisions,
   max_call_depth: usize,
 ) {
   if !instance.started {
@@ -510,7 +584,7 @@ fn step(
       let mut ctx = ActivationCtx {
         instance: *id,
         locals,
-        inline_calls,
+        revisions,
         mesh_frame: frame,
         spawn_queue,
         waiting,

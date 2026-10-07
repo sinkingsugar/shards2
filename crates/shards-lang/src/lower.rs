@@ -1537,6 +1537,9 @@ impl Lowerer<'_> {
           "declare a mutable variable with `value | Var(name)`, assign it with `value | Update(name)`",
         ),
         "Ref" => Some("bind an immutable name with `value = name`"),
+        "Do" => Some(
+          "declare a function with `@fn(Name input: T output: T params: {} { ... })` and call it by name",
+        ),
         _ => None,
       } {
         self.problem(

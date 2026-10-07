@@ -3,7 +3,9 @@
 use shards_core::shards::defs::*;
 use shards_core::shards::sim::{self, RequestState};
 use shards_core::shards::{ProbeEvent, ProbeEventKind, take_probe_events};
-use shards_core::{ComposeCache, Outcome, ParamValue, Type, Var, WakeMode, WireDef, bench};
+use shards_core::{
+  ComposeCache, FunctionDef, Outcome, ParamValue, Type, Var, WakeMode, WireDef, bench,
+};
 
 use shards_core::Mesh;
 
@@ -19,6 +21,9 @@ fn bench_mesh(n: i64) -> Mesh {
   let mut mesh = Mesh::new();
   for (name, value, mutable) in bench::mesh_vars(n) {
     mesh.declare_var(name, value, mutable);
+  }
+  for def in bench::functions() {
+    mesh.add_function(def);
   }
   for def in bench::wires() {
     mesh.add_wire(def);
@@ -202,56 +207,61 @@ fn inline_assignment_preserves_other_aliases() {
 }
 
 #[test]
-fn do_checks_reload_registry_once_per_revision() {
+fn call_sites_check_the_reload_registry_once_per_revision() {
   use std::collections::HashSet;
-  let wires = |body: &str| {
-    vec![
-      wire("f", false, vec![inc(body)]),
-      wire(
-        "main",
-        true,
-        vec![repeat(vec![do_("f")], val(Var::Int(100)))],
-      ),
-    ]
+  let declare = |mesh: &mut Mesh, both: bool| {
+    let mut body = vec![inc("a")];
+    if both {
+      body.push(inc("b"));
+    }
+    mesh.add_function(
+      FunctionDef::new("F", Type::none(), Type::int())
+        .uses(&["a", "b"])
+        .mutates(&["a", "b"])
+        .body(body),
+    );
+    mesh.add_wire(wire(
+      "main",
+      true,
+      vec![repeat(vec![call("F", vec![])], val(Var::Int(100)))],
+    ));
   };
   let mut mesh = Mesh::new();
   mesh.declare_var("a", Var::Int(0), true);
   mesh.declare_var("b", Var::Int(0), true);
-  for def in wires("a") {
-    mesh.add_wire(def);
-  }
+  declare(&mut mesh, true);
   let main = mesh.compile("main", Type::none()).unwrap();
   mesh.spawn(&main, Var::None).unwrap();
   mesh.tick();
-  // No reload installed yet: Do never consults the registry.
+  // No reload installed yet: a call never consults the registry.
   assert_eq!(mesh.reload_lookups(), 0);
   assert_eq!(mesh.get_var("a"), Some(Var::Int(100)));
+  assert_eq!(mesh.get_var("b"), Some(Var::Int(100)));
 
-  let reload = |mesh: &mut Mesh, body: &str| {
+  let reload = |mesh: &mut Mesh, both: bool| {
     let mut next = mesh.revision();
-    for def in wires(body) {
-      next.add_wire(def);
-    }
+    declare(&mut next, both);
     next.compile("main", Type::none()).unwrap();
     mesh.validate_reload(&mut next, &HashSet::new()).unwrap();
     mesh.install_revision(next, &HashSet::new());
   };
   // An unchanged reload: one lookup for the call site, then plain calls.
-  reload(&mut mesh, "a");
+  reload(&mut mesh, true);
   for _ in 0..3 {
     mesh.tick();
   }
   assert_eq!(mesh.reload_lookups(), 1);
   assert_eq!(mesh.get_var("a"), Some(Var::Int(400)));
 
-  // An edited body is still selected at the next call after the reload.
-  reload(&mut mesh, "b");
+  // An edited body (reaching less of the mesh) is selected at the next
+  // call after the reload, with one more lookup.
+  reload(&mut mesh, false);
   for _ in 0..3 {
     mesh.tick();
   }
   assert_eq!(mesh.reload_lookups(), 2);
-  assert_eq!(mesh.get_var("a"), Some(Var::Int(400)));
-  assert_eq!(mesh.get_var("b"), Some(Var::Int(300)));
+  assert_eq!(mesh.get_var("a"), Some(Var::Int(700)));
+  assert_eq!(mesh.get_var("b"), Some(Var::Int(400)));
 }
 
 #[test]
@@ -331,8 +341,10 @@ fn cache_reuses_equivalent_compose_and_misses_on_changed_dependencies() {
     false,
     vec![konst(Var::Int(5)), declare("g")],
   ));
-  mesh.add_wire(wire("sub", false, vec![konst(Var::Int(1))]));
-  mesh.add_wire(wire("caller", false, vec![do_("sub")]));
+  mesh.add_function(
+    FunctionDef::new("Sub", Type::none(), Type::int()).body(vec![konst(Var::Int(1))]),
+  );
+  mesh.add_wire(wire("caller", false, vec![call("Sub", vec![])]));
 
   // Equivalent compose: hit.
   let local = mesh.compile("setter", Type::none()).unwrap();
@@ -362,9 +374,11 @@ fn cache_reuses_equivalent_compose_and_misses_on_changed_dependencies() {
   assert_eq!(mesh.outcome(id), Some(&Outcome::Completed(Var::Int(5))));
   assert_eq!(mesh.get_var("g"), Some(Var::Int(5)));
 
-  // A changed Do target is a recorded dependency: miss.
+  // A called function's definition is a recorded dependency: miss.
   let first = mesh.compile("caller", Type::none()).unwrap();
-  mesh.add_wire(wire("sub", false, vec![konst(Var::Int(2))]));
+  mesh.add_function(
+    FunctionDef::new("Sub", Type::none(), Type::int()).body(vec![konst(Var::Int(2))]),
+  );
   let second = mesh.compile("caller", Type::none()).unwrap();
   assert!(!std::sync::Arc::ptr_eq(&first, &second));
   let id = mesh.spawn(&second, Var::None).unwrap();
@@ -402,37 +416,36 @@ fn forced_hash_collisions_never_reuse_the_wrong_artifact() {
 fn nested_suspension_cancel_and_resume() {
   take_probe_events();
   let mut mesh = Mesh::new();
-  mesh.add_wire(wire(
-    "inner",
-    false,
-    vec![
+  mesh.add_function(
+    FunctionDef::new("Inner", Type::int(), Type::int()).body(vec![
       probe("inner"),
-      get("x"),
       add(val(Var::Int(1))),
-      update("x"),
       pause(),
-      get("x"),
       add(val(Var::Int(10))),
-      update("x"),
       pause(),
-      get("x"),
       add(val(Var::Int(100))),
-      update("x"),
-    ],
-  ));
+    ]),
+  );
   mesh.add_wire(wire(
     "outer",
     false,
-    vec![probe("outer"), declare("x"), do_("inner"), get("x")],
+    vec![
+      probe("outer"),
+      declare("x"),
+      get("x"),
+      call("Inner", vec![]),
+      update("x"),
+      get("x"),
+    ],
   ));
   let outer = mesh.compile("outer", Type::int()).unwrap();
 
   // Two instances of one shared compiled wire, suspended inside the nested
-  // Do at different points, with distinct state.
+  // invocation at different points, with distinct state.
   let a = mesh.spawn(&outer, Var::Int(0)).unwrap();
-  mesh.tick(); // a: x = 1, at the first pause
+  mesh.tick(); // a: at the first pause
   let b = mesh.spawn(&outer, Var::Int(1000)).unwrap();
-  mesh.tick(); // a: x = 11, at the second pause; b: x = 1001, at the first
+  mesh.tick(); // a: at the second pause; b: at the first
 
   let before_cancel = take_probe_events();
   assert_eq!(
@@ -551,6 +564,9 @@ fn meshes_sharing_a_compiled_wire_keep_separate_mesh_frames() {
   // rejects it.
   let mut other = Mesh::new();
   other.declare_var("ready-count", Var::Float(0.0), true);
+  for def in bench::functions() {
+    other.add_function(def);
+  }
   for def in bench::wires() {
     other.add_wire(def);
   }
@@ -668,11 +684,16 @@ fn diagnostics_carry_the_occurrence_path() {
   assert_eq!(d.code, "input-type-mismatch");
   assert_eq!(d.path_string(), "nested/2:When/action/1:Math.Add");
 
-  // Through Do: the sub-wire starts its own steps, under the Wire parameter.
+  // Through a call: the body starts its own steps, under the function.
   mesh.add_wire(wire("sub", false, bad_add()));
-  mesh.add_wire(wire("caller", false, vec![konst(Var::Int(0)), do_("sub")]));
+  mesh.add_function(FunctionDef::new("Sub", Type::int(), Type::int()).body(bad_add()));
+  mesh.add_wire(wire(
+    "caller",
+    false,
+    vec![konst(Var::Int(0)), call("Sub", vec![])],
+  ));
   let d = diagnostic(&mut mesh, "caller");
-  assert_eq!(d.path_string(), "caller/1:Do/wire/sub/1:Math.Add");
+  assert_eq!(d.path_string(), "caller/1:Sub/Sub()/1:Math.Add");
   assert_eq!(
     d.shard.as_deref(),
     Some("Math.Add"),
@@ -685,11 +706,15 @@ fn diagnostics_carry_the_occurrence_path() {
   assert_eq!(d.path_string(), "spawner/0:Spawn/wire/sub/1:Math.Add");
 
   // A bad reference ends at the referencing shard.
-  mesh.add_wire(wire("dangling", false, vec![do_("missing")]));
+  mesh.add_wire(wire("dangling", false, vec![spawn("missing")]));
   let d = diagnostic(&mut mesh, "dangling");
   assert_eq!(d.code, "unknown-wire");
-  assert_eq!(d.path_string(), "dangling/0:Do");
+  assert_eq!(d.path_string(), "dangling/0:Spawn");
   assert_eq!(d.param.as_deref(), Some("wire"));
+  mesh.add_wire(wire("uncalled", false, vec![call("Missing", vec![])]));
+  let d = diagnostic(&mut mesh, "uncalled");
+  assert_eq!(d.code, "unknown-function");
+  assert_eq!(d.path_string(), "uncalled/0:Missing");
 
   // Argument decoding errors have a path too.
   mesh.add_wire(wire(
@@ -1329,20 +1354,21 @@ fn suspension_inside_every_composite_resumes_in_place() {
 fn deep_resume_never_reruns_completed_nodes() {
   take_probe_events();
   let mut mesh = Mesh::new();
-  mesh.add_wire(wire(
-    "deep-inner",
-    false,
-    vec![
+  mesh.add_function(
+    FunctionDef::new("DeepInner", Type::none(), Type::none()).body(vec![
       probe("inner"),
       while_(vec![konst(Var::Bool(true))], vec![pause()]),
-    ],
-  ));
+    ]),
+  );
   mesh.add_wire(wire(
     "deep",
     false,
     vec![
       probe("outer"),
-      when(vec![konst(Var::Bool(true))], vec![do_("deep-inner")]),
+      when(
+        vec![konst(Var::Bool(true))],
+        vec![call("DeepInner", vec![])],
+      ),
     ],
   ));
   let deep = mesh.compile("deep", Type::none()).unwrap();
@@ -1391,7 +1417,9 @@ fn async_request_completes_through_nested_flows() {
     take_probe_events();
     let mut mesh = Mesh::new();
     mesh.set_wake_mode(mode);
-    mesh.add_wire(wire("fetch", false, vec![request(3, false, true)]));
+    mesh.add_function(
+      FunctionDef::new("Fetch", Type::none(), Type::int()).body(vec![request(3, false, true)]),
+    );
     mesh.add_wire(wire(
       "client",
       false,
@@ -1401,7 +1429,7 @@ fn async_request_completes_through_nested_flows() {
         declare("id"),
         when(
           vec![konst(Var::Bool(true))],
-          vec![do_("fetch"), update("id")],
+          vec![call("Fetch", vec![]), update("id")],
         ),
         get("id"),
       ],

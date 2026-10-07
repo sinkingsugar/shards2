@@ -97,12 +97,12 @@ fn preserve(session: &mut shards_lang::Session, text: &str) -> Vec<shards_lang::
 }
 
 #[test]
-fn preserving_reload_pins_suspended_do_and_keeps_caller_counter() {
+fn preserving_reload_pins_a_suspended_invocation_and_keeps_the_caller_counter() {
   let source = |value| {
     format!(
-      r#"@wire(inner {{ Pause() {value} }})
-@wire(outer {{ Do(inner) }})
-@wire(main {{ Keep(n 0) Inc(n) Log Do(outer) Log }} looped: true)
+      r#"@fn(Inner input: None output: Int params: {{}} {{ Pause() {value} }})
+@fn(Outer input: None output: Int params: {{}} {{ Inner }})
+@wire(main {{ Keep(n 0) Inc(n) Log Outer Log }} looped: true)
 @mesh(m) @schedule(m main) @run(m)"#
     )
   };
@@ -125,9 +125,9 @@ fn preserving_reload_pins_suspended_do_and_keeps_caller_counter() {
 fn preserving_reload_updates_deep_calls_inside_a_never_returning_parent() {
   let source = |value| {
     format!(
-      r#"@wire(inner {{ {value} Log Pause() }})
-@wire(outer {{ Keep(n 0) Repeat({{ Inc(n) Log Do(inner) }} forever: true) }})
-Do(outer)"#
+      r#"@fn(Inner input: None output: Int params: {{}} {{ {value} Log Pause() }})
+@fn(Outer stateful: true input: None output: None params: {{}} {{ Keep(n 0) Repeat({{ Inc(n) Log Inner }} forever: true) }})
+Outer"#
     )
   };
   let mut session = shards_lang::Session::new();
@@ -167,22 +167,28 @@ fn preserving_reload_keeps_unrelated_wires_and_mesh_values() {
 }
 
 #[test]
-fn preserving_reload_rejects_incompatible_do_interfaces_atomically() {
-  let source = |body| {
+fn preserving_reload_rejects_incompatible_function_interfaces_atomically() {
+  let source = |signature, body| {
     format!(
-      r#"@wire(inner {{ {body} }})
-@wire(main {{ Keep(n 0) Inc(n) Log Do(inner) ToString Log }} looped: true)
+      r#"@fn(Inner {signature} {{ {body} }})
+@wire(main {{ Keep(n 0) Inc(n) Log Inner | ToString Log }} looped: true)
 @mesh(m) @schedule(m main) @run(m)"#
     )
   };
   let mut session = shards_lang::Session::new();
-  preserve(&mut session, &source("10"));
+  preserve(
+    &mut session,
+    &source("input: None output: Int params: {}", "10"),
+  );
   let (_, lines) = shards_core::log::capture(|| {
     session.tick();
-    for body in [r#""new type""#, "1 = new-local 20"] {
+    for (signature, body) in [
+      ("input: None output: String params: {}", r#""new type""#),
+      ("input: None output: Int params: {by: 1}", "20"),
+    ] {
       let (_, d) = session
         .reload_preserving(
-          Source::new("bad.shs", source(body)),
+          Source::new("bad.shs", source(signature, body)),
           &catalog(),
           &no_defines(),
         )
@@ -191,78 +197,81 @@ fn preserving_reload_rejects_incompatible_do_interfaces_atomically() {
       assert_eq!(d[0].line, Some(1));
       session.tick();
     }
+    // A stateless callee may change its locals freely.
+    preserve(
+      &mut session,
+      &source("input: None output: Int params: {}", "1 = new-local 20"),
+    );
+    session.tick();
   });
-  assert_eq!(lines, ["1", "10", "2", "10", "3", "10"]);
+  assert_eq!(lines, ["1", "10", "2", "10", "3", "10", "4", "20"]);
 }
 
 #[test]
-fn preserving_reload_explains_and_locates_binding_changes() {
-  let source = |body| {
+fn preserving_reload_explains_and_locates_admission_failures() {
+  let source = |signature: &str, body: &str| {
     format!(
-      "@wire(step {{\n{body}\n}})\n@wire(outer {{ Do(step) }})\n@wire(main {{ Do(outer) }} looped: true)\n@mesh(m) @schedule(m main) @run(m)"
+      "@fn(Outer stateful: true input: None output: Any params: {{}} {{ Step }})\n@fn(Step {signature} {{\n{body}\n}})\n@wire(main {{ Outer Log }} looped: true)\n@mesh(m) @schedule(m main) @run(m)"
     )
   };
-  for (old, new, reason, line) in [
+  // Defaults keep the unchanged caller composing, so admission decides.
+  let base = "input: None output: Int params: {by: 1}";
+  for (signature, body, reason) in [
     (
-      "10",
-      "Once({\n  1 | Var(extra)\n}) 10",
-      "new local `extra`",
-      3,
-    ),
-    ("1 | Var(extra) 10", "10", "local `extra` was removed", 1),
-    (
-      "1 | Var(extra) 10",
-      "1.5 | Var(extra) 10",
-      "local `extra` changed type from Int to Float",
-      2,
-    ),
-    (
-      "1 = extra 10",
-      "1 | Var(extra) 10",
-      "local `extra` changed mutability",
-      2,
-    ),
-    // A name declared in a branch does not escape it.
-    (
-      "1 | Var(extra) 10",
-      "When(true {1 | Var(extra)}) 10",
-      "local `extra` was removed",
-      2,
-    ),
-    (
-      "10",
-      "\"hello\"",
+      "input: None output: String params: {by: 1}",
+      "\"ten\"",
       "output type changed from Int to String",
-      1,
     ),
+    (
+      "input: None output: Int params: {amount: 1}",
+      "10",
+      "parameter `by` became `amount`",
+    ),
+    (
+      "input: None output: Int params: {by: 1.5}",
+      "10",
+      "parameter `by` changed type from Int to Float",
+    ),
+    (
+      "input: None output: Int params: {by: 2}",
+      "10",
+      "parameter `by` changed its default",
+    ),
+    (
+      "input: None output: Int params: {by: 1 extra: 2}",
+      "10",
+      "new parameter `extra`",
+    ),
+    (
+      "input: None output: Int params: {}",
+      "10",
+      "parameter `by` was removed",
+    ),
+    (
+      "stateful: true input: None output: Int params: {by: 1}",
+      "10",
+      "it became stateful",
+    ),
+    (base, "Pause 10", "it gained the effect `suspends`"),
   ] {
     let mut session = shards_lang::Session::new();
-    preserve(&mut session, &source(old));
+    preserve(&mut session, &source(base, "10"));
     session.tick();
     let (source, diagnostics) = session
       .reload_preserving(
-        Source::new("edit.shs", source(new)),
+        Source::new("edit.shs", source(signature, body)),
         &catalog(),
         &no_defines(),
       )
       .unwrap_err();
     let d = &diagnostics[0];
-    assert_eq!(d.code, "reload-incompatible");
+    assert_eq!(d.code, "reload-incompatible", "{}", d.message);
     assert!(d.message.contains(reason), "{}", d.message);
     assert!(d.message.contains("press r in watch"));
-    // Outer interfaces can also change; binding errors still point into
-    // the actual declaring wire, including declarations inside Once.
-    if !reason.starts_with("output") && !reason.contains("removed") {
-      assert_eq!(d.line, Some(line), "{}", shards_lang::render(d, &source));
-      assert!(
-        source
-          .text
-          .lines()
-          .nth(line as usize - 1)
-          .unwrap()
-          .contains("extra")
-      );
-    }
+    // The unchanged caller keeps its body; the diagnostic points at the
+    // edited function's declaration.
+    assert_eq!(d.shard.as_deref(), Some("Step"), "{}", d.message);
+    assert_eq!(d.line, Some(2), "{}", shards_lang::render(d, &source));
   }
 }
 
@@ -286,7 +295,7 @@ fn file_watcher_callbacks_preserve_reject_restart_and_stop() {
   let _remove = Remove(path.clone());
   let source = |value| {
     format!(
-      "@wire(step {{{value} Log}})\n@wire(main {{Keep(n 0) Inc(n) Log Do(step)}} looped: true)\n@mesh(m) @schedule(m main) @run(m fps: 0.1)"
+      "@fn(Step input: None output: Int params: {{}} {{{value} Log}})\n@wire(main {{Keep(n 0) Inc(n) Log Step}} looped: true)\n@mesh(m) @schedule(m main) @run(m fps: 0.1)"
     )
   };
   std::fs::write(&path, source(10)).unwrap();
@@ -357,12 +366,12 @@ fn file_watcher_callbacks_preserve_reject_restart_and_stop() {
 }
 
 #[test]
-fn preserving_reload_keeps_unchanged_do_once_state_and_other_sessions() {
+fn preserving_reload_keeps_unchanged_component_state_and_other_sessions() {
   let source = |value| {
     format!(
-      r#"@wire(stable {{Keep(n 0) Inc(n) Log}})
-@wire(changed {{{value} Log}})
-@wire(main {{Do(stable) Do(changed)}} looped: true)
+      r#"@fn(Stable stateful: true input: None output: Int params: {{}} {{Keep(n 0) Inc(n) Log}})
+@fn(Changed input: None output: Int params: {{}} {{{value} Log}})
+@wire(main {{Stable Changed}} looped: true)
 @mesh(m) @schedule(m main) @run(m)"#
     )
   };
@@ -384,13 +393,13 @@ fn preserving_reload_keeps_unchanged_do_once_state_and_other_sessions() {
 fn preserving_reload_retries_failed_nested_instantiation_after_maybe() {
   let source = |body| {
     format!(
-      r#"@wire(inner {{{body}}})
-@wire(main {{Keep(n 0) Inc(n) Log Maybe({{Do(inner)}} silent: true)}} looped: true)
+      r#"@fn(Inner input: None output: Int params: {{}} {{{body}}})
+@wire(main {{Keep(n 0) Inc(n) Log Maybe({{Inner}} silent: true)}} looped: true)
 @mesh(m) @schedule(m main) @run(m)"#
     )
   };
   let mut session = shards_lang::Session::new();
-  preserve(&mut session, &source("10"));
+  preserve(&mut session, &source(r#"Probe("ok") 10"#));
   let (_, lines) = shards_core::log::capture(|| {
     session.tick();
     preserve(
@@ -399,7 +408,7 @@ fn preserving_reload_retries_failed_nested_instantiation_after_maybe() {
     );
     assert!(session.tick().is_empty());
     assert!(session.tick().is_empty());
-    preserve(&mut session, &source("20"));
+    preserve(&mut session, &source(r#"Probe("ok") 20"#));
     assert!(session.tick().is_empty());
   });
   assert_eq!(lines, ["1", "2", "3", "4"]);
@@ -407,25 +416,27 @@ fn preserving_reload_retries_failed_nested_instantiation_after_maybe() {
 }
 
 #[test]
-fn preserving_reload_keeps_old_call_sites_when_a_pinned_parent_body_changes() {
+fn an_in_flight_parent_selects_the_newest_callee_at_its_next_entry() {
   let source = |outer: &str, value| {
     format!(
-      r#"@wire(inner {{{value}}})
-@wire(outer {{{outer}}})
-@wire(main {{Do(outer) Log}} looped: true)
+      r#"@fn(Inner input: None output: Int params: {{}} {{{value}}})
+@fn(Outer input: None output: Int params: {{}} {{{outer}}})
+@wire(main {{Outer Log}} looped: true)
 @mesh(m) @schedule(m main) @run(m)"#
     )
   };
   let mut session = shards_lang::Session::new();
-  preserve(&mut session, &source("Pause() Do(inner)", 10));
+  preserve(&mut session, &source("Pause() Inner", 10));
   let (_, lines) = shards_core::log::capture(|| {
     session.tick();
-    preserve(&mut session, &source("Pause() 0 Do(inner)", 20));
-    session.tick(); // Old parent body pins its original descendant sites.
+    preserve(&mut session, &source("Pause() 0 Inner", 20));
+    // The old Outer invocation finishes on its body, but its Inner call
+    // enters after the reload and selects the newest Inner (§11).
+    session.tick();
     session.tick();
     session.tick();
   });
-  assert_eq!(lines, ["10", "20"]);
+  assert_eq!(lines, ["20", "20"]);
 }
 
 #[test]
@@ -453,13 +464,14 @@ fn preserving_reload_attempts_cleanup_once_when_boundary_cleanup_panics() {
   use shards_core::shards::{ProbeEventKind, take_probe_events};
   let source = |body| {
     format!(
-      r#"@wire(inner {{{body}}})
-@wire(main {{Probe("parent") Do(inner)}} looped: true)
+      r#"@fn(Inner stateful: true input: None output: Int params: {{}} {{{body}}})
+@wire(main {{Probe("parent") Inner}} looped: true)
 @mesh(m) @schedule(m main) @run(m)"#
     )
   };
   take_probe_events();
   let mut session = shards_lang::Session::new();
+  session.set_reset_policy(shards_core::ResetPolicy::Apply);
   preserve(&mut session, &source(r#"Probe("old" "panic-cleanup") 10"#));
   session.tick();
   take_probe_events();
@@ -480,11 +492,11 @@ fn preserving_reload_attempts_cleanup_once_when_boundary_cleanup_panics() {
 }
 
 #[test]
-fn preserving_reload_prepares_retained_spawned_input_specializations() {
+fn preserving_reload_updates_retained_spawned_children() {
   let source = |input, amount| {
     format!(
-      r#"@wire(inner {{Add({amount})}})
-@wire(child {{Do(inner) Log Pause()}} looped: true)
+      r#"@fn(Inner input: Int output: Int params: {{}} {{Add({amount})}})
+@wire(child {{Inner Log Pause()}} looped: true)
 @wire(main {{{input} Spawn(child)}})
 @mesh(m) @schedule(m main) @run(m)"#
     )
@@ -492,21 +504,21 @@ fn preserving_reload_prepares_retained_spawned_input_specializations() {
   let mut session = shards_lang::Session::new();
   preserve(&mut session, &source("1", 1));
   let (_, lines) = shards_core::log::capture(|| {
-    session.tick(); // Spawn Int child.
+    session.tick(); // Spawn the child.
     session.tick(); // Child prints 2 and pauses.
-    preserve(&mut session, &source("1.5", 2));
-    session.tick(); // Old child completes iteration; new main spawns Float child.
-    session.tick(); // Both specializations must select the new inner.
+    preserve(&mut session, &source("10", 2));
+    session.tick(); // Old child completes its iteration; new main spawns another.
+    session.tick(); // Both children select the new Inner.
   });
-  assert_eq!(lines, ["2", "3", "3.5"]);
+  assert_eq!(lines, ["2", "3", "12"]);
 }
 
 #[test]
 fn preserving_reload_recovers_failed_entries_on_the_next_accepted_save() {
   let source = |divisor| {
     format!(
-      r#"@wire(inner {{1 Div({divisor})}})
-@wire(main {{Do(inner)}})
+      r#"@fn(Inner input: None output: Int params: {{}} {{1 Div({divisor})}})
+@wire(main {{Inner}})
 @mesh(m) @schedule(m main) @run(m)"#
     )
   };
@@ -525,8 +537,8 @@ fn preserving_reload_recovers_failed_entries_on_the_next_accepted_save() {
 fn preserving_reload_removes_scheduled_callers_before_checking_their_interface() {
   let source = |value, scheduled| {
     format!(
-      r#"@wire(inner {{{value}}})
-@wire(main {{Do(inner) Log Pause()}} looped: true)
+      r#"@fn(Inner input: None output: Int params: {{}} {{{value}}})
+@wire(main {{Inner Log Pause()}} looped: true)
 @wire(other {{Pause()}} looped: true)
 @mesh(m) @schedule(m {scheduled}) @run(m)"#
     )
@@ -534,7 +546,7 @@ fn preserving_reload_removes_scheduled_callers_before_checking_their_interface()
   let mut session = shards_lang::Session::new();
   preserve(&mut session, &source("10", "main"));
   session.tick();
-  let finished = preserve(&mut session, &source(r#""new type""#, "other"));
+  let finished = preserve(&mut session, &source(r#""new type" | Count"#, "other"));
   assert_eq!(finished.len(), 1);
   assert_eq!(finished[0].wire, "main");
   assert!(matches!(finished[0].outcome, Outcome::Cancelled));
@@ -546,8 +558,8 @@ fn preserving_reload_instantiates_restarted_roots_unchanged_children_once() {
   use shards_core::shards::{ProbeEventKind, take_probe_events};
   let source = |value| {
     format!(
-      r#"@wire(inner {{Probe("child")}})
-@wire(main {{{value} Do(inner)}} looped: true)
+      r#"@fn(Inner stateful: true input: Int output: Int params: {{}} {{Probe("child")}})
+@wire(main {{{value} Inner}} looped: true)
 @mesh(m) @schedule(m main) @run(m)"#
     )
   };
@@ -640,8 +652,8 @@ fn reload_cancels_nested_flows_and_spawned_children_before_new_activation() {
   reload(
     &mut session,
     r#"@wire(child { Probe("child") Pause(1000.0) })
-@wire(inner { Probe("inner") Pause(1000.0) })
-@wire(main { Spawn(child) Do(inner) })
+@fn(Inner input: None output: None params: {} { Probe("inner") Pause(1000.0) })
+@wire(main { Spawn(child) Inner })
 @mesh(m) @schedule(m main) @run(m)"#,
   );
   session.tick();
@@ -680,8 +692,8 @@ fn reload_recompiles_changed_callees_and_resets_once_and_locals() {
     reload(
       &mut session,
       &format!(
-        r#"@wire(value {{ {value} }})
-@wire(main {{ Keep(n 0) Once({{Do(value) | Update(n)}}) Inc(n) Log }} looped: true)
+        r#"@fn(Value input: None output: Int params: {{}} {{ {value} }})
+@wire(main {{ Keep(n 0) Once({{Value | Update(n)}}) Inc(n) Log }} looped: true)
 @mesh(m) @schedule(m main) @run(m iterations: 2)"#
       ),
     );
@@ -770,8 +782,8 @@ n",
 #[test]
 fn declared_wires_run_on_the_scheduled_mesh() {
   let report = run(
-    "@wire(add-one { Add(1) })
-@wire(answer { 41 | Do(add-one) })
+    "@fn(AddOne input: Int output: Int params: {} { Add(1) })
+@wire(answer { 41 | AddOne })
 @wire(ticker { Keep(ticks 0) Inc(ticks) } looped: true)
 @mesh(main)
 @schedule(main answer)
@@ -819,13 +831,13 @@ t",
 #[test]
 fn compose_errors_point_at_the_failing_source() {
   let report = check(
-    "@wire(helper {
+    "@fn(Helper input: Int output: Int params: {} {
   When({true} {
     1 | Add(2)
     \"a\" | Add(2)
   })
   })
-@wire(main-wire { 0 | Do(helper) })
+@wire(main-wire { 0 | Helper })
 @mesh(main)
 @schedule(main main-wire)
 @run(main)",
@@ -837,7 +849,7 @@ fn compose_errors_point_at_the_failing_source() {
   assert_eq!(at(d), (4, 11));
   assert_eq!(
     d.path_string(),
-    "main-wire/1:Do/wire/helper/0:When/action/3:Math.Add"
+    "main-wire/1:Helper/Helper()/0:When/action/3:Math.Add"
   );
   let json = report.to_json();
   assert!(
@@ -922,10 +934,11 @@ fn push_appends_to_a_sequence() {
 }
 
 #[test]
-fn computed_values_in_a_wire_inlined_twice() {
-  // Do composes the wire into the caller's frame at both call sites.
+fn computed_values_in_a_function_called_twice() {
+  // Both call sites share one body; the computed operand lives in the
+  // invocation's own frame.
   let report = run(
-    "@wire(bump { Add(1 | Add(1)) })\n0 | Do(bump) | Do(bump)",
+    "@fn(Bump input: Int output: Int params: {} { Add(1 | Add(1)) })\n0 | Bump | Bump",
     &no_defines(),
   );
   assert_eq!(completed(&report, "root"), Var::Int(4));
@@ -1135,9 +1148,11 @@ Repeat({
 }
 
 #[test]
-fn temporaries_are_scoped_per_inlined_occurrence() {
+fn temporaries_are_scoped_per_body() {
+  // One body per input type: Int and Float callers compose the f-string
+  // temporary separately.
   let report = run(
-    "@wire(w {f\"{Add(1)}\"})\n1 | Do(w)\n1.0 | Do(w)",
+    "@fn(W input: Int | Float output: String params: {} {f\"{Add(1)}\"})\n1 | W\n1.0 | W",
     &no_defines(),
   );
   assert_eq!(completed(&report, "root"), Var::string("2"));
@@ -1341,13 +1356,18 @@ fn keep_holds_state_across_iterations() {
   assert_eq!(report.diagnostics[0].code, "variable-type-mismatch");
 }
 
-/// `n` wires, each running the next through Do, called from the root.
+/// `n` functions, each calling the next, called from the root.
 fn do_chain(n: usize) -> String {
   let mut src = String::new();
   for i in 0..n {
-    src.push_str(&format!("@wire(w{i} {{Do(w{})}})\n", i + 1));
+    src.push_str(&format!(
+      "@fn(W{i} input: None output: Int params: {{}} {{W{}}})\n",
+      i + 1
+    ));
   }
-  src.push_str(&format!("@wire(w{n} {{1}})\nDo(w0)"));
+  src.push_str(&format!(
+    "@fn(W{n} input: None output: Int params: {{}} {{1}})\nW0"
+  ));
   src
 }
 
@@ -1382,15 +1402,19 @@ fn deep_do_chains_are_a_diagnostic_not_a_crash() {
   assert_eq!(check(&src).diagnostics[0].code, "too-deep");
 }
 
-/// A chain of `n` wires, each running the next through Do inside the
-/// given control-flow wrapper (`{next}` is replaced by the Do).
+/// A chain of `n` functions, each calling the next inside the given
+/// control-flow wrapper (`{next}` is replaced by the call).
 fn wrapped_chain(n: usize, wrapper: &str) -> String {
   let mut src = String::new();
   for i in 0..n {
-    let body = wrapper.replace("{next}", &format!("Do(w{})", i + 1));
-    src.push_str(&format!("@wire(w{i} {{{body}}})\n"));
+    let body = wrapper.replace("{next}", &format!("W{}", i + 1));
+    src.push_str(&format!(
+      "@fn(W{i} input: None output: Any params: {{}} {{{body}}})\n"
+    ));
   }
-  src.push_str(&format!("@wire(w{n} {{1}})\nDo(w0)"));
+  src.push_str(&format!(
+    "@fn(W{n} input: None output: Any params: {{}} {{1}})\nW0"
+  ));
   src
 }
 
@@ -1486,7 +1510,7 @@ fn code_after_stop_keeps_its_types() {
 
 #[test]
 fn unreachable_wire_cycles_are_checked() {
-  let report = check("@wire(a {Do(b)})\n@wire(b {Do(a)})\n1");
+  let report = check("@wire(a {Spawn(b)})\n@wire(b {Spawn(a)})\n1");
   assert_eq!(report.diagnostics.len(), 1, "{}", report.to_json());
   assert_eq!(report.diagnostics[0].code, "recursive-wire");
 }
@@ -1495,7 +1519,7 @@ fn unreachable_wire_cycles_are_checked() {
 fn analysis_locates_nested_calls_and_computed_operands() {
   use shards_core::diagnostic::PathStep;
   let report = check(
-    "@wire(helper {Pause 2 | Math.Add(3)})\n1 | Math.Add((Time.Now | ToInt))\nDo(helper)\nDo(helper)\nKeep(n 0)",
+    "@fn(Helper input: Int output: Int params: {} {Pause 2 | Math.Add(3)})\n1 | Math.Add((Time.Now | ToInt))\nHelper\nHelper\nKeep(n 0)",
   );
   assert!(report.ok(), "{}", report.to_json());
   let root = &report.wires[0];
@@ -1508,7 +1532,7 @@ fn analysis_locates_nested_calls_and_computed_operands() {
     .occurrences
     .iter()
     .filter(
-      |o| matches!(o.occurrence.path.last(), Some(PathStep::Shard {name, ..}) if name == "Do"),
+      |o| matches!(o.occurrence.path.last(), Some(PathStep::Shard {name, ..}) if name == "Helper"),
     )
     .collect();
   assert_eq!(
@@ -1526,7 +1550,7 @@ fn analysis_locates_nested_calls_and_computed_operands() {
   assert_eq!(pauses.len(), 2);
   assert_ne!(pauses[0].occurrence.path, pauses[1].occurrence.path);
   assert_eq!(pauses[0].line, Some(1));
-  assert_eq!(pauses[0].column, Some(15));
+  assert_eq!(pauses[0].column, Some(47));
   let time = root.occurrences.iter().find(|o| matches!(o.occurrence.path.last(), Some(PathStep::Shard {name, ..}) if name == "Time.Now")).unwrap();
   assert_eq!(time.line, Some(2));
   assert_eq!(time.occurrence.output, shards_core::Type::float());
@@ -2059,4 +2083,47 @@ fn function_declarations_are_checked() {
   // Types: sequences, tables, unions and defaults.
   let source = "@fn(Sum input: [Int] output: Int params: {start: 10} { Count | Math.Add(start) })\n@fn(Pick input: {value: Int children: [Int]} output: Int | None params: {} { Take(\"value\") })\n[1 2 3] | Sum | Log\n[1 2 3] | Sum(start: 0) | Log\n{value: 7 children: [1]} | Pick | Log";
   assert_eq!(lines_of(source), ["13", "3", "7"]);
+}
+
+#[test]
+fn preserving_reload_migrates_keep_slots_by_name_and_type() {
+  let source = |keeps: &str| {
+    format!(
+      "@fn(C stateful: true input: None output: Any params: {{}} {{\n  {keeps}\n  n | Math.Add(1) | Update(n) | Log\n  m | Math.Add(1) | Update(m) | Log\n}})\n@wire(main {{ Keep(count 0) Inc(count) C }} looped: true)\n@mesh(m) @schedule(m main) @run(m)"
+    )
+  };
+  let mut session = shards_lang::Session::new();
+  session.set_reset_policy(shards_core::ResetPolicy::Apply);
+  preserve(&mut session, &source("Keep(n 0) Keep(m 100)"));
+  let (_, lines) = shards_core::log::capture(|| {
+    session.tick();
+    session.tick();
+    // A changed initializer keeps the value; reordering keeps both.
+    preserve(&mut session, &source("Keep(m 100) Keep(n 10)"));
+    let report = session.reload_report().cloned().unwrap();
+    assert_eq!(report.retained, ["C.n", "C.m"]);
+    assert!(report.reset.is_empty(), "{report:?}");
+    session.tick();
+    // A changed type resets that slot and reports it; the other survives.
+    preserve(&mut session, &source("Keep(m 100) Keep(n 0.5)"));
+    let report = session.reload_report().cloned().unwrap();
+    assert_eq!(report.retained, ["C.m"]);
+    assert_eq!(report.reset, ["C.n"]);
+    session.tick();
+  });
+  assert_eq!(lines, ["1", "101", "2", "102", "3", "103", "1.5", "104"]);
+  // Under the embedding default policy, the type change is rejected.
+  let mut session = shards_lang::Session::new();
+  preserve(&mut session, &source("Keep(n 0) Keep(m 100)"));
+  session.tick();
+  let (_, d) = session
+    .reload_preserving(
+      Source::new("t.shs", source("Keep(n 0.5) Keep(m 100)")),
+      &catalog(),
+      &no_defines(),
+    )
+    .unwrap_err();
+  assert_eq!(d[0].code, "reload-resets-state");
+  assert!(d[0].message.contains("C.n"), "{}", d[0].message);
+  assert_eq!(session.tick().len(), 0);
 }

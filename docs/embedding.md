@@ -89,9 +89,10 @@ ESP-IDF.
 
 There are two replacement modes:
 
-- **`reload_preserving`** keeps unchanged callers, locals, `Once` state,
-  mesh values and suspended execution. Edited nested `Do` bodies are selected
-  at their next call boundary. This is what `shards2 watch` uses.
+- **`reload_preserving`** keeps unchanged callers, locals, `Keep` and
+  `Once` state, mesh values and suspended execution. Edited function bodies
+  are selected at their next call (golden path §11). This is what
+  `shards2 watch` uses.
 - **`reload`** explicitly restarts the whole program on a fresh mesh. All
   script and mesh state, including host-declared mesh-variable schemas, is
   discarded. Host services owned outside the mesh survive either mode.
@@ -101,51 +102,47 @@ rejected edit returns its source and located diagnostics; the current
 execution continues unchanged. Compilation is synchronous and pauses the
 host loop on that thread.
 
-### Preserving a caller while editing a nested wire
+### Preserving a caller while editing a function
 
 ```shards
-@wire(step { 10 | Log })
+@fn(Step input: None output: Int params: {} { 10 | Log })
 @wire(main {
   Keep(counter 0)
   Inc(counter) | Log
-  Do(step)
+  Step
 } looped: true)
 @mesh(m)
 @schedule(m main)
 @run(m fps: 30)
 ```
 
-Changing `10` to `20` in `step` keeps `main` running: its counter continues,
-its `Keep` state is retained, and its next `Do(step)` uses the edited body.
-This works through multiple nested `Do` calls, including a child called
-repeatedly inside a parent that never returns.
+Changing `10` to `20` in `Step` keeps `main` running: its counter continues,
+its `Keep` state is retained, and its next call to `Step` runs the edited
+body. A call site selects the newest accepted body when it enters; an
+invocation already in flight finishes on the body it started with, and its
+own calls, entered after the edit, select the newest bodies. Callers whose
+own definition did not change keep their compiled body and state, whatever
+their callees did.
 
-An in-flight call pins the body it started with until it returns. A pending
-async operation is neither cancelled nor overlapped with its replacement by
-an accepted nested edit. If the edited call never returns, that call never
-adopts the edit; request a full restart to cancel it. Each nested call has
-its own boundary. An unchanged parent body can select a new child on its
-next child call; an edited parent body already in flight retains its old
-call sites, so rearranged descendants cannot be mistaken for old ones.
+A candidate body is admitted only if its input, output, parameters and
+`stateful` flag match what the callers were composed with, and its inferred
+effects and mesh access fit inside what they were admitted with; otherwise
+the edit is rejected with `reload-incompatible`, naming the function and
+the change, before any running instance changes. A stateless function may
+change its locals freely: every invocation gets the new frame layout, and
+the caller never moves.
 
-Replacement must preserve a retained call site's input/output types, local
-slot layout, and definite-initialization contract. Type or binding changes,
-including new locals inside the changed callee, reject the edit with
-`reload-incompatible`. This is checked before any running instance changes.
-Diagnostics name the specific incompatible change. Added or changed locals point
-to their declaration, including declarations inside nested flows; removed locals
-fall back to the affected wire because their declaration is absent. The message
-also explains that `r` in watch performs a full restart.
-There is no arbitrary local-state migration or in-place coroutine rewriting.
-Use a full restart for incompatible edits. Changing the caller's own body
-restarts that caller and its locals, so stable initialization and counters
-should live in an unchanged caller above the editable `Do` body.
-
-Allowing appended locals in an edited callee is a follow-up. `Do` currently
-shares its caller's frame: a new callee slot can shift slots used later by the
-caller, so merely accepting a larger layout is insufficient. Supporting this
-needs stable existing bindings, safe growth of retained instance frames and
-initialization rules while old calls remain in flight.
+A stateful function keeps `Keep` slots that match the new body by name and
+type (editing `Keep(n 0)` to `Keep(n 10)` keeps the value of `n`;
+reordering `Keep`s keeps both); slots that changed type or disappeared
+reset, and so does native shard state inside the body, since no shard
+declares a compatibility contract yet. Resets happen at the call site's
+next entry. Whether a reset is acceptable is the host's policy
+(`ResetPolicy`): a `Session` rejects such edits by default
+(`reload-resets-state`), and `shards2 watch` applies them, since running
+watch is the opt-in. `Session::reload_report` (and the `report` on
+`WatchEvent::Reloaded`) lists what was retained, reset and restarted, by
+name.
 
 Other lifetime rules:
 
@@ -153,54 +150,22 @@ Other lifetime rules:
   Changed scheduled roots restart; removed schedules are cancelled.
   Retained instances keep scheduler order; new/restarted entries append.
   Reordering `@schedule` alone does not reorder retained instances.
-- Unchanged nested `Do` bodies retain their shard state too. Their `Once`
-  blocks do not repeat merely because a different body was edited.
+- Unchanged stateful functions retain their state too. Their `Once` blocks
+  do not repeat merely because another function was edited.
 - `Spawn` remains a static compiled dependency. Editing its target can
   restart the code that owns that dependency. Spawned instances are detached:
   compatible ones survive independently, while changed/removed ones are
-  cancelled; new spawns run the new code. The candidate also composes retained
-  children's input specializations, even if new entries no longer spawn those
-  types. Pending old calls can still spawn work belonging to their pinned code.
-- Unchanged completed/stopped entries remain finished, so saving a different
-  wire does not repeat setup effects. Failed entries stay stopped until the
-  next accepted reload, when they retry. Spawned failures are reported but
-  are not independently retried by the session.
-- Every replaced state gets cleanup attempted once. At a nested boundary,
-  cleanup and instantiation run when the next call starts. A failure there
-  is a runtime failure (`Maybe` can catch instantiation errors); it does not
-  roll back the committed revision. Terminal cleanup still visits the other
-  states if cleanup panics on native builds.
-
-### Driving a session and retaining explicit mesh values
-
-```rust
-use std::collections::HashMap;
-use shards_core::{Catalog, Mesh, Var};
-use shards_lang::{Session, Source};
-
-let catalog = Catalog::new(&[shards_core::shards::CATALOG]).unwrap();
-let defines = HashMap::new();
-let mut mesh = Mesh::new();
-mesh.declare_var("shared-counter", Var::Int(0), true);
-let mut session = Session::with_mesh(mesh);
-match session.reload_preserving(
-    Source::new("live.shs", "Inc(shared-counter)"), &catalog, &defines,
-) {
-  Ok(finished) => { /* consume cancelled/replaced instances' outcomes */ }
-  Err((source, diagnostics)) => { /* render against the rejected source */ }
-}
-// In the host loop, once per frame; tick does not sleep.
-for finished in session.tick() {
-  println!("{}: {:?}", finished.wire, finished.outcome);
-}
-// Submit edits through reload_preserving between ticks. On shutdown:
-let finished = session.stop();
-```
+  cancelled. A spawned wire that calls an edited function selects the new
+  body at its next call like any other caller.
+- Entry roots cancelled by a reload report `Cancelled`, including spawned
+  children. Failed entries stay stopped until the next accepted reload, and
+  then run again.
 
 `Session::with_mesh` accepts an idle, host-configured mesh. Preserving reload
 keeps its mesh-variable frame and schema unchanged, so values survive even
 when a scheduled root restarts. Scripts access declared mesh variables with
-the usual reads and updates. Creating/removing/changing the type of a mesh
+the usual reads and updates; a function reaches them only through its
+declared `uses` and `mutates`. Creating/removing/changing the type of a mesh
 variable during preserving reload is not supported. To reset such a session,
 create a fresh configured mesh and session; `reload` alone starts from the
 default empty mesh schema.
@@ -214,24 +179,26 @@ An accepted reload resets the revision's tick budget and updates its `fps`;
 cancels work, but cannot return cleanup errors.
 
 `Session` drives a `Mesh` directly; a host configures the mesh it starts
-from through `Session::with_mesh`. Compiled artifacts remain immutable. Inline revision selection belongs to a mesh; each active `Do`
-state retains an `Arc` to its selected immutable body. Candidate caches are
-fresh per revision. Old code remains only while referenced by retained roots
-or call state, not in a cumulative revision history. The process-wide type
-registry still interns types for the process lifetime.
+from through `Session::with_mesh`. Compiled artifacts remain immutable:
+body selection belongs to a mesh, and each active call site retains an
+`Arc` to the body it selected. Candidate caches are fresh per revision. Old
+code remains only while referenced by retained roots or call sites, not in
+a cumulative revision history. The process-wide type registry still interns
+types for the process lifetime.
 
 Cancellation on root replacement, stop, or full restart drops pending
 futures, but does not join detached blocking workers or undo external
 effects. Such operations must cooperate with cancellation; a host requiring
 strict worker quiescence must enforce it in its service before admitting new
-work. Preserving an in-flight `Do` avoids restarting that call, but does not
-solve every host-side cancellation race.
+work. Preserving an in-flight invocation avoids restarting that call, but
+does not solve every host-side cancellation race.
 
 Offline tests in `crates/shards-cli/tests/embedding.rs` verify warm service
 reuse, cancellation on full reload, and pending-operation completion across
-preserving reload. The shared frontend suite verifies
-caller counters, unchanged `Once` state, deep call boundaries, mesh values,
-incompatible edits, cleanup failures, and retained spawned specializations.
+preserving reload. The shared frontend suite verifies caller counters,
+unchanged `Once` state, deep call boundaries, mesh values, incompatible
+edits, state resets under both policies, cleanup failures, and retained
+spawned children.
 Hosts can use the same pattern with recorded inputs to test without live I/O.
 
 ### Watching a file
@@ -250,8 +217,9 @@ explicitly reported as stopped until the next successful reload/restart.
 `fps` controls ticking; without it the watcher uses a 16 ms interval and
 continues checking edits even when the script requests a very low frame rate.
 
-Enter `r` to validate the current file and explicitly restart all script
-execution in the same process. Enter `q`, send Ctrl-C, or close stdin to
+Each accepted edit prints what it retained, reset and restarted. Enter `r`
+to validate the current file and explicitly restart all script execution in
+the same process. Enter `q`, send Ctrl-C, or close stdin to
 cancel the execution and exit cleanly. Successful shutdown does not mean
 every revision ran successfully.
 

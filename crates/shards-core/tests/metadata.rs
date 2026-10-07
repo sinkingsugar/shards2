@@ -280,7 +280,7 @@ fn variable_resolution_errors_are_structured() {
 /// Context-dependent checks stay in compose, as structured diagnostics.
 #[test]
 fn compose_checks_of_every_shard() {
-  use shards_core::shards::{DO, PROBE, REPEAT, SPAWN};
+  use shards_core::shards::{PROBE, REPEAT, SPAWN};
   let named = |ty: &'static shards_core::ShardType, args: Vec<Arg>| ShardDef::with_args(ty, args);
   #[allow(clippy::type_complexity)]
   let cases: Vec<(&str, Vec<ShardDef>, &str, &str, Option<&str>)> = vec![
@@ -406,16 +406,6 @@ fn compose_checks_of_every_shard() {
       Some("seconds"),
     ),
     (
-      "do-unknown",
-      vec![named(
-        &DO,
-        vec![Arg::pos(ParamValue::Wire("nowhere".into()))],
-      )],
-      "unknown-wire",
-      "Do",
-      Some("wire"),
-    ),
-    (
       "spawn-unknown",
       vec![named(
         &SPAWN,
@@ -456,26 +446,33 @@ fn compose_checks_of_every_shard() {
     assert_eq!(d.phase.name(), "compose", "{label}");
   }
 
-  // A wire that runs itself through Do: recursive.
+  // A wire that spawns itself: recursive.
   let mut mesh = Mesh::new();
   mesh.add_wire(WireDef {
     name: "loop".into(),
     looped: false,
-    flow: vec![named(&DO, vec![Arg::pos(ParamValue::Wire("loop".into()))])],
+    flow: vec![named(
+      &SPAWN,
+      vec![Arg::pos(ParamValue::Wire("loop".into()))],
+    )],
   });
   let d = match mesh.compile("loop", Type::none()) {
     Err(Error::Diagnostic(d)) => *d,
     other => panic!("{:?}", other.map(|_| ())),
   };
-  assert_eq!((d.code, d.shard.as_deref()), ("recursive-wire", Some("Do")));
+  assert_eq!(
+    (d.code, d.shard.as_deref()),
+    ("recursive-wire", Some("Spawn"))
+  );
 }
 
 #[test]
 fn a_called_wire_keeps_its_own_diagnostics() {
-  use shards_core::shards::{DO, SPAWN};
-  // An error inside the called wire belongs to the shard that raised it,
-  // not to Do's or Spawn's Wire parameter.
-  for caller in [&DO, &SPAWN] {
+  use shards_core::shards::SPAWN;
+  // An error inside the spawned wire belongs to the shard that raised it,
+  // not to Spawn's Wire parameter.
+  {
+    let caller = &SPAWN;
     let mut mesh = Mesh::new();
     mesh.add_wire(WireDef {
       name: "child".into(),

@@ -9,7 +9,7 @@ use shards_core::compose::ComposeCtx;
 use shards_core::instance::LeafCtx;
 use shards_core::shards::async_shard::{AsyncShard, async_type};
 use shards_core::shards::defs::*;
-use shards_core::{Composed, Result, ShardDef, ShardDesc, ShardType};
+use shards_core::{Composed, FunctionDef, Result, ShardDef, ShardDesc, ShardType};
 use shards_core::{Type, Var, WireDef};
 use std::future::Future;
 use std::pin::Pin;
@@ -50,11 +50,19 @@ const INSTANCES: usize = 1000;
 const WARMUP: u32 = 10;
 const TICKS: u32 = 1000;
 
-fn wires(depth: usize, progress: bool) -> Vec<WireDef> {
-  let mut wires = vec![WireDef {
-    name: format!("level-{depth}"),
-    looped: false,
-    flow: if progress {
+/// `depth` nested functions, each calling the next; the deepest holds the
+/// leaf. Every level declares the mesh counter it reaches through its
+/// callees (golden path §3.1).
+fn functions(depth: usize, progress: bool) -> Vec<FunctionDef> {
+  let level = |n: usize, body: Vec<ShardDef>| {
+    FunctionDef::new(&format!("Level{n}"), Type::none(), Type::none())
+      .uses(&["resumes"])
+      .mutates(&["resumes"])
+      .body(body)
+  };
+  let mut functions = vec![level(
+    depth,
+    if progress {
       // Retain the pre-M4 workload unchanged: each Pause completes on resume,
       // then While performs work and starts a new Pause at the bottom.
       vec![while_(
@@ -64,27 +72,29 @@ fn wires(depth: usize, progress: bool) -> Vec<WireDef> {
     } else {
       vec![ShardDef::new(&WAIT, vec![]), inc("resumes")]
     },
-  }];
-  for level in 0..depth {
-    wires.push(WireDef {
-      name: format!("level-{level}"),
-      looped: false,
-      flow: vec![do_(&format!("level-{}", level + 1))],
-    });
+  )];
+  for n in 0..depth {
+    functions.push(level(n, vec![call(&format!("Level{}", n + 1), vec![])]));
   }
-  wires.push(WireDef {
+  functions
+}
+
+fn wires() -> Vec<WireDef> {
+  vec![WireDef {
     name: "root".into(),
     looped: true,
-    flow: vec![do_("level-0")],
-  });
-  wires
+    flow: vec![call("Level0", vec![])],
+  }]
 }
 
 macro_rules! run_depth {
   ($mesh:expr, $depth:expr, $progress:expr) => {{
     let mut mesh = $mesh;
     mesh.declare_var("resumes", Var::Int(0), true);
-    for def in wires($depth, $progress) {
+    for def in functions($depth, $progress) {
+      mesh.add_function(def);
+    }
+    for def in wires() {
       mesh.add_wire(def);
     }
     let root = mesh.compile("root", Type::none()).expect("compile");

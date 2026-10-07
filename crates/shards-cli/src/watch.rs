@@ -4,7 +4,7 @@ use std::io::BufRead;
 use std::process::ExitCode;
 use std::sync::mpsc;
 
-use shards_core::Outcome;
+use shards_core::{Outcome, ResetPolicy};
 use shards_lang::{FileWatcher, Finished, Session, WatchControl, WatchEvent, render};
 
 use crate::{Options, catalog};
@@ -39,6 +39,8 @@ pub(super) fn watch(o: &Options) -> Result<ExitCode, String> {
   );
   let catalog = catalog();
   let mut session = Session::new();
+  // Running watch is the opt-in for applying state resets (golden path §11).
+  session.set_reset_policy(ResetPolicy::Apply);
   let mut error = None;
   FileWatcher::new(&o.file).run(
     &mut session,
@@ -60,17 +62,24 @@ pub(super) fn watch(o: &Options) -> Result<ExitCode, String> {
       WatchEvent::Reloaded {
         restarted,
         finished,
+        report,
       } => {
         print_finished(finished);
-        eprintln!(
-          "{}: {}",
-          o.file,
-          if restarted {
-            "restarted"
-          } else {
-            "reloaded (nested edits apply at the next call boundary)"
+        if restarted {
+          eprintln!("{}: restarted", o.file);
+        } else {
+          let mut parts = vec!["reloaded (edited functions apply at their next call)".to_string()];
+          for (label, names) in [
+            ("retained", &report.retained),
+            ("reset", &report.reset),
+            ("restarted", &report.restarted),
+          ] {
+            if !names.is_empty() {
+              parts.push(format!("{label}: {}", names.join(", ")));
+            }
           }
-        );
+          eprintln!("{}: {}", o.file, parts.join("; "));
+        }
       }
       WatchEvent::Rejected {
         source,

@@ -9,7 +9,7 @@ use crate::error::{Error, Result};
 use crate::flow::CompiledFlow;
 use crate::function::{CallCompiled, CompiledFunction};
 use crate::instance::{CleanupCtx, InstanceCtx};
-use crate::reload::InlineCall;
+use crate::reload::FunctionKey;
 use crate::shard::{ActivationCtx, CompiledNode, Step};
 use crate::shards::control::{
   self, Condition, ConditionsCompiled, IfCompiled, MatchCompiled, MaybeCompiled,
@@ -20,7 +20,6 @@ use crate::shards::{Predicated, RepeatCompiled};
 /// dispatch; frames retain their compiled owner, never pointers into it.
 #[doc(hidden)]
 pub enum Control<'a> {
-  Do(&'a Arc<InlineCall>),
   /// A function call: its invocation frame is built at entry (golden path
   /// §5), so it has no eager children.
   Call(&'a CallCompiled),
@@ -39,7 +38,7 @@ impl Control<'_> {
   fn len(&self) -> usize {
     match self {
       Self::Call(_) => 0,
-      Self::Do(_) | Self::Sub(_) | Self::Once(_) => 1,
+      Self::Sub(_) | Self::Once(_) => 1,
       Self::When(_) | Self::While(_) => 2,
       Self::Repeat(c) => 1 + usize::from(c.until.is_some()),
       Self::If(c) => c.flows.len(),
@@ -54,7 +53,6 @@ impl Control<'_> {
 enum Code {
   Root(Arc<CompiledWire>),
   Child(Arc<dyn CompiledNode>, usize),
-  Call(Arc<InlineCall>),
   /// A function invocation: the frame owns the invocation's locals.
   Function(Arc<CompiledFunction>),
 }
@@ -83,10 +81,8 @@ impl Code {
         Control::Match(c) => &c.flows[*i],
         Control::Maybe(c) => &c.flows[*i],
         Control::Conditions(c) => &c.flows[*i],
-        Control::Do(_) => unreachable!("Do retains its selected call"),
         Control::Call(_) => unreachable!("a call's frame holds its function"),
       },
-      Self::Call(c) => &c.flow,
       Self::Function(f) => &f.flow,
     }
   }
@@ -99,7 +95,9 @@ struct Continuation {
   count: i64,
   limit: Option<i64>,
   once_done: bool,
-  call: Option<Arc<InlineCall>>,
+  /// The body a call site selected at its last entry (golden path §11);
+  /// `None` until a reload offered one.
+  function: Option<Arc<CompiledFunction>>,
   revision: u64,
 }
 impl Continuation {
@@ -183,10 +181,7 @@ impl Engine {
       for node in &code.flow().nodes {
         if let Some(control) = node.control() {
           for i in 0..control.len() {
-            pending.push(match &control {
-              Control::Do(call) => Code::Call((*call).clone()),
-              _ => Code::Child(node.clone(), i),
-            });
+            pending.push(Code::Child(node.clone(), i));
           }
         }
       }
@@ -212,15 +207,8 @@ impl Engine {
             children: Vec::with_capacity(control.len()),
             ..Continuation::default()
           };
-          if let Control::Do(call) = &control {
-            c.call = Some((*call).clone());
-          }
           for i in 0..control.len() {
-            let code = match &control {
-              Control::Do(call) => Code::Call((*call).clone()),
-              _ => Code::Child(node.clone(), i),
-            };
-            let mut child = Frame::new(code);
+            let mut child = Frame::new(Code::Child(node.clone(), i));
             child.scope = scope;
             c.children.push(self.frames.insert(child));
           }
@@ -331,48 +319,8 @@ impl Engine {
     }
   }
 
-  fn prepare_call(&mut self, h: Handle, ctx: &ActivationCtx<'_>) -> Result<()> {
-    let c = self.continuation(h);
-    if c.phase != 0 {
-      return Ok(());
-    }
-    let call = c.call.as_ref().expect("Do call");
-    let mut old = Vec::new();
-    if c.revision != ctx.reload_revision() {
-      c.revision = ctx.reload_revision();
-      if let Some(next) = ctx.inline_call(&call.key)
-        && next.signature == call.signature
-        && next.deps != call.deps
-      {
-        c.call = Some(next);
-        old = std::mem::take(&mut c.children);
-      }
-    }
-    for child in old {
-      self.cleanup_tree(
-        child,
-        &mut CleanupCtx {
-          instance: ctx.instance(),
-        },
-      );
-    }
-    let c = self.continuation(h);
-    if c.children.is_empty() {
-      let code = Code::Call(c.call.as_ref().expect("call").clone());
-      let scope = self.frames.get(h).expect("frame").scope;
-      let child = self.build(
-        code,
-        scope,
-        &mut InstanceCtx {
-          instance: ctx.instance(),
-        },
-      )?;
-      self.continuation(h).children.push(child);
-    }
-    Ok(())
-  }
-
-  /// Entering a function call (golden path §3.3, §5): the arguments are
+  /// Entering a function call (golden path §3.3, §5, §11): the call site
+  /// selects the newest accepted body once per reload, the arguments are
   /// read once, in the caller's frame, then the invocation frame is built
   /// (stateless: fresh each time) or reused (stateful: its `Keep` slots and
   /// native state survive, ordinary locals start fresh), and receives the
@@ -392,6 +340,30 @@ impl Engine {
       };
       (f.call_depth, input)
     };
+    // Body selection: once per accepted reload, at an inactive boundary.
+    let c = self.continuation(h);
+    let mut body = c.function.clone().unwrap_or_else(|| call.body.clone());
+    if c.revision != ctx.reload_revision() {
+      c.revision = ctx.reload_revision();
+      if let Some(next) = ctx.function_body(&FunctionKey::of(&body))
+        && !Arc::ptr_eq(&next, &body)
+      {
+        let old = std::mem::take(&mut c.children);
+        c.function = Some(next.clone());
+        if let (true, Some(&old_child)) = (call.stateful(), old.first()) {
+          self.migrate_component(h, old_child, &body, &next, ctx)?;
+        }
+        for child in old {
+          self.cleanup_tree(
+            child,
+            &mut CleanupCtx {
+              instance: ctx.instance(),
+            },
+          );
+        }
+        body = next;
+      }
+    }
     if depth >= ctx.max_call_depth {
       use crate::diagnostic::{Diagnostic, PathStep, Phase};
       let mut d = Diagnostic::new(
@@ -408,7 +380,7 @@ impl Engine {
     }
     // Arguments are immutable snapshots for the whole invocation.
     let values: Vec<Var> = call.args.iter().map(|op| op.get(ctx)).collect();
-    let body = &call.body;
+    let body = &body;
     let child = match self.continuation(h).children.first().copied() {
       Some(child) => {
         let frame = self.frames.get_mut(child).expect("stateful call frame");
@@ -438,6 +410,44 @@ impl Engine {
       frame.locals[*slot] = value;
     }
     frame.locals[body.input_slot] = input;
+    Ok(())
+  }
+
+  /// A stateful call site adopting a new body (golden path §11): the new
+  /// frame is built, `Keep` slots that match by name and type carry their
+  /// values over (and count as applied), everything else starts fresh. The
+  /// old frame is cleaned up by the caller afterwards.
+  fn migrate_component(
+    &mut self,
+    h: Handle,
+    old_child: Handle,
+    old: &CompiledFunction,
+    new: &Arc<CompiledFunction>,
+    ctx: &ActivationCtx<'_>,
+  ) -> Result<()> {
+    let plan = crate::reload::keep_plan(old, new);
+    let child = self.build(
+      Code::Function(new.clone()),
+      None,
+      &mut InstanceCtx {
+        instance: ctx.instance(),
+      },
+    )?;
+    let mut locals = new.fresh_locals();
+    let old_locals = &self.frames.get(old_child).expect("old call frame").locals;
+    for (from, to, _) in &plan.moves {
+      locals[*to] = old_locals[*from].clone();
+    }
+    let frame = self.frames.get_mut(child).expect("new call frame");
+    frame.locals = locals;
+    for (_, _, node) in &plan.moves {
+      if let State::Leaf(state) = &mut frame.states[*node]
+        && let Some(applied) = state.downcast_mut::<bool>()
+      {
+        *applied = true;
+      }
+    }
+    self.continuation(h).children.push(child);
     Ok(())
   }
 
@@ -486,12 +496,6 @@ impl Engine {
     if completed.is_none() {
       let f = self.frames.get(h).expect("frame");
       let entering = match f.states.get(f.pc) {
-        Some(State::Control(c)) if c.call.is_some() => {
-          if ctx.reload_revision() != 0 {
-            prepared = self.prepare_call(h, ctx);
-          }
-          None
-        }
         Some(State::Control(c)) if c.phase == 0 => Some(f.code.flow().nodes[f.pc].clone()),
         _ => None,
       };
@@ -512,26 +516,7 @@ impl Engine {
       self.dispatches += 1;
       let control = flow.nodes[index].control().expect("composite");
       let stateless_call = matches!(&control, Control::Call(call) if !call.stateful());
-      let request = prepared.and_then(|()| {
-        if let Control::Do(call) = &control
-          && completed.is_none()
-          && f.call_depth >= ctx.max_call_depth
-        {
-          use crate::diagnostic::{Diagnostic, PathStep, Phase};
-          let mut d = Diagnostic::new(
-            Phase::Activate,
-            "activation-error",
-            "recursion-limit",
-            format!(
-              "{} exceeds max_call_depth {} at depth {}",
-              call.name, ctx.max_call_depth, f.call_depth
-            ),
-          );
-          d.path.push(PathStep::Wire(call.name.clone()));
-          return Err(Error::Diagnostic(Box::new(d.shard("Do"))));
-        }
-        dispatch(control, c, ctx, &f.value, completed.take())
-      });
+      let request = prepared.and_then(|()| dispatch(control, c, ctx, &f.value, completed.take()));
       match request {
         Ok(Request::Enter(child)) => Request::Enter(child),
         Ok(Request::Complete(result)) => {
@@ -582,7 +567,6 @@ impl Engine {
           _ => f.value.clone(),
         };
         let depth = f.call_depth
-          + usize::from(matches!(&f.states[index], State::Control(c) if c.call.is_some()))
           + usize::from(matches!(
             flow.nodes[index].control(),
             Some(Control::Call(_))
@@ -677,16 +661,14 @@ fn dispatch(
       match step {
         Step::Next(v) => Some(v),
         // Return exits the nearest named invocation with its value.
-        Step::Return(v) if matches!(control, Control::Do(_) | Control::Call(_)) => return next(v),
+        Step::Return(v) if matches!(control, Control::Call(_)) => return next(v),
         other => return Ok(Request::Complete(Ok(other))),
       }
     }
   };
   match control {
-    Control::Do(_) | Control::Call(_) | Control::Match(_) if value.is_some() => {
-      next(value.unwrap())
-    }
-    Control::Do(_) | Control::Call(_) => enter(c, 0, 1),
+    Control::Call(_) | Control::Match(_) if value.is_some() => next(value.unwrap()),
+    Control::Call(_) => enter(c, 0, 1),
     Control::Match(m) => enter(c, m.find(input)?, 1),
     Control::Sub(_) => {
       if value.is_some() {

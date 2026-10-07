@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use shards_core::{Catalog, Diagnostic};
+use shards_core::{Catalog, Diagnostic, ReloadReport};
 
 use crate::{Finished, Session, Source};
 
@@ -28,6 +28,8 @@ pub enum WatchEvent {
   Reloaded {
     restarted: bool,
     finished: Vec<Finished>,
+    /// What a preserving reload retained, reset and restarted.
+    report: ReloadReport,
   },
   Rejected {
     source: Source,
@@ -97,9 +99,15 @@ impl FileWatcher {
             };
             match result {
               Ok(finished) => {
+                let report = if restart {
+                  ReloadReport::default()
+                } else {
+                  session.reload_report().cloned().unwrap_or_default()
+                };
                 event(WatchEvent::Reloaded {
                   restarted: restart,
                   finished,
+                  report,
                 });
                 self.tick_at = Instant::now();
               }

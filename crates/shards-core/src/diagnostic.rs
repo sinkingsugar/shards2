@@ -47,6 +47,8 @@ impl Phase {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum PathStep {
   Wire(String),
+  /// Enters a function body at a call site (the definition, not the site).
+  Function(String),
   Shard {
     index: usize,
     name: String,
@@ -198,6 +200,7 @@ impl Diagnostic {
       .iter()
       .map(|step| match step {
         PathStep::Wire(name) => name.clone(),
+        PathStep::Function(name) => format!("{name}()"),
         PathStep::Shard { index, name } => format!("{index}:{name}"),
         PathStep::Param(name) => name.clone(),
         PathStep::Item(index) => format!("#{index}"),
@@ -382,6 +385,7 @@ pub fn path_json(path: &[PathStep]) -> String {
     .iter()
     .map(|step| match step {
       PathStep::Wire(name) => format!("{{\"wire\":{}}}", json_str(name)),
+      PathStep::Function(name) => format!("{{\"function\":{}}}", json_str(name)),
       PathStep::Shard { index, name } => {
         format!("{{\"shard\":{index},\"name\":{}}}", json_str(name))
       }

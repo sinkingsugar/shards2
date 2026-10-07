@@ -10,6 +10,7 @@ use std::task::Waker;
 use super::Engine;
 use crate::compose::{CacheStats, CompiledWire, ComposeCache, ComposeEnv, FrameLayout, WireDef};
 use crate::error::{Error, Result, panic_message};
+use crate::function::{CompiledFunction, FunctionDef};
 use crate::instance::{InstanceCtx, InstanceId, InstanceMemory, Outcome, WakeFlag, WakeMode};
 use crate::shard::{ActivationCtx, Step};
 use crate::types::Type;
@@ -40,6 +41,7 @@ pub struct Mesh {
   frame: Vec<Var>,
   spawn_queue: Vec<(Arc<CompiledWire>, Var)>,
   wires: HashMap<String, WireDef>,
+  functions: HashMap<String, FunctionDef>,
   cache: ComposeCache,
   prepared_calls: crate::reload::InlineRegistry,
   instances: Vec<Instance>,
@@ -66,6 +68,7 @@ impl Mesh {
       frame: Vec::new(),
       spawn_queue: Vec::new(),
       wires: HashMap::new(),
+      functions: HashMap::new(),
       cache,
       prepared_calls: HashMap::new(),
       instances: Vec::new(),
@@ -96,6 +99,31 @@ impl Mesh {
 
   pub fn add_wire(&mut self, def: WireDef) {
     self.wires.insert(def.name.clone(), def);
+  }
+
+  /// Declares a script function, callable from every wire and function of
+  /// this mesh by name.
+  pub fn add_function(&mut self, def: FunctionDef) {
+    self.functions.insert(def.name.clone(), def);
+  }
+
+  /// Composes a function against its declared input type, as a call site
+  /// would, without a caller: for checking definitions nothing calls yet.
+  pub fn compile_function(&mut self, name: &str) -> Result<Arc<CompiledFunction>> {
+    let def = self
+      .functions
+      .get(name)
+      .cloned()
+      .map(Arc::new)
+      .ok_or_else(|| Error::Compose(format!("unknown function: {name}")))?;
+    let env = ComposeEnv {
+      mesh_layout: &self.layout,
+      wires: &self.wires,
+      functions: &self.functions,
+    };
+    self
+      .cache
+      .get_or_compose_function(&def, def.input, &env, &mut Vec::new(), 0)
   }
 
   /// Declares a mesh variable, typed by its initial value.
@@ -134,6 +162,7 @@ impl Mesh {
     let env = ComposeEnv {
       mesh_layout: &self.layout,
       wires: &self.wires,
+      functions: &self.functions,
     };
     let wire = self
       .cache
@@ -164,6 +193,7 @@ impl Mesh {
       &ComposeEnv {
         mesh_layout: &self.layout,
         wires: &self.wires,
+        functions: &self.functions,
       },
     )
   }
@@ -188,6 +218,7 @@ impl Mesh {
     let env = ComposeEnv {
       mesh_layout: &next.layout,
       wires: &next.wires,
+      functions: &next.functions,
     };
     for instance in &self.instances {
       if !removed.contains(&instance.id) && instance.outcome.is_none() {
@@ -222,6 +253,7 @@ impl Mesh {
     self.prepared_calls = calls.clone();
     self.inline_calls.install(calls);
     self.wires = std::mem::take(&mut next.wires);
+    self.functions = std::mem::take(&mut next.functions);
     self.cache = std::mem::take(&mut next.cache);
   }
 
@@ -250,6 +282,7 @@ impl Mesh {
     let env = ComposeEnv {
       mesh_layout: &self.layout,
       wires: &self.wires,
+      functions: &self.functions,
     };
     if !wire.deps_valid(&env) {
       return Err(Error::Compose(format!(
@@ -491,13 +524,15 @@ fn step(
 
   let outcome = match result {
     Ok(Ok(Step::Suspend)) => return,
-    Ok(Ok(Step::Next(value))) if !instance.wire.looped => Outcome::Completed(value),
-    // A loop iteration or Restart keeps the instance and its state.
-    Ok(Ok(Step::Next(_) | Step::Restart)) => {
+    Ok(Ok(Step::Next(value) | Step::Return(value))) if !instance.wire.looped => {
+      Outcome::Completed(value)
+    }
+    // A loop iteration, a Return at the root or a Restart keeps the
+    // instance and its state.
+    Ok(Ok(Step::Next(_) | Step::Return(_) | Step::Restart)) => {
       instance.iteration += 1;
       return;
     }
-    Ok(Ok(Step::Return(value))) => Outcome::Completed(value),
     Ok(Ok(Step::Stop)) => Outcome::Stopped,
     Ok(Err(err)) => Outcome::Failed(err),
     Err(payload) => Outcome::Failed(Error::Activation(format!(

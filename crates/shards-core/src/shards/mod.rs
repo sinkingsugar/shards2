@@ -63,6 +63,10 @@ pub static PAUSE: ShardType = ShardType::new(PAUSE_DESC).implemented_by::<sl::Pa
 pub static SPAWN: ShardType = ShardType::new(SPAWN_DESC).implemented_by::<sl::Spawn>();
 pub static PROBE: ShardType = leaf_type::<leaf::Probe>();
 pub static REQUEST: ShardType = async_shard::async_type::<sim::Request>();
+pub static RETURN: ShardType = leaf_type::<leaf::Return>();
+/// The internal node behind a call to a script function
+/// ([`ShardDef::call`]); not in the catalog, never written by name.
+pub static CALL: ShardType = ShardType::new(CALL_DESC).implemented_by::<sl::Call>();
 
 /// Every shard type in this crate, for building a [`crate::Catalog`].
 pub static CATALOG: &[&ShardType] = &[
@@ -132,6 +136,7 @@ pub static CATALOG: &[&ShardType] = &[
   &DO,
   &PAUSE,
   &SPAWN,
+  &RETURN,
   &PROBE,
   &REQUEST,
 ];
@@ -505,13 +510,28 @@ pub(crate) fn compose_keep(
   args: &Args,
   ctx: &mut ComposeCtx<'_>,
 ) -> Result<Composed<(Binding, Var)>> {
+  if !ctx.allows_persistent_state() {
+    return Err(Error::Diagnostic(Box::new(
+      Diagnostic::new(
+        Phase::Compose,
+        "compose-error",
+        "keep-in-stateless",
+        format!(
+          "Keep declares persistent state, but {} is stateless; add `stateful: true` to its declaration, or hold the value in a local (`value | Var({})`)",
+          ctx.function_name().unwrap_or("this function"),
+          variable(args, "variable")
+        ),
+      )
+      .shard("Keep"),
+    )));
+  }
   if !ctx.at_top_level() {
     return Err(Error::Diagnostic(Box::new(
       Diagnostic::new(
         Phase::Compose,
         "compose-error",
         "keep-not-top-level",
-        "Keep declares state at a wire's top level; it cannot be inside a branch or loop"
+        "Keep declares state at the top level of a wire or function; it cannot be inside a branch or loop"
           .to_string(),
       )
       .shard("Keep"),
@@ -520,7 +540,7 @@ pub(crate) fn compose_keep(
   check_declaration(args, ctx, "Keep")?;
   let value = args.literal("value").expect("decoded value").clone();
   let binding = ctx
-    .declare_local(variable(args, "variable"), value.type_of(), true)
+    .declare_keep(variable(args, "variable"), value.type_of())
     .binding;
   Ok(Composed {
     compiled: (binding, value),
@@ -567,7 +587,10 @@ pub(crate) fn compose_update(args: &Args, ctx: &mut ComposeCtx<'_>) -> Result<Co
       format!("{name} is {}, cannot assign {input}", info.ty),
     ));
   }
-  ctx.mark_initialized(info.binding);
+  ctx.mark_initialized(info.binding).map_err(|e| {
+    e.in_shard("Update")
+      .with_param("variable", args.param_index("variable"))
+  })?;
   Ok(Composed {
     compiled: info.binding,
     output: input,
@@ -662,7 +685,10 @@ pub(crate) fn compose_counter(
       ),
     ));
   }
-  ctx.mark_initialized(info.binding);
+  ctx.mark_initialized(info.binding).map_err(|e| {
+    e.in_shard(shard)
+      .with_param("variable", args.param_index("variable"))
+  })?;
   Ok(Composed {
     compiled: info.binding,
     output: Type::int(),
@@ -996,6 +1022,20 @@ pub(crate) fn compose_once(
   args: &Args,
   ctx: &mut ComposeCtx<'_>,
 ) -> Result<Composed<CompiledFlow>> {
+  if !ctx.allows_persistent_state() {
+    return Err(Error::Diagnostic(Box::new(
+      Diagnostic::new(
+        Phase::Compose,
+        "compose-error",
+        "once-in-stateless",
+        format!(
+          "Once remembers that it ran, but {} is stateless and starts fresh on every invocation; add `stateful: true` to its declaration",
+          ctx.function_name().unwrap_or("this function")
+        ),
+      )
+      .shard("Once"),
+    )));
+  }
   let input = ctx.input();
   Ok(Composed {
     compiled: ctx.compose_flow(args.flow("action").expect("decoded Action flow"), input)?,
@@ -1029,9 +1069,13 @@ pub const SUB_DESC: ShardDesc = ShardDesc {
   lifetime: crate::signature::Lifetime::Stateless,
 };
 
-/// `SubFlow` composes like `Once`: the flow always runs, in the caller's frame.
+/// `SubFlow`: the flow always runs, in the caller's frame.
 pub(crate) fn compose_sub(args: &Args, ctx: &mut ComposeCtx<'_>) -> Result<Composed<CompiledFlow>> {
-  compose_once(args, ctx)
+  let input = ctx.input();
+  Ok(Composed {
+    compiled: ctx.compose_flow(args.flow("action").expect("decoded Action flow"), input)?,
+    output: input,
+  })
 }
 
 pub struct RepeatCompiled {
@@ -1311,6 +1355,65 @@ pub(crate) fn compose_spawn(
   })
 }
 
+pub const RETURN_DESC: ShardDesc = ShardDesc {
+  name: "Return",
+  version: 1,
+  summary: crate::shard_doc!("Ends the enclosing function or wire with the input as its output."),
+  help: crate::shard_doc!(
+    "Inside a function, the input becomes the function's output and must fit its declared `output` type. At the top level of a wire, it ends the iteration (a looped wire starts again; a non-looped one completes with the value). Nothing after it in the flow runs."
+  ),
+  params: Params::Declared(&[]),
+  input: InputDesc::Any,
+  output: OutputDesc::Dynamic(crate::shard_doc!("nothing: the flow ends here")),
+  targets: Targets::All,
+  aliases: &[],
+  effects: crate::signature::Effects::NONE,
+  lifetime: crate::signature::Lifetime::Stateless,
+};
+
+pub(crate) fn compose_return(ctx: &mut ComposeCtx<'_>) -> Result<Composed<()>> {
+  let input = ctx.input();
+  if let Some(expected) = ctx.return_type()
+    && !expected.accepts(input)
+  {
+    return Err(Error::Diagnostic(Box::new(
+      Diagnostic::new(
+        Phase::Compose,
+        "compose-error",
+        "return-type-mismatch",
+        format!(
+          "Return gives {input}, but {} declares output {expected}",
+          ctx.function_name().unwrap_or("the function")
+        ),
+      )
+      .shard("Return")
+      .types(Some(TypeRef::of(input)), vec![TypeRef::of(expected)]),
+    )));
+  }
+  Ok(Composed {
+    compiled: (),
+    output: Type::never(),
+  })
+}
+
+/// The call node's description: its parameters are the called function's,
+/// and compose checks them against that signature rather than this one.
+pub const CALL_DESC: ShardDesc = ShardDesc {
+  name: "Call",
+  version: 1,
+  summary: crate::shard_doc!("Calls a script function (written as the function's name)."),
+  help: crate::shard_doc!(
+    "Internal: a call site is written `Name(param: value ...)` and lowers to this node with the function's name attached."
+  ),
+  params: Params::Undeclared,
+  input: InputDesc::Any,
+  output: OutputDesc::Dynamic(crate::shard_doc!("the function's declared output")),
+  targets: Targets::All,
+  aliases: &[],
+  effects: crate::signature::Effects::NONE,
+  lifetime: crate::signature::Lifetime::Stateless,
+};
+
 // --- test instrumentation ---
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1542,6 +1645,18 @@ pub mod defs {
   }
   pub fn stop() -> ShardDef {
     ShardDef::new(&super::values::STOP, vec![])
+  }
+  /// `Log` without a prefix.
+  pub fn log() -> ShardDef {
+    ShardDef::new(&super::values::LOG, vec![])
+  }
+  /// `Return`.
+  pub fn return_() -> ShardDef {
+    ShardDef::new(&RETURN, vec![])
+  }
+  /// A call to the script function `name`.
+  pub fn call(name: &str, args: Vec<Arg>) -> ShardDef {
+    ShardDef::call(name, args)
   }
   pub fn sub(body: Vec<ShardDef>) -> ShardDef {
     ShardDef::new(&SUB, vec![ParamValue::Flow(body)])

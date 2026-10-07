@@ -15,6 +15,7 @@ pub mod describe;
 pub mod diagnostic;
 pub mod error;
 pub mod flow;
+pub mod function;
 #[doc(hidden)]
 pub mod inline;
 pub mod instance;
@@ -34,6 +35,7 @@ pub use compose::{CacheStats, CompiledWire, ComposeCache, ComposeCtx, WireDef};
 pub use describe::ShardDesc;
 pub use diagnostic::Diagnostic;
 pub use error::{Error, Result};
+pub use function::{FunctionDef, FunctionParam};
 pub use instance::{InstanceId, InstanceMemory, Outcome, WakeMode};
 pub use shard::{ActivationCtx, Composed, Flow, ParamValue, Shard, ShardDef, ShardType, Step};
 pub use stackless::Mesh;

@@ -328,6 +328,23 @@ impl LeafShard for IsMoreEqual {
   }
 }
 
+/// Ends the enclosing function or wire with the input.
+pub struct Return;
+
+impl LeafShard for Return {
+  type Compiled = ();
+  no_state!(());
+  const DESC: ShardDesc = RETURN_DESC;
+
+  fn compose(_: &Args, ctx: &mut ComposeCtx<'_>) -> Result<Composed<()>> {
+    compose_return(ctx)
+  }
+
+  fn activate(_: &(), _: &mut (), _: &mut impl LeafCtx, input: &Var) -> Result<Flow> {
+    Ok(Flow::Return(input.clone()))
+  }
+}
+
 /// Test instrumentation, see [`ProbeMode`].
 pub struct Probe;
 

@@ -96,6 +96,26 @@ fn nested(depth: usize) -> Vec<ShardDef> {
   }
   flow
 }
+/// Like `nested`, with a stateless function call at every fourth level:
+/// each invocation gets its own frame, and a pending leaf inside it must
+/// still resume directly.
+fn nested_with_functions(mesh: &mut Mesh, depth: usize) -> Vec<ShardDef> {
+  let mut flow = vec![ShardDef::new(&WAIT, vec![])];
+  for i in 0..depth {
+    flow = vec![match i % 4 {
+      0 => {
+        let name = format!("Level{i}");
+        mesh
+          .add_function(shards_core::FunctionDef::new(&name, Type::int(), Type::int()).body(flow));
+        call(&name, vec![])
+      }
+      1 => repeat(flow, val(Var::Int(1))),
+      2 => maybe(flow, Some(vec![konst(Var::Int(-1))])),
+      _ => sub(flow),
+    }];
+  }
+  flow
+}
 fn wire(flow: Vec<ShardDef>, looped: bool) -> WireDef {
   WireDef {
     name: "root".into(),
@@ -242,10 +262,7 @@ fn repeated_suspend_complete_cycles_do_not_grow_live_allocations_or_owners() {
   mesh.add_wire(wire(nested(32), true));
   let code = mesh.compile("root", Type::int()).unwrap();
   let id = mesh.spawn(&code, Var::Int(7)).unwrap();
-  mesh.tick();
-  let live = allocations::live();
-  let owners = Arc::strong_count(&gate);
-  for _ in 0..1000 {
+  let cycle = |mesh: &mut Mesh| {
     for _ in 0..3 {
       mesh.tick();
     }
@@ -254,6 +271,14 @@ fn repeated_suspend_complete_cycles_do_not_grow_live_allocations_or_owners() {
     gate.wakes.lock().unwrap().clear();
     gate.ready.store(false, Ordering::Relaxed);
     mesh.tick();
+  };
+  mesh.tick();
+  // The first exit populates the arena's free list; measure after it.
+  cycle(&mut mesh);
+  let live = allocations::live();
+  let owners = Arc::strong_count(&gate);
+  for _ in 0..1000 {
+    cycle(&mut mesh);
     assert_eq!(allocations::live(), live);
     assert_eq!(Arc::strong_count(&gate), owners);
   }
@@ -294,5 +319,68 @@ fn call_depth_limit_is_checked_before_entering_the_named_body() {
   let id = mesh.spawn(&code, Var::Int(7)).unwrap();
   mesh.tick();
   assert_eq!(gate.starts.load(Ordering::Relaxed), 1);
+  mesh.cancel(id);
+}
+
+#[test]
+fn function_frames_in_the_nesting_resume_pending_leaves_directly() {
+  for depth in [1, 4, 16, 32] {
+    let gate = gate();
+    let mut mesh = Mesh::new();
+    let flow = nested_with_functions(&mut mesh, depth);
+    mesh.add_wire(wire(flow, true));
+    let code = mesh.compile("root", Type::int()).unwrap();
+    let id = mesh.spawn(&code, Var::Int(7)).unwrap();
+    mesh.tick();
+    let dispatches = mesh.composite_dispatches();
+    assert!(dispatches >= depth as u64);
+    let owners = Arc::strong_count(&gate);
+    for _ in 0..100 {
+      mesh.tick();
+    }
+    assert_eq!(mesh.composite_dispatches(), dispatches, "depth {depth}");
+    assert_eq!(gate.starts.load(Ordering::Relaxed), 1);
+    assert_eq!(gate.polls.load(Ordering::Relaxed), 101);
+    assert_eq!(Arc::strong_count(&gate), owners);
+    // Completing through every level, invocation frames included, costs
+    // one dispatch per parent, and the next iteration enters fresh frames.
+    gate.ready.store(true, Ordering::Relaxed);
+    mesh.tick();
+    assert_eq!(mesh.composite_dispatches() - dispatches, depth as u64);
+    assert_eq!(gate.drops.load(Ordering::Relaxed), 1);
+    assert_eq!(gate.starts.load(Ordering::Relaxed), 1);
+    gate.ready.store(false, Ordering::Relaxed);
+    mesh.tick();
+    assert_eq!(gate.starts.load(Ordering::Relaxed), 2);
+    mesh.cancel(id);
+    assert_eq!(mesh.take_outcome(id), Some(Outcome::Cancelled));
+    assert_eq!(gate.drops.load(Ordering::Relaxed), 2);
+  }
+}
+
+#[cfg(not(target_os = "espidf"))]
+#[test]
+fn invocation_frames_are_released_on_every_exit() {
+  let gate = gate();
+  let mut mesh = Mesh::new();
+  let flow = nested_with_functions(&mut mesh, 32);
+  mesh.add_wire(wire(flow, true));
+  let code = mesh.compile("root", Type::int()).unwrap();
+  let id = mesh.spawn(&code, Var::Int(7)).unwrap();
+  mesh.tick();
+  let live = allocations::live();
+  let owners = Arc::strong_count(&gate);
+  for _ in 0..1000 {
+    for _ in 0..3 {
+      mesh.tick();
+    }
+    gate.ready.store(true, Ordering::Relaxed);
+    mesh.tick();
+    gate.wakes.lock().unwrap().clear();
+    gate.ready.store(false, Ordering::Relaxed);
+    mesh.tick();
+    assert_eq!(allocations::live(), live);
+    assert_eq!(Arc::strong_count(&gate), owners);
+  }
   mesh.cancel(id);
 }

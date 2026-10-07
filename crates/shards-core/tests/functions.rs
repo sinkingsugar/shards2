@@ -1,0 +1,830 @@
+//! Script functions at the core level (golden path §3 to §6, tests A to D,
+//! G and I): shared bodies, fresh locals, components, scope, mesh access and
+//! purity, through the definition helpers. The source syntax is covered by
+//! the frontend suite.
+
+use shards_core::shards::defs::*;
+use shards_core::shards::{ProbeEventKind, take_probe_events};
+use shards_core::{Arg, FunctionDef, Mesh, Outcome, ParamValue, ShardDef, Type, Var, WireDef};
+
+fn wire(name: &str, looped: bool, flow: Vec<ShardDef>) -> WireDef {
+  WireDef {
+    name: name.into(),
+    looped,
+    flow,
+  }
+}
+
+fn named(name: &str, value: ParamValue) -> Arg {
+  Arg::named(name, value)
+}
+
+/// Runs `root` (non-looped) to completion and returns its outcome and the
+/// log lines.
+fn run_logging(mesh: &mut Mesh, ticks: usize) -> (Outcome, Vec<String>) {
+  let root = mesh.compile("root", Type::none()).unwrap();
+  let id = mesh.spawn(&root, Var::None).unwrap();
+  let ((), lines) = shards_core::log::capture(|| {
+    mesh.run(ticks);
+  });
+  (mesh.take_outcome(id).expect("finished"), lines)
+}
+
+fn compile_error(mesh: &mut Mesh) -> shards_core::Diagnostic {
+  let err = mesh
+    .compile("root", Type::none())
+    .err()
+    .expect("compose error");
+  err.diagnostic().cloned().expect("structured diagnostic")
+}
+
+/// `@fn(Scale input: Float output: Float params: {factor: Float} { Math.Multiply(factor) })`.
+fn scale() -> FunctionDef {
+  FunctionDef::new("Scale", Type::float(), Type::float())
+    .param("factor", Type::float())
+    .body(vec![ShardDef::new(
+      &shards_core::shards::math::MULTIPLY,
+      vec![var("factor")],
+    )])
+}
+
+// A. Shared body, runtime parameters.
+#[test]
+fn a_call_site_shares_one_body_and_passes_runtime_arguments() {
+  let mut mesh = Mesh::new();
+  mesh.add_function(scale());
+  mesh.add_wire(wire(
+    "root",
+    false,
+    vec![
+      konst(Var::Float(3.0)),
+      call("Scale", vec![named("factor", val(Var::Float(2.0)))]),
+      log(),
+      konst(Var::Float(3.0)),
+      call("Scale", vec![named("factor", val(Var::Float(4.0)))]),
+      log(),
+    ],
+  ));
+  let (outcome, lines) = run_logging(&mut mesh, 10);
+  assert_eq!(outcome, Outcome::Completed(Var::Float(12.0)));
+  assert_eq!(lines, ["6", "12"]);
+  // One compose of Scale for two call sites; a different runtime argument
+  // composes nothing.
+  assert_eq!(mesh.cache_stats().function_composes, 1);
+}
+
+// B. No caller capture.
+#[test]
+fn a_function_does_not_see_the_callers_locals() {
+  let mut mesh = Mesh::new();
+  mesh
+    .add_function(FunctionDef::new("Bad", Type::int(), Type::int()).body(vec![add(var("secret"))]));
+  mesh.add_wire(wire(
+    "root",
+    false,
+    vec![konst(Var::Int(10)), bind("secret"), call("Bad", vec![])],
+  ));
+  let d = compile_error(&mut mesh);
+  assert_eq!(d.code, "unknown-variable");
+  assert_eq!(d.shard.as_deref(), Some("Math.Add"));
+  assert!(
+    d.message.contains("pass it as a parameter"),
+    "{}",
+    d.message
+  );
+  assert!(d.message.contains("params: {secret: Int}"), "{}", d.message);
+  assert_eq!(
+    d.path,
+    vec![
+      shards_core::diagnostic::PathStep::Wire("root".into()),
+      shards_core::diagnostic::PathStep::Shard {
+        index: 2,
+        name: "Bad".into()
+      },
+      shards_core::diagnostic::PathStep::Function("Bad".into()),
+      shards_core::diagnostic::PathStep::Shard {
+        index: 0,
+        name: "Math.Add".into()
+      },
+    ]
+  );
+}
+
+// C. Fresh locals, and init/cleanup once per invocation.
+#[test]
+fn a_stateless_function_starts_with_fresh_locals_each_invocation() {
+  take_probe_events();
+  let mut mesh = Mesh::new();
+  mesh.add_function(
+    FunctionDef::new("Count", Type::none(), Type::int()).body(vec![
+      probe("inner"),
+      konst(Var::Int(0)),
+      declare("n"),
+      pause(),
+      get("n"),
+      add(val(Var::Int(1))),
+      update("n"),
+      get("n"),
+    ]),
+  );
+  mesh.add_wire(wire(
+    "root",
+    false,
+    vec![repeat(vec![call("Count", vec![]), log()], val(Var::Int(3)))],
+  ));
+  let (outcome, lines) = run_logging(&mut mesh, 20);
+  assert_eq!(outcome, Outcome::Completed(Var::None));
+  assert_eq!(lines, ["1", "1", "1"]);
+  let events = take_probe_events();
+  let count = |kind| events.iter().filter(|e| e.kind == kind).count();
+  // Three invocations, each suspended once: instantiated and cleaned up
+  // three times, not six.
+  assert_eq!(count(ProbeEventKind::Instantiate), 3);
+  assert_eq!(count(ProbeEventKind::Cleanup), 3);
+  assert_eq!(count(ProbeEventKind::Activate), 3);
+}
+
+// D. Components.
+#[test]
+fn a_stateful_function_keeps_one_instance_per_call_site() {
+  let mut mesh = Mesh::new();
+  mesh.add_function(
+    FunctionDef::new("Counter", Type::none(), Type::int())
+      .param("step", Type::int())
+      .stateful()
+      .body(vec![
+        keep("n", Var::Int(0)),
+        get("n"),
+        add(var("step")),
+        update("n"),
+      ]),
+  );
+  mesh.add_wire(wire(
+    "root",
+    true,
+    vec![
+      call("Counter", vec![named("step", val(Var::Int(1)))]),
+      log(),
+      call("Counter", vec![named("step", val(Var::Int(10)))]),
+      log(),
+    ],
+  ));
+  let root = mesh.compile("root", Type::none()).unwrap();
+  let id = mesh.spawn(&root, Var::None).unwrap();
+  let ((), lines) = shards_core::log::capture(|| {
+    mesh.tick();
+    mesh.tick();
+  });
+  assert_eq!(lines, ["1", "10", "2", "20"]);
+  assert_eq!(mesh.cache_stats().function_composes, 1);
+  mesh.cancel(id);
+  assert_eq!(mesh.take_outcome(id), Some(Outcome::Cancelled));
+}
+
+#[test]
+fn keep_once_and_stateful_calls_need_a_stateful_owner() {
+  let mut mesh = Mesh::new();
+  mesh.add_function(
+    FunctionDef::new("Counter", Type::none(), Type::int())
+      .body(vec![keep("n", Var::Int(0)), get("n")]),
+  );
+  mesh.add_wire(wire("root", false, vec![call("Counter", vec![])]));
+  let d = compile_error(&mut mesh);
+  assert_eq!(
+    (d.code, d.shard.as_deref()),
+    ("keep-in-stateless", Some("Keep"))
+  );
+  assert!(d.message.contains("stateful: true"), "{}", d.message);
+
+  let mut mesh = Mesh::new();
+  mesh.add_function(
+    FunctionDef::new("Setup", Type::none(), Type::none())
+      .body(vec![once(vec![konst(Var::Int(1))])]),
+  );
+  mesh.add_wire(wire("root", false, vec![call("Setup", vec![])]));
+  assert_eq!(compile_error(&mut mesh).code, "once-in-stateless");
+
+  let mut mesh = Mesh::new();
+  mesh.add_function(
+    FunctionDef::new("Component", Type::none(), Type::none())
+      .stateful()
+      .body(vec![keep("n", Var::Int(0))]),
+  );
+  mesh.add_function(
+    FunctionDef::new("Plain", Type::none(), Type::none()).body(vec![call("Component", vec![])]),
+  );
+  mesh.add_wire(wire("root", false, vec![call("Plain", vec![])]));
+  let d = compile_error(&mut mesh);
+  assert_eq!(
+    (d.code, d.shard.as_deref()),
+    ("stateful-call-in-stateless", Some("Component"))
+  );
+  // A stateful caller may own it.
+  let mut mesh = Mesh::new();
+  mesh.add_function(
+    FunctionDef::new("Component", Type::none(), Type::int())
+      .stateful()
+      .body(vec![keep("n", Var::Int(0)), inc("n")]),
+  );
+  mesh.add_function(
+    FunctionDef::new("Owner", Type::none(), Type::int())
+      .stateful()
+      .body(vec![call("Component", vec![])]),
+  );
+  mesh.add_wire(wire(
+    "root",
+    false,
+    vec![
+      call("Owner", vec![]),
+      call("Owner", vec![]),
+      call("Owner", vec![]),
+    ],
+  ));
+  let (outcome, _) = run_logging(&mut mesh, 10);
+  // One call site of Owner at a time: the third Owner call site is its own
+  // component, so each site counts from 1.
+  assert_eq!(outcome, Outcome::Completed(Var::Int(1)));
+}
+
+#[test]
+fn a_component_at_one_site_counts_across_iterations_in_a_looped_owner() {
+  let mut mesh = Mesh::new();
+  mesh.add_function(
+    FunctionDef::new("Component", Type::none(), Type::int())
+      .stateful()
+      .body(vec![keep("n", Var::Int(0)), inc("n")]),
+  );
+  mesh.add_function(
+    FunctionDef::new("Owner", Type::none(), Type::int())
+      .stateful()
+      .body(vec![call("Component", vec![])]),
+  );
+  mesh.add_wire(wire("root", true, vec![call("Owner", vec![]), log()]));
+  let root = mesh.compile("root", Type::none()).unwrap();
+  mesh.spawn(&root, Var::None).unwrap();
+  let ((), lines) = shards_core::log::capture(|| {
+    mesh.run(3);
+  });
+  assert_eq!(lines, ["1", "2", "3"]);
+}
+
+// G. Stable parameters across suspension.
+#[test]
+fn parameters_are_snapshots_across_suspension() {
+  let mut mesh = Mesh::new();
+  mesh.declare_var("gain", Var::Int(2), true);
+  mesh.add_function(
+    FunctionDef::new("Later", Type::int(), Type::int())
+      .param("amount", Type::int())
+      .body(vec![pause(), add(var("amount"))]),
+  );
+  mesh.add_function(
+    FunctionDef::new("Apply", Type::int(), Type::int())
+      .uses(&["gain"])
+      .body(vec![call("Later", vec![named("amount", var("gain"))])]),
+  );
+  mesh.add_wire(wire(
+    "root",
+    false,
+    vec![konst(Var::Int(3)), call("Apply", vec![])],
+  ));
+  let root = mesh.compile("root", Type::none()).unwrap();
+  let id = mesh.spawn(&root, Var::None).unwrap();
+  mesh.tick(); // Suspended inside Later with amount = 2.
+  assert!(mesh.outcome(id).is_none());
+  mesh.set_var("gain", Var::Int(100));
+  mesh.run(5);
+  assert_eq!(mesh.take_outcome(id), Some(Outcome::Completed(Var::Int(5))));
+}
+
+// I. Effects and mesh access.
+#[test]
+fn mesh_access_is_declared_never_inferred() {
+  // A read without `uses`.
+  let mut mesh = Mesh::new();
+  mesh.declare_var("gain", Var::Int(2), true);
+  mesh
+    .add_function(FunctionDef::new("Read", Type::int(), Type::int()).body(vec![add(var("gain"))]));
+  mesh.add_wire(wire(
+    "root",
+    false,
+    vec![konst(Var::Int(1)), call("Read", vec![])],
+  ));
+  let d = compile_error(&mut mesh);
+  assert_eq!(d.code, "undeclared-mesh-access");
+  assert!(d.message.contains("uses: [gain]"), "{}", d.message);
+
+  // A write with `uses` only, and a read with `mutates` only.
+  let mut mesh = Mesh::new();
+  mesh.declare_var("count", Var::Int(0), true);
+  mesh.add_function(
+    FunctionDef::new("Write", Type::int(), Type::int())
+      .uses(&["count"])
+      .body(vec![update("count")]),
+  );
+  mesh.add_wire(wire(
+    "root",
+    false,
+    vec![konst(Var::Int(1)), call("Write", vec![])],
+  ));
+  let d = compile_error(&mut mesh);
+  assert_eq!(
+    (d.code, d.shard.as_deref()),
+    ("undeclared-mesh-access", Some("Update"))
+  );
+  assert!(d.message.contains("mutates: [count]"), "{}", d.message);
+  let mut mesh = Mesh::new();
+  mesh.declare_var("count", Var::Int(0), true);
+  mesh.add_function(
+    FunctionDef::new("Bump", Type::none(), Type::int())
+      .mutates(&["count"])
+      .body(vec![inc("count")]),
+  );
+  mesh.add_wire(wire("root", false, vec![call("Bump", vec![])]));
+  let d = compile_error(&mut mesh);
+  assert_eq!(d.code, "undeclared-mesh-access");
+  assert!(d.message.contains("uses: [count]"), "{}", d.message);
+
+  // Indirect access through another function must be declared too.
+  let mut mesh = Mesh::new();
+  mesh.declare_var("gain", Var::Int(2), true);
+  mesh.add_function(
+    FunctionDef::new("Read", Type::int(), Type::int())
+      .uses(&["gain"])
+      .body(vec![add(var("gain"))]),
+  );
+  mesh.add_function(
+    FunctionDef::new("Outer", Type::int(), Type::int()).body(vec![call("Read", vec![])]),
+  );
+  mesh.add_wire(wire(
+    "root",
+    false,
+    vec![konst(Var::Int(1)), call("Outer", vec![])],
+  ));
+  let d = compile_error(&mut mesh);
+  assert_eq!(
+    (d.code, d.shard.as_deref()),
+    ("undeclared-mesh-access", Some("Read"))
+  );
+  assert!(d.message.contains("Outer must declare"), "{}", d.message);
+
+  // Declared at every level: reads, writes and read-modify-write run, and
+  // the wire's inferred access reports them.
+  let mut mesh = Mesh::new();
+  mesh.declare_var("count", Var::Int(0), true);
+  mesh.add_function(
+    FunctionDef::new("Bump", Type::none(), Type::int())
+      .uses(&["count"])
+      .mutates(&["count"])
+      .body(vec![inc("count")]),
+  );
+  mesh.add_function(
+    FunctionDef::new("Outer", Type::none(), Type::int())
+      .uses(&["count"])
+      .mutates(&["count"])
+      .body(vec![call("Bump", vec![])]),
+  );
+  mesh.add_wire(wire(
+    "root",
+    false,
+    vec![call("Outer", vec![]), call("Outer", vec![])],
+  ));
+  let root = mesh.compile("root", Type::none()).unwrap();
+  assert_eq!(
+    root
+      .flow
+      .analysis
+      .mutates
+      .iter()
+      .map(|a| a.name.as_str())
+      .collect::<Vec<_>>(),
+    ["count"]
+  );
+  let (outcome, _) = run_logging(&mut mesh, 10);
+  assert_eq!(outcome, Outcome::Completed(Var::Int(2)));
+  assert_eq!(mesh.get_var("count"), Some(Var::Int(2)));
+}
+
+#[test]
+fn purity_is_a_checked_contract() {
+  let mut mesh = Mesh::new();
+  mesh.add_function(
+    FunctionDef::new("Now", Type::none(), Type::float())
+      .pure()
+      .body(vec![ShardDef::new(
+        &shards_core::shards::values::TIME_NOW,
+        vec![],
+      )]),
+  );
+  mesh.add_wire(wire("root", false, vec![call("Now", vec![])]));
+  let d = compile_error(&mut mesh);
+  assert_eq!((d.code, d.shard.as_deref()), ("not-pure", Some("Now")));
+  assert!(
+    d.message.contains("Time.Now has the effect `time`"),
+    "{}",
+    d.message
+  );
+
+  // An undescribed host shard has unknown effects: never pure.
+  let mut mesh = Mesh::new();
+  mesh.add_function(
+    FunctionDef::new("Host", Type::none(), Type::none())
+      .pure()
+      .body(vec![ShardDef::new(&UNKNOWN_EFFECTS, vec![])]),
+  );
+  mesh.add_wire(wire("root", false, vec![call("Host", vec![])]));
+  let d = compile_error(&mut mesh);
+  assert_eq!(d.code, "not-pure");
+  assert!(d.message.contains("`unknown`"), "{}", d.message);
+
+  // Suspension and mesh access are not pure either; arithmetic is.
+  let mut mesh = Mesh::new();
+  mesh.add_function(
+    FunctionDef::new("Wait", Type::none(), Type::none())
+      .pure()
+      .body(vec![pause()]),
+  );
+  mesh.add_wire(wire("root", false, vec![call("Wait", vec![])]));
+  assert!(compile_error(&mut mesh).message.contains("`suspends`"));
+  let mut mesh = Mesh::new();
+  mesh.declare_var("gain", Var::Int(2), true);
+  mesh.add_function(
+    FunctionDef::new("Read", Type::int(), Type::int())
+      .pure()
+      .uses(&["gain"])
+      .body(vec![add(var("gain"))]),
+  );
+  mesh.add_wire(wire(
+    "root",
+    false,
+    vec![konst(Var::Int(1)), call("Read", vec![])],
+  ));
+  assert!(
+    compile_error(&mut mesh)
+      .message
+      .contains("reads mesh variable gain")
+  );
+  let mut mesh = Mesh::new();
+  mesh.add_function(scale().pure());
+  mesh.add_wire(wire(
+    "root",
+    false,
+    vec![
+      konst(Var::Float(1.5)),
+      call("Scale", vec![named("factor", val(Var::Float(2.0)))]),
+    ],
+  ));
+  assert_eq!(
+    run_logging(&mut mesh, 5).0,
+    Outcome::Completed(Var::Float(3.0))
+  );
+}
+
+/// A host shard that declares nothing: unknown effects.
+static UNKNOWN_EFFECTS: shards_core::ShardType =
+  shards_core::shards::leaf::leaf_type::<Undeclared>();
+struct Undeclared;
+impl shards_core::shards::leaf::LeafShard for Undeclared {
+  type Compiled = ();
+  type State = ();
+  const DESC: shards_core::ShardDesc = shards_core::ShardDesc::undocumented("Host.Undeclared", 1);
+  fn compose(
+    _: &shards_core::Args,
+    ctx: &mut shards_core::ComposeCtx<'_>,
+  ) -> shards_core::Result<shards_core::Composed<()>> {
+    Ok(shards_core::Composed {
+      compiled: (),
+      output: ctx.input(),
+    })
+  }
+  fn instantiate(_: &(), _: &mut shards_core::instance::InstanceCtx) -> shards_core::Result<()> {
+    Ok(())
+  }
+  fn activate(
+    _: &(),
+    _: &mut (),
+    _: &mut impl shards_core::instance::LeafCtx,
+    input: &Var,
+  ) -> shards_core::Result<shards_core::Flow> {
+    Ok(shards_core::Flow::Next(input.clone()))
+  }
+}
+
+#[test]
+fn arguments_are_checked_against_the_signature() {
+  let cases: Vec<(Vec<Arg>, &str)> = vec![
+    (
+      vec![named("factro", val(Var::Float(2.0)))],
+      "unknown-argument",
+    ),
+    (vec![], "missing-argument"),
+    (
+      vec![named("factor", val(Var::Int(2)))],
+      "wrong-argument-type",
+    ),
+    (
+      vec![
+        named("factor", val(Var::Float(2.0))),
+        named("factor", val(Var::Float(2.0))),
+      ],
+      "duplicate-argument",
+    ),
+    (
+      vec![
+        Arg::pos(val(Var::Float(2.0))),
+        Arg::pos(val(Var::Float(2.0))),
+      ],
+      "too-many-arguments",
+    ),
+    (
+      vec![named("factor", ParamValue::Flow(vec![]))],
+      "wrong-argument-form",
+    ),
+  ];
+  for (args, code) in cases {
+    let mut mesh = Mesh::new();
+    mesh.add_function(scale());
+    mesh.add_wire(wire(
+      "root",
+      false,
+      vec![konst(Var::Float(3.0)), call("Scale", args)],
+    ));
+    let d = compile_error(&mut mesh);
+    assert_eq!((d.code, d.shard.as_deref()), (code, Some("Scale")));
+  }
+  // The input type, the output type and an unknown function.
+  let mut mesh = Mesh::new();
+  mesh.add_function(scale());
+  mesh.add_wire(wire(
+    "root",
+    false,
+    vec![
+      konst(Var::Int(3)),
+      call("Scale", vec![Arg::pos(val(Var::Float(2.0)))]),
+    ],
+  ));
+  let d = compile_error(&mut mesh);
+  assert_eq!(
+    (d.kind, d.shard.as_deref()),
+    ("input-type-mismatch", Some("Scale"))
+  );
+  let mut mesh = Mesh::new();
+  mesh.add_function(
+    FunctionDef::new("Wrong", Type::none(), Type::int()).body(vec![konst(Var::string("x"))]),
+  );
+  mesh.add_wire(wire("root", false, vec![call("Wrong", vec![])]));
+  let d = compile_error(&mut mesh);
+  assert_eq!(
+    (d.code, d.shard.as_deref()),
+    ("output-type-mismatch", Some("Wrong"))
+  );
+  let mut mesh = Mesh::new();
+  mesh.add_wire(wire("root", false, vec![call("Nope", vec![])]));
+  assert_eq!(compile_error(&mut mesh).code, "unknown-function");
+  // Defaults are typed literals; positional arguments follow the order.
+  let mut mesh = Mesh::new();
+  mesh.add_function(
+    FunctionDef::new("Offset", Type::int(), Type::int())
+      .param("by", Type::int())
+      .param_default("times", Var::Int(1))
+      .body(vec![
+        add(var("by")),
+        ShardDef::new(&shards_core::shards::math::MULTIPLY, vec![var("times")]),
+      ]),
+  );
+  mesh.add_wire(wire(
+    "root",
+    false,
+    vec![
+      konst(Var::Int(1)),
+      call("Offset", vec![Arg::pos(val(Var::Int(2)))]),
+      call(
+        "Offset",
+        vec![Arg::pos(val(Var::Int(2))), Arg::pos(val(Var::Int(10)))],
+      ),
+    ],
+  ));
+  assert_eq!(
+    run_logging(&mut mesh, 5).0,
+    Outcome::Completed(Var::Int(50))
+  );
+}
+
+#[test]
+fn return_exits_the_nearest_function_and_input_is_the_entry_value() {
+  let mut mesh = Mesh::new();
+  mesh.add_function(
+    FunctionDef::new("Early", Type::int(), Type::int()).body(vec![
+      add(val(Var::Int(1))),
+      when(
+        vec![is_more_equal(val(Var::Int(10)))],
+        vec![get("input"), return_()],
+      ),
+      add(val(Var::Int(100))),
+    ]),
+  );
+  mesh.add_wire(wire(
+    "root",
+    false,
+    vec![
+      konst(Var::Int(1)),
+      call("Early", vec![]),
+      log(),
+      konst(Var::Int(20)),
+      call("Early", vec![]),
+      log(),
+    ],
+  ));
+  let (outcome, lines) = run_logging(&mut mesh, 10);
+  assert_eq!(lines, ["102", "20"]);
+  assert_eq!(outcome, Outcome::Completed(Var::Int(20)));
+  // Return's value must fit the declared output.
+  let mut mesh = Mesh::new();
+  mesh.add_function(
+    FunctionDef::new("Bad", Type::int(), Type::int())
+      .body(vec![konst(Var::string("x")), return_()]),
+  );
+  mesh.add_wire(wire(
+    "root",
+    false,
+    vec![konst(Var::Int(1)), call("Bad", vec![])],
+  ));
+  let d = compile_error(&mut mesh);
+  assert_eq!(
+    (d.code, d.shard.as_deref()),
+    ("return-type-mismatch", Some("Return"))
+  );
+}
+
+#[test]
+fn return_at_a_looped_root_ends_the_iteration() {
+  let mut mesh = Mesh::new();
+  mesh.add_wire(wire(
+    "root",
+    true,
+    vec![
+      keep("n", Var::Int(0)),
+      inc("n"),
+      log(),
+      return_(),
+      konst(Var::string("never")),
+      log(),
+    ],
+  ));
+  let root = mesh.compile("root", Type::none()).unwrap();
+  let id = mesh.spawn(&root, Var::None).unwrap();
+  let ((), lines) = shards_core::log::capture(|| {
+    mesh.run(2);
+  });
+  assert_eq!(lines, ["1", "2"]);
+  assert!(mesh.outcome(id).is_none());
+  mesh.add_wire(wire(
+    "once",
+    false,
+    vec![konst(Var::Int(7)), return_(), konst(Var::Int(8))],
+  ));
+  let once = mesh.compile("once", Type::none()).unwrap();
+  let id = mesh.spawn(&once, Var::None).unwrap();
+  mesh.run(2);
+  assert_eq!(mesh.take_outcome(id), Some(Outcome::Completed(Var::Int(7))));
+}
+
+#[test]
+fn recursion_is_rejected_at_compose_until_m7() {
+  let mut mesh = Mesh::new();
+  mesh.add_function(
+    FunctionDef::new("Down", Type::int(), Type::int()).body(vec![call("Down", vec![])]),
+  );
+  mesh.add_wire(wire(
+    "root",
+    false,
+    vec![konst(Var::Int(1)), call("Down", vec![])],
+  ));
+  assert_eq!(compile_error(&mut mesh).code, "recursive-function");
+  let mut mesh = Mesh::new();
+  mesh.add_function(
+    FunctionDef::new("Even", Type::int(), Type::int())
+      .stateful()
+      .body(vec![call("Odd", vec![])]),
+  );
+  mesh.add_function(
+    FunctionDef::new("Odd", Type::int(), Type::int())
+      .stateful()
+      .body(vec![call("Even", vec![])]),
+  );
+  mesh.add_wire(wire(
+    "root",
+    false,
+    vec![konst(Var::Int(1)), call("Even", vec![])],
+  ));
+  let d = compile_error(&mut mesh);
+  assert_eq!(
+    (d.code, d.shard.as_deref()),
+    ("recursive-stateful", Some("Even"))
+  );
+}
+
+#[test]
+fn the_call_depth_limit_applies_to_function_entries() {
+  let mut mesh = Mesh::new();
+  mesh.set_max_call_depth(2);
+  mesh.add_function(
+    FunctionDef::new("C", Type::int(), Type::int()).body(vec![add(val(Var::Int(1)))]),
+  );
+  mesh.add_function(FunctionDef::new("B", Type::int(), Type::int()).body(vec![call("C", vec![])]));
+  mesh.add_function(FunctionDef::new("A", Type::int(), Type::int()).body(vec![call("B", vec![])]));
+  mesh.add_wire(wire(
+    "root",
+    false,
+    vec![konst(Var::Int(0)), call("A", vec![])],
+  ));
+  let (outcome, _) = run_logging(&mut mesh, 5);
+  let Outcome::Failed(err) = outcome else {
+    panic!("expected the depth limit, got {outcome:?}");
+  };
+  let d = err.diagnostic().unwrap();
+  assert_eq!((d.code, d.shard.as_deref()), ("recursion-limit", Some("C")));
+  mesh.set_max_call_depth(3);
+  assert_eq!(run_logging(&mut mesh, 5).0, Outcome::Completed(Var::Int(1)));
+}
+
+#[test]
+fn cancellation_cleans_an_in_flight_stateless_invocation_once() {
+  take_probe_events();
+  let mut mesh = Mesh::new();
+  mesh.add_function(
+    FunctionDef::new("Slow", Type::none(), Type::none())
+      .body(vec![probe("inner"), pause_secs(10.0)]),
+  );
+  mesh.add_wire(wire(
+    "root",
+    false,
+    vec![probe("outer"), call("Slow", vec![])],
+  ));
+  let root = mesh.compile("root", Type::none()).unwrap();
+  let id = mesh.spawn(&root, Var::None).unwrap();
+  mesh.tick();
+  mesh.cancel(id);
+  let events = take_probe_events();
+  for tag in ["inner", "outer"] {
+    assert_eq!(
+      events
+        .iter()
+        .filter(|e| e.tag == tag && e.kind == ProbeEventKind::Cleanup)
+        .count(),
+      1,
+      "{tag}"
+    );
+  }
+  assert_eq!(mesh.take_outcome(id), Some(Outcome::Cancelled));
+}
+
+#[test]
+fn a_failing_invocation_is_cleaned_and_maybe_catches_it() {
+  take_probe_events();
+  let mut mesh = Mesh::new();
+  mesh.add_function(
+    FunctionDef::new("Fails", Type::int(), Type::int()).body(vec![
+      probe("inner"),
+      konst(Var::Seq(std::sync::Arc::new(vec![]))),
+      take(val(Var::Int(3))),
+      konst(Var::Int(1)),
+    ]),
+  );
+  mesh.add_wire(wire(
+    "root",
+    true,
+    vec![
+      keep("n", Var::Int(0)),
+      inc("n"),
+      maybe(vec![call("Fails", vec![])], None),
+      get("n"),
+      log(),
+    ],
+  ));
+  let root = mesh.compile("root", Type::none()).unwrap();
+  mesh.spawn(&root, Var::None).unwrap();
+  let ((), lines) = shards_core::log::capture(|| {
+    mesh.run(2);
+  });
+  assert_eq!(lines, ["1", "2"]);
+  let events = take_probe_events();
+  let count = |kind| events.iter().filter(|e| e.kind == kind).count();
+  assert_eq!(count(ProbeEventKind::Instantiate), 2);
+  assert_eq!(count(ProbeEventKind::Cleanup), 2);
+}
+
+#[test]
+fn uncalled_functions_can_be_checked_on_their_own() {
+  let mut mesh = Mesh::new();
+  mesh.add_function(scale());
+  let compiled = mesh.compile_function("Scale").unwrap();
+  assert_eq!(compiled.def.name, "Scale");
+  let signature = compiled.signature();
+  assert_eq!(signature.params.as_ref().map(Vec::len), Some(1));
+  assert!(!signature.effects.suspends);
+  mesh
+    .add_function(FunctionDef::new("Bad", Type::int(), Type::int()).body(vec![add(var("secret"))]));
+  let err = mesh.compile_function("Bad").err().expect("compose error");
+  assert_eq!(err.diagnostic().unwrap().code, "unknown-variable");
+}

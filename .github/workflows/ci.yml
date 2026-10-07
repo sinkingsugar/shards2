@@ -47,11 +47,12 @@ jobs:
       - run: cargo clippy -p shards-core -p shards-lang --target wasm32-wasip1 --lib --tests -- -D warnings
       - name: Run acceptance, metadata and frontend tests on wasm
         run: |
-          cargo test -p shards-core --test prototype --test metadata --test trampoline --test host_contract --test registry --target wasm32-wasip1 --no-run
+          cargo test -p shards-core --test prototype --test metadata --test trampoline --test host_contract --test registry --test functions --target wasm32-wasip1 --no-run
           cargo test -p shards-lang --test lang --target wasm32-wasip1 --no-run
           node scripts/run-wasi.mjs "$(ls -t target/wasm32-wasip1/debug/deps/prototype-*.wasm | head -1)"
           node scripts/run-wasi.mjs "$(ls -t target/wasm32-wasip1/debug/deps/metadata-*.wasm | head -1)"
           node scripts/run-wasi.mjs "$(ls -t target/wasm32-wasip1/debug/deps/trampoline-*.wasm | head -1)"
           node scripts/run-wasi.mjs "$(ls -t target/wasm32-wasip1/debug/deps/host_contract-*.wasm | head -1)"
           node scripts/run-wasi.mjs "$(ls -t target/wasm32-wasip1/debug/deps/registry-*.wasm | head -1)"
+          node scripts/run-wasi.mjs "$(ls -t target/wasm32-wasip1/debug/deps/functions-*.wasm | head -1)"
           node scripts/run-wasi.mjs "$(ls -t target/wasm32-wasip1/debug/deps/lang-*.wasm | head -1)"

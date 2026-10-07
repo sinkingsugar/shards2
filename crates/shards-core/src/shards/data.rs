@@ -248,7 +248,10 @@ impl LeafShard for Push {
         message,
       ));
     }
-    ctx.mark_initialized(info.binding);
+    ctx.mark_initialized(info.binding).map_err(|e| {
+      e.in_shard(PUSH_DESC.name)
+        .with_param("variable", args.param_index("variable"))
+    })?;
     Ok(Composed {
       compiled: info.binding,
       output: input,

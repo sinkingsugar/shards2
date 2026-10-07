@@ -53,6 +53,7 @@ fn source_step_key(step: &PathStep) -> (u8, usize, &str) {
     PathStep::Shard { index, name } => (1, *index, name),
     PathStep::Param(name) => (2, 0, name),
     PathStep::Item(index) => (3, *index, ""),
+    PathStep::Function(name) => (4, 0, name),
   }
 }
 
@@ -101,12 +102,14 @@ impl SourceMap {
     let k = d
       .path
       .iter()
-      .rposition(|s| matches!(s, PathStep::Wire(_)))?;
-    let PathStep::Wire(wire) = &d.path[k] else {
-      return None;
+      .rposition(|s| matches!(s, PathStep::Wire(_) | PathStep::Function(_)))?;
+    let key = match &d.path[k] {
+      PathStep::Wire(wire) => wire.clone(),
+      PathStep::Function(function) => function_key(function),
+      _ => return None,
     };
-    let mut span = self.wires.get(wire).copied();
-    let Some(&root) = self.roots.get(wire) else {
+    let mut span = self.wires.get(&key).copied();
+    let Some(&root) = self.roots.get(&key) else {
       return span;
     };
     let mut node = root;
@@ -120,6 +123,11 @@ impl SourceMap {
     }
     span
   }
+}
+
+/// Functions and wires share the source map's tables under distinct keys.
+fn function_key(name: &str) -> String {
+  format!("@fn {name}")
 }
 
 #[derive(Debug)]

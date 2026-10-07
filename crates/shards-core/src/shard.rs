@@ -409,11 +409,14 @@ fn compose_erased<S: Shard>(
   })
 }
 
-/// One shard in a wire definition: its kind and its arguments.
+/// One shard in a wire definition: its kind and its arguments. A call to
+/// a script function (golden path D2: called exactly like a shard) names
+/// the function; its `ty` is then the internal `Call` shard.
 #[derive(Clone)]
 pub struct ShardDef {
   pub ty: &'static ShardType,
   pub args: Vec<Arg>,
+  pub function: Option<Arc<str>>,
 }
 
 impl ShardDef {
@@ -422,12 +425,37 @@ impl ShardDef {
     ShardDef {
       ty,
       args: params.into_iter().map(Arg::pos).collect(),
+      function: None,
     }
   }
 
   /// A definition with positional and/or named arguments.
   pub fn with_args(ty: &'static ShardType, args: Vec<Arg>) -> ShardDef {
-    ShardDef { ty, args }
+    ShardDef {
+      ty,
+      args,
+      function: None,
+    }
+  }
+
+  /// A call to the script function `name` with literal or variable
+  /// arguments (computed arguments are hoisted before the call by the
+  /// frontend).
+  pub fn call(name: &str, args: Vec<Arg>) -> ShardDef {
+    ShardDef {
+      ty: &crate::shards::CALL,
+      args,
+      function: Some(Arc::from(name)),
+    }
+  }
+
+  /// The name diagnostics and occurrence paths use: the function's for a
+  /// call, else the shard's.
+  pub fn name(&self) -> &str {
+    match &self.function {
+      Some(name) => name,
+      None => self.ty.desc.name,
+    }
   }
 }
 
@@ -435,6 +463,7 @@ impl PartialEq for ShardDef {
   fn eq(&self, other: &ShardDef) -> bool {
     self.ty.desc.name == other.ty.desc.name
       && self.ty.desc.version == other.ty.desc.version
+      && self.function == other.function
       && self.args == other.args
   }
 }
@@ -445,12 +474,18 @@ impl Hash for ShardDef {
   fn hash<H: Hasher>(&self, state: &mut H) {
     self.ty.desc.name.hash(state);
     self.ty.desc.version.hash(state);
+    self.function.hash(state);
     self.args.hash(state);
   }
 }
 
 impl fmt::Debug for ShardDef {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-    write!(f, "{}{:?}", self.ty.desc.name, self.args)
+    write!(f, "{}{:?}", self.name(), self.args)
   }
+}
+
+/// Erases a compiled value into a flow node of shard `S`.
+pub(crate) fn erase<S: Shard>(compiled: S::Compiled) -> Arc<dyn CompiledNode> {
+  Arc::new(Node::<S>(compiled))
 }

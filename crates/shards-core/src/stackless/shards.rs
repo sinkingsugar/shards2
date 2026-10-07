@@ -4,6 +4,7 @@ use crate::args::Args;
 use crate::compose::{CompiledWire, ComposeCtx};
 use crate::error::Result;
 use crate::flow::CompiledFlow;
+use crate::function::CallCompiled;
 use crate::instance::InstanceCtx;
 use crate::shard::{ActivationCtx, Composed, Shard, Step};
 use crate::shards::control;
@@ -80,6 +81,37 @@ impl Shard for Pause {
         Ok(Step::Next(input.clone()))
       }
     }
+  }
+}
+
+/// A call site. Composed by `ComposeCtx::compose_call` (never through this
+/// shard's own compose); the engine allocates the invocation frame at
+/// entry and owns its continuation.
+pub struct Call;
+
+impl Shard for Call {
+  type Compiled = CallCompiled;
+  type State = ();
+  const NAME: &'static str = CALL_DESC.name;
+  const VERSION: u32 = CALL_DESC.version;
+
+  fn compose(_: &Args, _: Ctx) -> Result<Composed<CallCompiled>> {
+    Err(crate::Error::Diagnostic(Box::new(
+      crate::diagnostic::Diagnostic::new(
+        crate::diagnostic::Phase::Compose,
+        "compose-error",
+        "not-a-shard",
+        "Call is the internal call node; call a function by its name (`ShardDef::call`)",
+      )
+      .shard("Call"),
+    )))
+  }
+  leaf_instantiate!(CallCompiled);
+  fn control(c: &CallCompiled) -> Option<Control<'_>> {
+    Some(Control::Call(c))
+  }
+  fn activate(_: &CallCompiled, _: &mut (), _: &mut ActivationCtx<'_>, _: &Var) -> Result<Step> {
+    unreachable!("calls are dispatched by the runner")
   }
 }
 

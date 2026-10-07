@@ -11,12 +11,14 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use crate::args::{Args, decode};
-use crate::diagnostic::PathStep;
-use crate::error::Result;
+use crate::diagnostic::{Diagnostic, PathStep, Phase, TypeRef};
+use crate::error::{Error, Result};
 use crate::flow::CompiledFlow;
+use crate::function::{CallCompiled, CompiledFunction, FunctionDef, KeepSlot};
 use crate::reload::{InlineCall, InlineKey, InlineRegistry, InlineSignature, SiteStep};
-use crate::shard::{ShardDef, ShardType};
-use crate::signature::{Analysis, Occurrence};
+use crate::shard::{CompiledNode, Composed, ParamValue, ShardDef, ShardType};
+use crate::shards::Operand;
+use crate::signature::{Analysis, Effects, Lifetime, Occurrence};
 use crate::types::Type;
 
 /// A wire as the loader produces it.
@@ -128,12 +130,18 @@ pub enum Dep {
     name: String,
     def: Option<Arc<WireDef>>,
   },
+  /// A function definition called by name, or its absence.
+  Function {
+    name: String,
+    def: Option<Arc<FunctionDef>>,
+  },
 }
 
 /// What compose may read besides parameters and input type.
 pub struct ComposeEnv<'a> {
   pub mesh_layout: &'a FrameLayout,
   pub wires: &'a HashMap<String, WireDef>,
+  pub functions: &'a HashMap<String, FunctionDef>,
 }
 
 impl Dep {
@@ -141,8 +149,18 @@ impl Dep {
     match self {
       Dep::MeshVar { name, found } => env.mesh_layout.lookup(name) == *found,
       Dep::Wire { name, def } => env.wires.get(name) == def.as_deref(),
+      Dep::Function { name, def } => env.functions.get(name) == def.as_deref(),
     }
   }
+}
+
+/// What the flow being composed belongs to: a wire (which sees the whole
+/// mesh) or a function body (which sees only what its signature declares,
+/// golden path §3.2).
+#[derive(Clone)]
+pub(crate) enum Owner {
+  Wire,
+  Function(Arc<FunctionDef>),
 }
 
 /// A compiled wire: shared, immutable, and free of per-instance data.
@@ -221,6 +239,9 @@ pub struct ComposeCtx<'a> {
   /// How many blocks (nested flows of shards) enclose the shard being
   /// composed within its wire body; 0 at a wire's top level.
   blocks: usize,
+  owner: Owner,
+  /// `Keep` slots declared so far (a stateful function's persistent state).
+  keeps: Vec<KeepSlot>,
 }
 
 /// How deeply flows may nest, counting wires inlined by `Do` (they run in
@@ -237,7 +258,9 @@ impl ComposeCtx<'_> {
   }
 
   /// Resolves a variable: the local frame first, then the mesh frame. Mesh
-  /// lookups are recorded as dependencies, including absences.
+  /// lookups are recorded as dependencies, including absences. Inside a
+  /// function body only mesh variables declared in `uses` or `mutates` are
+  /// visible; there is no fallback from an unknown local to the mesh.
   pub fn var(&mut self, name: &str) -> Option<VarInfo> {
     if let Some(slot) = self.locals.lookup(name) {
       return Some(VarInfo {
@@ -246,6 +269,11 @@ impl ComposeCtx<'_> {
         mutable: slot.mutable,
         initialized: self.initialized[slot.index],
       });
+    }
+    if let Owner::Function(def) = &self.owner
+      && !def.declares(name)
+    {
+      return None;
     }
     let found = self.env.mesh_layout.lookup(name);
     let dep = Dep::MeshVar {
@@ -267,12 +295,42 @@ impl ComposeCtx<'_> {
   pub fn visible_names(&self) -> Vec<String> {
     let mut names = self.locals.names();
     for name in self.env.mesh_layout.names() {
-      if !names.contains(&name) {
+      let declared = match &self.owner {
+        Owner::Wire => true,
+        Owner::Function(def) => def.declares(&name),
+      };
+      if declared && !names.contains(&name) {
         names.push(name);
       }
     }
     names.sort();
     names
+  }
+
+  /// The declared output type when composing a function body: what
+  /// `Return` must produce. `None` in a wire.
+  pub fn return_type(&self) -> Option<Type> {
+    match &self.owner {
+      Owner::Wire => None,
+      Owner::Function(def) => Some(def.output),
+    }
+  }
+
+  /// Whether `Keep` and `Once` may declare persistent state here: in a
+  /// wire, or in a function declared `stateful: true`.
+  pub fn allows_persistent_state(&self) -> bool {
+    match &self.owner {
+      Owner::Wire => true,
+      Owner::Function(def) => def.stateful,
+    }
+  }
+
+  /// The function being composed, if any (for messages).
+  pub fn function_name(&self) -> Option<&str> {
+    match &self.owner {
+      Owner::Wire => None,
+      Owner::Function(def) => Some(&def.name),
+    }
   }
 
   /// Whether the shard being composed is at its wire body's top level,
@@ -310,6 +368,17 @@ impl ComposeCtx<'_> {
     };
     match self.var(name) {
       None => {
+        if let Owner::Function(def) = &self.owner
+          && self.env.mesh_layout.lookup(name).is_some()
+        {
+          return variable_error(
+            "undeclared-mesh-access",
+            format!(
+              "{name} is a mesh variable that {} does not declare; add `uses: [{name}]` to read it",
+              def.name
+            ),
+          );
+        }
         let near = crate::diagnostic::closest(name, self.visible_names(), 3);
         variable_error("unknown-variable", format!("unknown variable {name}")).map_err(
           |e: crate::Error| match e {
@@ -329,6 +398,16 @@ impl ComposeCtx<'_> {
       ),
       Some(info) => {
         if matches!(info.binding, Binding::Mesh(_)) {
+          if let Owner::Function(def) = &self.owner
+            && !def.may_read(name)
+          {
+            return variable_error(
+              "undeclared-mesh-access",
+              format!(
+                "{name} is declared in `mutates` only; reading it needs `uses: [{name}]` as well"
+              ),
+            );
+          }
           self.analysis.access(name, info.ty, false);
         }
         Ok(info)
@@ -350,15 +429,49 @@ impl ComposeCtx<'_> {
     }
   }
 
-  /// Records that the shard being composed assigns this variable.
-  pub fn mark_initialized(&mut self, binding: Binding) {
+  /// Records that the shard being composed assigns this variable. Inside a
+  /// function body a mesh variable may be assigned only when declared in
+  /// `mutates` (`undeclared-mesh-access` otherwise; the caller names the
+  /// shard with [`crate::Error::in_shard`]).
+  pub fn mark_initialized(&mut self, binding: Binding) -> Result<()> {
     if let Binding::Mesh(i) = binding {
       let (name, slot) = &self.env.mesh_layout.slots[i];
+      if let Owner::Function(def) = &self.owner
+        && !def.may_write(name)
+      {
+        return Err(Error::Diagnostic(Box::new(Diagnostic::new(
+          Phase::Compose,
+          "compose-error",
+          "undeclared-mesh-access",
+          format!(
+            "{name} is a mesh variable that {} may not assign; add `mutates: [{name}]` to write it",
+            def.name
+          ),
+        ))));
+      }
       self.analysis.access(name, slot.ty, true);
     }
     if let Binding::Local(i) = binding {
       self.initialized[i] = true;
     }
+    Ok(())
+  }
+
+  /// Declares a `Keep` slot: a mutable local that a stateful owner retains
+  /// between invocations (and across reloads, by name and type).
+  pub fn declare_keep(&mut self, name: &str, ty: Type) -> VarInfo {
+    let info = self.declare_local(name, ty, true);
+    if let (Binding::Local(slot), Some(PathStep::Shard { index, .. })) =
+      (info.binding, self.diagnostic_path.last())
+    {
+      self.keeps.push(KeepSlot {
+        name: name.to_string(),
+        slot,
+        ty,
+        node: *index,
+      });
+    }
+    info
   }
 
   /// Like [`ComposeCtx::compose_flow`], for a flow that might not run (a
@@ -484,7 +597,7 @@ impl ComposeCtx<'_> {
       self.next_flow = 0;
       self.diagnostic_path.push(PathStep::Shard {
         index,
-        name: def.ty.name().into(),
+        name: def.name().into(),
       });
       let node_input = self.input;
       let parent_analysis = std::mem::replace(
@@ -495,27 +608,30 @@ impl ComposeCtx<'_> {
           ..Analysis::default()
         },
       );
-      let composed = decode(&def.ty.desc, &def.args).and_then(|args| {
-        check_input(def.ty, self.input)?;
-        let args = Arc::new(args);
-        let parent_args = self.current_args.replace(args.clone());
-        let result = def.ty.compose_node(&args, self).map_err(|err| {
-          // An error from a nested flow or wire: name the parameter
-          // holding it.
-          match self.failed_child.take().and_then(|c| args.param_of(&c)) {
-            Some((param, item)) => {
-              let err = match item {
-                Some(i) => err.prefix_path(PathStep::Item(i)),
-                None => err,
-              };
-              err.prefix_path(PathStep::Param(param.to_string()))
+      let composed = match &def.function {
+        Some(function) => self.compose_call(def, function),
+        None => decode(&def.ty.desc, &def.args).and_then(|args| {
+          check_input(def.ty, self.input)?;
+          let args = Arc::new(args);
+          let parent_args = self.current_args.replace(args.clone());
+          let result = def.ty.compose_node(&args, self).map_err(|err| {
+            // An error from a nested flow or wire: name the parameter
+            // holding it.
+            match self.failed_child.take().and_then(|c| args.param_of(&c)) {
+              Some((param, item)) => {
+                let err = match item {
+                  Some(i) => err.prefix_path(PathStep::Item(i)),
+                  None => err,
+                };
+                err.prefix_path(PathStep::Param(param.to_string()))
+              }
+              None => err,
             }
-            None => err,
-          }
-        });
-        self.current_args = parent_args;
-        result
-      });
+          });
+          self.current_args = parent_args;
+          result
+        }),
+      };
       self.diagnostic_path.pop();
       self.site.path.pop();
       self.next_flow = saved_next;
@@ -528,7 +644,7 @@ impl ComposeCtx<'_> {
           let err = with_input_source(err, &flow[..index]);
           return Err(err.prefix_path(PathStep::Shard {
             index,
-            name: def.ty.name().to_string(),
+            name: def.name().to_string(),
           }));
         }
       };
@@ -546,7 +662,7 @@ impl ComposeCtx<'_> {
         &node_analysis,
         &[PathStep::Shard {
           index,
-          name: def.ty.name().into(),
+          name: def.name().into(),
         }],
       );
       code.push(crate::inline::Instruction::new(
@@ -685,6 +801,282 @@ impl ComposeCtx<'_> {
     );
     Ok(wire)
   }
+
+  /// Resolves a function definition by name, recording the dependency
+  /// (including its absence).
+  fn function_def(&mut self, name: &str) -> Option<Arc<FunctionDef>> {
+    let def = self.env.functions.get(name).cloned().map(Arc::new);
+    let dep = Dep::Function {
+      name: name.to_string(),
+      def: def.clone(),
+    };
+    self.deps.push(dep.clone());
+    self.restart_deps.push(dep);
+    def
+  }
+
+  /// Composes a call site (golden path §3.3): validates the labels against
+  /// the parameter list, resolves literal and variable arguments to
+  /// operands read once at entry, composes the body once per input type
+  /// (shared by every call site), and checks the caller's declared mesh
+  /// access covers the callee's.
+  fn compose_call(
+    &mut self,
+    def: &ShardDef,
+    name: &str,
+  ) -> Result<Composed<Arc<dyn CompiledNode>>> {
+    let Some(fdef) = self.function_def(name) else {
+      let known: Vec<String> = self.env.functions.keys().cloned().collect();
+      let mut d =
+        compose_diagnostic("unknown-function", format!("unknown function {name}")).shard(name);
+      d.did_you_mean = crate::diagnostic::closest(name, known, 3);
+      return Err(Error::Diagnostic(Box::new(d)));
+    };
+    if fdef.stateful
+      && let Owner::Function(caller) = &self.owner
+      && !caller.stateful
+    {
+      return Err(fn_error(
+        name,
+        "stateful-call-in-stateless",
+        format!(
+          "{name} is stateful, so each call site owns an instance of it; {} is stateless and cannot: declare the caller `stateful: true`, or make {name} stateless",
+          caller.name
+        ),
+      ));
+    }
+    if !fdef.ignores_input() && !fdef.input.accepts(self.input) {
+      return Err(Error::Diagnostic(Box::new(
+        Diagnostic::new(
+          Phase::Compose,
+          "input-type-mismatch",
+          "input-type-mismatch",
+          format!("{name} needs {} input, got {}", fdef.input, self.input),
+        )
+        .shard(name)
+        .types(Some(TypeRef::of(self.input)), vec![TypeRef::of(fdef.input)]),
+      )));
+    }
+    // Labels are validated against the parameter list first; then each
+    // argument is a literal or a variable read once at entry.
+    let mut given: Vec<Option<Operand>> = vec![None; fdef.params.len()];
+    let mut seen_named = false;
+    for (position, arg) in def.args.iter().enumerate() {
+      let index = match &arg.name {
+        Some(label) => {
+          seen_named = true;
+          match fdef.params.iter().position(|p| p.name == *label) {
+            Some(index) => index,
+            None => {
+              let known: Vec<String> = fdef.params.iter().map(|p| p.name.clone()).collect();
+              let mut d = compose_diagnostic(
+                "unknown-argument",
+                format!(
+                  "{name} has no parameter {label} (parameters: {})",
+                  known.join(", ")
+                ),
+              )
+              .shard(name)
+              .param(label, None);
+              d.did_you_mean = crate::diagnostic::closest(label, known, 3);
+              return Err(Error::Diagnostic(Box::new(d)));
+            }
+          }
+        }
+        None if seen_named => {
+          return Err(fn_error(
+            name,
+            "positional-after-named",
+            format!("{name}: positional argument {position} after a named one"),
+          ));
+        }
+        None if position >= fdef.params.len() => {
+          return Err(fn_error(
+            name,
+            "too-many-arguments",
+            format!(
+              "{name} takes at most {} arguments, got {}",
+              fdef.params.len(),
+              def.args.len()
+            ),
+          ));
+        }
+        None => position,
+      };
+      let param = &fdef.params[index];
+      if given[index].is_some() {
+        return Err(
+          fn_error(
+            name,
+            "duplicate-argument",
+            format!("{name}: {} given more than once", param.name),
+          )
+          .with_param(&param.name, index),
+        );
+      }
+      let (operand, ty) = match &arg.value {
+        ParamValue::Value(v) => (Operand::Const(v.clone()), v.type_of()),
+        ParamValue::Var(var) => {
+          let info = self
+            .read_var(var, name)
+            .map_err(|e| e.with_param(&param.name, index))?;
+          (Operand::Bound(info.binding), info.ty)
+        }
+        other => {
+          let form = match other {
+            ParamValue::Wire(_) => "wire",
+            ParamValue::Flow(_) => "flow",
+            ParamValue::Cases(_) => "cases",
+            _ => unreachable!(),
+          };
+          return Err(
+            fn_error(
+              name,
+              "wrong-argument-form",
+              format!(
+                "{name}: {} takes a literal or a variable, got a {form}",
+                param.name
+              ),
+            )
+            .with_param(&param.name, index),
+          );
+        }
+      };
+      if !param.ty.accepts(ty) {
+        let code = if matches!(arg.value, ParamValue::Value(_)) {
+          "wrong-argument-type"
+        } else {
+          "wrong-variable-type"
+        };
+        return Err(Error::Diagnostic(Box::new(
+          compose_diagnostic(
+            code,
+            format!("{name}: {} must be {}, got {ty}", param.name, param.ty),
+          )
+          .shard(name)
+          .param(&param.name, Some(index))
+          .types(Some(TypeRef::of(ty)), vec![TypeRef::of(param.ty)]),
+        )));
+      }
+      given[index] = Some(operand);
+    }
+    let mut args = Vec::with_capacity(fdef.params.len());
+    for (index, (param, operand)) in fdef.params.iter().zip(given).enumerate() {
+      args.push(match (operand, &param.default) {
+        (Some(operand), _) => operand,
+        (None, Some(default)) => Operand::Const(default.clone()),
+        (None, None) => {
+          return Err(
+            fn_error(
+              name,
+              "missing-argument",
+              format!("{name}: missing required parameter {}", param.name),
+            )
+            .with_param(&param.name, index),
+          );
+        }
+      });
+    }
+    let input = if fdef.ignores_input() {
+      Type::none()
+    } else {
+      self.input
+    };
+    let body = self
+      .cache
+      .get_or_compose_function(&fdef, input, self.env, self.composing, self.depth)
+      .map_err(|err| self.explain_caller_local(err, name))?;
+    // Mesh access is declared, never granted by inference (§3.1): a caller
+    // function must declare what its callees reach.
+    if let Owner::Function(caller) = &self.owner {
+      for access in &body.flow.analysis.uses {
+        if !caller.may_read(&access.name) {
+          return Err(fn_error(
+            name,
+            "undeclared-mesh-access",
+            format!(
+              "{name} reads mesh variable {}; {} must declare it in `uses: [{}]` to call it",
+              access.name, caller.name, access.name
+            ),
+          ));
+        }
+      }
+      for access in &body.flow.analysis.mutates {
+        if !caller.may_write(&access.name) {
+          return Err(fn_error(
+            name,
+            "undeclared-mesh-access",
+            format!(
+              "{name} assigns mesh variable {}; {} must declare it in `mutates: [{}]` to call it",
+              access.name, caller.name, access.name
+            ),
+          ));
+        }
+      }
+    }
+    self.deps.extend(body.deps.iter().cloned());
+    self.restart_deps.extend(body.deps.iter().cloned());
+    self
+      .analysis
+      .include(&body.flow.analysis, &[PathStep::Function(name.to_string())]);
+    // The call site's lifetime is the function's: a stateless function
+    // keeps nothing between invocations, whatever its body holds inside one.
+    self.analysis.lifetime = if fdef.stateful {
+      Lifetime::Stateful
+    } else {
+      Lifetime::Stateless
+    };
+    Ok(Composed {
+      compiled: crate::shard::erase::<crate::stackless::shards::Call>(CallCompiled { body, args }),
+      output: fdef.output,
+    })
+  }
+
+  /// An `unknown-variable` inside a callee that names one of the caller's
+  /// locals: say how to pass it (golden path §3.2, test B).
+  fn explain_caller_local(&self, err: Error, function: &str) -> Error {
+    let Error::Diagnostic(mut d) = err else {
+      return err;
+    };
+    if d.code == "unknown-variable"
+      && let Some(rest) = d.message.strip_prefix("unknown variable ")
+    {
+      let var: String = rest
+        .chars()
+        .take_while(|c| !c.is_whitespace() && *c != ';')
+        .collect();
+      if let Some(slot) = self.locals.lookup(&var) {
+        d.message.push_str(&format!(
+          "; `{var}` is a local of the caller, and a function sees only its input and parameters: pass it as a parameter (`params: {{{var}: {}}}` in the declaration, `{function}({var}: {var})` at the call)",
+          slot.ty
+        ));
+      }
+    }
+    Error::Diagnostic(d)
+  }
+}
+
+fn compose_diagnostic(code: &'static str, message: String) -> Diagnostic {
+  Diagnostic::new(Phase::Compose, "compose-error", code, message)
+}
+
+/// A structured compose error about function `name`.
+fn fn_error(name: &str, code: &'static str, message: String) -> Error {
+  Error::Diagnostic(Box::new(compose_diagnostic(code, message).shard(name)))
+}
+
+/// The first occurrence in a body with the picked effect: the shard a
+/// `not-pure` diagnostic names.
+fn offending_shard(analysis: &Analysis, pick: fn(Effects) -> bool) -> String {
+  analysis
+    .occurrences
+    .iter()
+    .find(|o| pick(o.effects))
+    .and_then(|o| match o.path.last() {
+      Some(PathStep::Shard { name, .. }) => Some(name.clone()),
+      _ => None,
+    })
+    .unwrap_or_else(|| "a shard".to_string())
 }
 
 /// Enforces a shard's declared input (`InputDesc::Types` or
@@ -746,10 +1138,10 @@ fn with_input_source(err: crate::Error, before: &[ShardDef]) -> crate::Error {
   let mut via = Vec::new();
   let mut origin = None;
   for (index, def) in before.iter().enumerate().rev() {
-    if matches!(def.ty.desc.output, OutputDesc::Passthrough) {
-      via.push((index, def.ty.name().to_string()));
+    if def.function.is_none() && matches!(def.ty.desc.output, OutputDesc::Passthrough) {
+      via.push((index, def.name().to_string()));
     } else {
-      origin = Some((index, def.ty.name().to_string()));
+      origin = Some((index, def.name().to_string()));
       break;
     }
   }
@@ -781,12 +1173,21 @@ pub struct CacheStats {
   pub wire_composes: u64,
   /// Individual shard compose calls.
   pub shard_composes: u64,
+  /// Function bodies actually composed (one per definition and input type
+  /// while its dependencies hold).
+  pub function_composes: u64,
 }
 
 struct Entry {
   def: WireDef,
   input: Type,
   compiled: Arc<CompiledWire>,
+}
+
+struct FunctionEntry {
+  def: Arc<FunctionDef>,
+  input: Type,
+  compiled: Arc<CompiledFunction>,
 }
 
 pub type HashFn = fn(&WireDef, Type) -> u64;
@@ -801,6 +1202,7 @@ fn default_hash(def: &WireDef, input: Type) -> u64 {
 /// Compose cache with two-step lookup (contract §4).
 pub struct ComposeCache {
   entries: HashMap<u64, Vec<Entry>>,
+  functions: HashMap<u64, Vec<FunctionEntry>>,
   hash_fn: HashFn,
   pub stats: CacheStats,
 }
@@ -816,6 +1218,7 @@ impl ComposeCache {
   pub fn with_hash_fn(hash_fn: HashFn) -> ComposeCache {
     ComposeCache {
       entries: HashMap::new(),
+      functions: HashMap::new(),
       hash_fn,
       stats: CacheStats::default(),
     }
@@ -873,6 +1276,8 @@ impl ComposeCache {
         failed_child: None,
         depth,
         blocks: 0,
+        owner: Owner::Wire,
+        keeps: Vec::new(),
       };
       ctx
         .compose_flow_unscoped(&def.flow, input)
@@ -903,6 +1308,195 @@ impl ComposeCache {
       inline_calls,
     });
     self.entries.entry(key).or_default().push(Entry {
+      def: def.clone(),
+      input,
+      compiled: compiled.clone(),
+    });
+    Ok(compiled)
+  }
+
+  /// A function body composed against its declared signature, once per
+  /// input type (golden path §4): the frame holds the parameters, then
+  /// `input`, then the body's locals. Runtime argument values never enter
+  /// the key; the definition, the input type and the recorded dependencies
+  /// do.
+  pub(crate) fn get_or_compose_function(
+    &mut self,
+    def: &Arc<FunctionDef>,
+    input: Type,
+    env: &ComposeEnv<'_>,
+    composing: &mut Vec<String>,
+    depth: usize,
+  ) -> Result<Arc<CompiledFunction>> {
+    let key = {
+      let mut hasher = DefaultHasher::new();
+      def.hash(&mut hasher);
+      input.hash(&mut hasher);
+      hasher.finish()
+    };
+    if let Some(candidates) = self.functions.get(&key) {
+      for entry in candidates {
+        if entry.def == *def
+          && entry.input == input
+          && entry.compiled.deps.iter().all(|d| d.still_valid(env))
+        {
+          self.stats.hits += 1;
+          return Ok(entry.compiled.clone());
+        }
+      }
+    }
+    self.stats.misses += 1;
+    if composing.iter().any(|n| n == &def.name) {
+      return Err(if def.stateful {
+        fn_error(
+          &def.name,
+          "recursive-stateful",
+          format!(
+            "{} is stateful and calls itself (directly or through other functions): a stateful function owns one instance per call site and cannot re-enter it",
+            def.name
+          ),
+        )
+      } else {
+        fn_error(
+          &def.name,
+          "recursive-function",
+          format!(
+            "{} calls itself (directly or through other functions); recursion is not supported yet (golden path M7)",
+            def.name
+          ),
+        )
+      });
+    }
+    composing.push(def.name.clone());
+    let result = {
+      let mut ctx = ComposeCtx {
+        analysis: Analysis::default(),
+        input,
+        locals: FrameLayout::default(),
+        env,
+        cache: self,
+        composing,
+        deps: Vec::new(),
+        restart_deps: Vec::new(),
+        inline_calls: HashMap::new(),
+        site: InlineKey {
+          root: Arc::new(WireDef {
+            name: def.name.clone(),
+            looped: false,
+            flow: def.body.clone(),
+          }),
+          input,
+          path: Default::default(),
+        },
+        next_flow: 0,
+        diagnostic_path: vec![PathStep::Function(def.name.clone())],
+        local_paths: Vec::new(),
+        current_args: None,
+        initialized: Vec::new(),
+        failed_child: None,
+        depth,
+        blocks: 0,
+        owner: Owner::Function(def.clone()),
+        keeps: Vec::new(),
+      };
+      let slot_of = |info: VarInfo| match info.binding {
+        Binding::Local(i) => i,
+        Binding::Mesh(_) => unreachable!("declared locally"),
+      };
+      let param_slots: Vec<usize> = def
+        .params
+        .iter()
+        .map(|p| slot_of(ctx.declare_local(&p.name, p.ty, false)))
+        .collect();
+      let input_slot = slot_of(ctx.declare_local("input", input, false));
+      ctx
+        .compose_flow_unscoped(&def.body, input)
+        .and_then(|flow| {
+          if def.output.accepts(flow.output) {
+            Ok(flow)
+          } else {
+            Err(Error::Diagnostic(Box::new(
+              compose_diagnostic(
+                "output-type-mismatch",
+                format!(
+                  "{} declares output {} but its body outputs {}",
+                  def.name, def.output, flow.output
+                ),
+              )
+              .shard(&def.name)
+              .types(
+                Some(TypeRef::of(flow.output)),
+                vec![TypeRef::of(def.output)],
+              ),
+            )))
+          }
+        })
+        .map(|flow| {
+          (
+            flow,
+            ctx.locals,
+            ctx.deps,
+            ctx.keeps,
+            input_slot,
+            param_slots,
+          )
+        })
+        .map_err(|err| err.prefix_path(PathStep::Function(def.name.clone())))
+    };
+    composing.pop();
+    let (flow, locals, deps, keeps, input_slot, param_slots) = result?;
+    if def.pure {
+      let analysis = &flow.analysis;
+      let effect = [
+        (
+          analysis.effects.suspends,
+          "suspends",
+          (|e: Effects| e.suspends) as fn(Effects) -> bool,
+        ),
+        (analysis.effects.io, "io", |e| e.io),
+        (analysis.effects.time, "time", |e| e.time),
+        (analysis.effects.random, "random", |e| e.random),
+        (analysis.effects.unknown, "unknown", |e| e.unknown),
+      ]
+      .into_iter()
+      .find(|(set, _, _)| *set);
+      let reason = if def.stateful {
+        Some("it is declared stateful".to_string())
+      } else if let Some((_, label, pick)) = effect {
+        Some(format!(
+          "{} has the effect `{label}`",
+          offending_shard(analysis, pick)
+        ))
+      } else if let Some(access) = analysis.uses.first() {
+        Some(format!("it reads mesh variable {}", access.name))
+      } else {
+        analysis
+          .mutates
+          .first()
+          .map(|access| format!("it assigns mesh variable {}", access.name))
+      };
+      if let Some(reason) = reason {
+        return Err(
+          fn_error(
+            &def.name,
+            "not-pure",
+            format!("{} is declared pure, but {reason}", def.name),
+          )
+          .prefix_path(PathStep::Function(def.name.clone())),
+        );
+      }
+    }
+    self.stats.function_composes += 1;
+    let compiled = Arc::new(CompiledFunction {
+      def: def.clone(),
+      flow,
+      locals,
+      input_slot,
+      param_slots,
+      keeps,
+      deps,
+    });
+    self.functions.entry(key).or_default().push(FunctionEntry {
       def: def.clone(),
       input,
       compiled: compiled.clone(),

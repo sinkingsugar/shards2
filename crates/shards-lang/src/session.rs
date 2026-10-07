@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
-use shards_core::diagnostic::Diagnostic;
+use shards_core::diagnostic::{Diagnostic, PathStep};
 use shards_core::{Catalog, CompiledWire, InstanceId, Mesh, Outcome, Type, Var};
 
 use crate::{Program, Source};
@@ -89,10 +89,7 @@ impl Session {
     defines: &HashMap<String, String>,
   ) -> Result<Vec<Finished>, (Source, Vec<Diagnostic>)> {
     let program = Program::load(source, catalog, defines)?;
-    let mut mesh = Mesh::new();
-    for def in &program.lowered.wires {
-      mesh.add_wire(def.clone());
-    }
+    let mut mesh = program.mesh();
     let entries = match compose_entries(&program, &mut mesh) {
       Ok(entries) => entries,
       Err(diagnostics) => return Err((program.source, diagnostics)),
@@ -102,7 +99,7 @@ impl Session {
       match mesh.spawn(&wire, Var::None) {
         Ok(id) => scheduled.push(Entry { name, wire, id }),
         Err(err) => {
-          let diagnostic = program.diagnostic(&name, err);
+          let diagnostic = program.diagnostic(PathStep::Wire(name), err);
           return Err((program.source, vec![diagnostic]));
         }
       }
@@ -209,9 +206,7 @@ impl Session {
     let program = Program::load(source, catalog, defines)?;
     let active = self.active.as_mut().expect("active mesh");
     let mut candidate = active.mesh.revision();
-    for def in &program.lowered.wires {
-      candidate.add_wire(def.clone());
-    }
+    program.declare_on(&mut candidate);
     let entries = match compose_entries(&program, &mut candidate) {
       Ok(entries) => entries,
       Err(diagnostics) => return Err((program.source, diagnostics)),
@@ -240,7 +235,7 @@ impl Session {
       .filter(|id| !retained.contains(id))
       .collect();
     if let Err(err) = active.mesh.validate_reload(&mut candidate, &removed) {
-      let d = program.diagnostic("", err);
+      let d = program.diagnostic(PathStep::Wire(String::new()), err);
       return Err((program.source, vec![d]));
     }
     active.mesh.install_revision(candidate, &removed);
@@ -276,13 +271,21 @@ fn compose_entries(
   let mut diagnostics = Vec::new();
   for name in program.entries() {
     match mesh.compile(&name, Type::none()) {
-      Ok(wire) => entries.push((name, wire)),
-      Err(err) => diagnostics.push(program.diagnostic(&name, err)),
+      Ok(wire) => entries.push((name.clone(), wire)),
+      Err(err) => diagnostics.push(program.diagnostic(PathStep::Wire(name), err)),
     }
   }
   for name in program.unreachable_roots() {
     if let Err(err) = mesh.compile(&name, Type::none()) {
-      let d = program.diagnostic(&name, err);
+      let d = program.diagnostic(PathStep::Wire(name), err);
+      if !diagnostics.contains(&d) {
+        diagnostics.push(d);
+      }
+    }
+  }
+  for def in &program.lowered.functions {
+    if let Err(err) = mesh.compile_function(&def.name) {
+      let d = program.diagnostic(PathStep::Function(def.name.clone()), err);
       if !diagnostics.contains(&d) {
         diagnostics.push(d);
       }

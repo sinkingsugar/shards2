@@ -1790,3 +1790,273 @@ fn constructs_not_supported_yet_are_rejected_explicitly() {
     assert!(d[0].message.contains(needle), "{text}: {}", d[0].message);
   }
 }
+
+// --- functions (golden path §3, tests A to I at the source level) ---
+
+fn lines_of(text: &str) -> Vec<String> {
+  let (report, lines) = shards_core::log::capture(|| run(text, &no_defines()));
+  assert!(report.succeeded(), "{report:?}");
+  lines
+}
+
+#[test]
+fn functions_are_called_like_shards_and_share_one_body() {
+  let source = "@fn(Scale input: Float output: Float params: {factor: Float} { Math.Multiply(factor) })\n3.0 | Scale(factor: 2.0) | Log\n3.0 | Scale(factor: 4.0) | Log";
+  assert_eq!(lines_of(source), ["6", "12"]);
+  let report = check(source);
+  assert!(report.ok(), "{}", report.to_json());
+  assert_eq!(report.functions.len(), 1);
+  let signature = &report.functions[0].signature;
+  assert_eq!(signature.name, "Scale");
+  assert_eq!(signature.params.as_ref().map(Vec::len), Some(1));
+  assert_eq!(
+    (report.functions[0].line, report.functions[0].column),
+    (Some(1), Some(1))
+  );
+  let json = report.to_json();
+  assert!(
+    json.contains("\"functions\":[{\"signature\":{\"name\":\"Scale\""),
+    "{json}"
+  );
+  assert!(
+    json.contains("\"params\":[{\"name\":\"factor\",\"type\":\"Float\""),
+    "{json}"
+  );
+  // Occurrences inside the body are reported at each call site, located in
+  // the function's source.
+  let inner: Vec<_> = report.wires[0]
+    .occurrences
+    .iter()
+    .filter(|o| matches!(o.occurrence.path.last(), Some(shards_core::diagnostic::PathStep::Shard { name, .. }) if name == "Math.Multiply"))
+    .collect();
+  assert_eq!(inner.len(), 2);
+  assert!(inner.iter().all(|o| o.line == Some(1)));
+  assert_ne!(inner[0].occurrence.path, inner[1].occurrence.path);
+}
+
+#[test]
+fn a_function_cannot_capture_the_callers_locals() {
+  let report = check(
+    "@fn(Bad input: Int output: Int params: {} {\n  Math.Add(secret)\n})\n10 = secret\n1 | Bad",
+  );
+  let d = &report.diagnostics[0];
+  assert_eq!(
+    (d.code, d.shard.as_deref()),
+    ("unknown-variable", Some("Math.Add"))
+  );
+  assert_eq!(at(d), (2, 3));
+  assert!(
+    d.message.contains("pass it as a parameter"),
+    "{}",
+    d.message
+  );
+  assert!(d.message.contains("Bad(secret: secret)"), "{}", d.message);
+}
+
+#[test]
+fn stateless_functions_start_fresh_and_components_keep_state_per_site() {
+  let fresh = "@fn(Counting input: None output: Int params: {} {\n  0 | Var(n)\n  Pause\n  n | Math.Add(1) | Update(n)\n})\nRepeat({Counting | Log} times: 3)";
+  assert_eq!(lines_of(fresh), ["1", "1", "1"]);
+  let component = |stateful| {
+    format!(
+      "@fn(Counter {stateful}input: None output: Int params: {{step: Int}} {{\n  Keep(n 0)\n  n | Math.Add(step) | Update(n)\n}})\n@wire(main {{ Counter(step: 1) | Log Counter(step: 10) | Log }} looped: true)\n@mesh(m) @schedule(m main) @run(m iterations: 2)"
+    )
+  };
+  assert_eq!(
+    lines_of(&component("stateful: true ")),
+    ["1", "10", "2", "20"]
+  );
+  let report = check(&component(""));
+  let d = &report.diagnostics[0];
+  assert_eq!(
+    (d.code, d.shard.as_deref()),
+    ("keep-in-stateless", Some("Keep"))
+  );
+  assert_eq!(at(d), (2, 3));
+  assert!(d.message.contains("stateful: true"), "{}", d.message);
+}
+
+#[test]
+fn match_default_input_means_the_functions_entry_value() {
+  let source = |default| {
+    format!(
+      "@fn(F input: Int output: Int params: {{}} {{ 2 | Match([1 {{10}}] default: {{{default}}}) }})\n99 | F | Log"
+    )
+  };
+  assert_eq!(lines_of(&source("")), ["2"]);
+  assert_eq!(lines_of(&source("input")), ["99"]);
+}
+
+#[test]
+fn parameters_are_snapshots_read_from_declared_mesh_variables() {
+  let source = r#"@fn(Later input: Int output: Int params: {amount: Int} { Pause | Math.Add(amount) })
+@fn(Apply input: Int output: Int params: {} uses: [gain] { Later(amount: gain) })
+@wire(main { 3 | Apply | Log })
+@wire(bump { 100 | Update(gain) })
+@mesh(m) @schedule(m main) @schedule(m bump) @run(m)"#;
+  let mut mesh = Mesh::new();
+  mesh.declare_var("gain", Var::Int(2), true);
+  let mut session = shards_lang::Session::with_mesh(mesh);
+  preserve(&mut session, source);
+  let (_, lines) = shards_core::log::capture(|| {
+    session.tick(); // main suspends inside Later with amount = 2; bump sets 100.
+    session.tick();
+  });
+  assert_eq!(lines, ["5"]);
+  // Reading the mesh without declaring it is rejected, directly and through
+  // a callee.
+  let mut mesh = Mesh::new();
+  mesh.declare_var("gain", Var::Int(2), true);
+  let mut session = shards_lang::Session::with_mesh(mesh);
+  let (_, d) = session
+    .reload_preserving(
+      Source::new(
+        "t.shs",
+        "@fn(Read input: Int output: Int params: {} { Math.Add(gain) })\n1 | Read | Log",
+      ),
+      &catalog(),
+      &no_defines(),
+    )
+    .unwrap_err();
+  assert_eq!(d[0].code, "undeclared-mesh-access");
+  assert_eq!(at(&d[0]), (1, 46));
+  let (_, d) = session
+    .reload_preserving(
+      Source::new("t.shs", "@fn(Read input: Int output: Int params: {} uses: [gain] { Math.Add(gain) })\n@fn(Outer input: Int output: Int params: {} { Read })\n1 | Outer | Log"),
+      &catalog(),
+      &no_defines(),
+    )
+    .unwrap_err();
+  assert_eq!(
+    (d[0].code, d[0].shard.as_deref()),
+    ("undeclared-mesh-access", Some("Read"))
+  );
+  assert_eq!(at(&d[0]), (2, 47));
+}
+
+#[test]
+fn arguments_run_once_in_order_before_the_callee_is_entered() {
+  use shards_core::shards::{ProbeEventKind, take_probe_events};
+  let source = "@fn(Both input: Int output: Int params: {a: Int b: Int} { Probe(\"callee\") a | Math.Add(b) })\n7 | Both(a: (Log(\"first\")) b: (Log(\"second\"))) | Log";
+  assert_eq!(lines_of(source), ["first: 7", "second: 7", "14"]);
+  // Suspending inside the second argument does not rerun the first.
+  let source = "@fn(Both input: Int output: Int params: {a: Int b: Int} { a | Math.Add(b) })\n7 | Both(a: (Log(\"first\")) b: (Pause | Log(\"second\"))) | Log";
+  assert_eq!(lines_of(source), ["first: 7", "second: 7", "14"]);
+  // Failing the second never instantiates the callee.
+  take_probe_events();
+  let source = "@fn(Both input: Int output: Int params: {a: Int b: Int} { Probe(\"callee\") a | Math.Add(b) })\nMaybe({7 | Both(a: (Log(\"first\")) b: ([1] | Take(3))) | Log} silent: true)";
+  assert_eq!(lines_of(source), ["first: 7"]);
+  assert!(
+    take_probe_events()
+      .iter()
+      .all(|e| e.tag != "callee" || e.kind != ProbeEventKind::Instantiate)
+  );
+}
+
+#[test]
+fn purity_and_return_in_source() {
+  let report =
+    check("@fn(Now input: None output: Float params: {} pure: true { Time.Now })\nNow | Log");
+  let d = &report.diagnostics[0];
+  assert_eq!((d.code, d.shard.as_deref()), ("not-pure", Some("Now")));
+  assert!(
+    d.message.contains("Time.Now has the effect `time`"),
+    "{}",
+    d.message
+  );
+  assert_eq!(at(d), (1, 1));
+  let source = "@fn(Early input: Int output: Int params: {} {\n  When({IsMore(10)} {input | Return})\n  Math.Add(100)\n})\n1 | Early | Log\n20 | Early | Log";
+  assert_eq!(lines_of(source), ["101", "20"]);
+  let report = check("@fn(Bad input: Int output: Int params: {} {\n  \"x\" | Return\n})\n1 | Bad");
+  let d = &report.diagnostics[0];
+  assert_eq!(
+    (d.code, d.shard.as_deref()),
+    ("return-type-mismatch", Some("Return"))
+  );
+  assert_eq!(at(d), (2, 9));
+}
+
+#[test]
+fn uncalled_functions_are_still_checked() {
+  let report = check("@fn(Bad input: Int output: Int params: {} { \"x\" })\n1 | Log");
+  let d = &report.diagnostics[0];
+  assert_eq!(
+    (d.code, d.shard.as_deref()),
+    ("output-type-mismatch", Some("Bad"))
+  );
+  assert_eq!(at(d), (1, 1));
+  // A call before the declaration, and a recursive pair.
+  assert_eq!(
+    lines_of("1 | Twice | Log\n@fn(Twice input: Int output: Int params: {} { Math.Multiply(2) })"),
+    ["2"]
+  );
+  let report = check(
+    "@fn(A input: Int output: Int params: {} { B })\n@fn(B input: Int output: Int params: {} { A })\n1 | A",
+  );
+  assert_eq!(report.diagnostics[0].code, "recursive-function");
+}
+
+#[test]
+fn function_declarations_are_checked() {
+  for (source, code, needle) in [
+    (
+      "@fn(scale input: Int output: Int params: {} { 1 })",
+      "declaration",
+      "uppercase",
+    ),
+    (
+      "@fn(Scale input: Int output: Int { 1 })",
+      "declaration",
+      "`params:`",
+    ),
+    (
+      "@fn(Log input: Int output: Int params: {} { 1 })",
+      "function-name-collision",
+      "already a shard",
+    ),
+    (
+      "@fn(S input: Integer output: Int params: {} { 1 })",
+      "unknown-type",
+      "unknown type `Integer`",
+    ),
+    (
+      "@fn(S input: Int output: Int params: {input: Int} { 1 })",
+      "reserved-name",
+      "`input` is reserved",
+    ),
+    (
+      "@fn(S input: Int output: Int params: {} looped: true { 1 })",
+      "unsupported",
+      "function option `looped`",
+    ),
+    (
+      "@fn(S input: Int output: Int params: {} { 1 })\n@fn(S input: Int output: Int params: {} { 2 })",
+      "duplicate-function",
+      "declared twice",
+    ),
+    (
+      "@fn(S input: Int output: Int params: {} uses: 3 { 1 })",
+      "declaration",
+      "mesh variable names",
+    ),
+    (
+      "@fn(S input: Int output: Int params: {} { 1 })\n1 | S(factor: 2)",
+      "unknown-argument",
+      "no parameter `factor`",
+    ),
+    (
+      "@fn(S input: Int output: Int params: {} { 1 })\n1 | Scale",
+      "unknown-shard",
+      "unknown shard `Scale`",
+    ),
+  ] {
+    let d = load_errors(source);
+    assert_eq!(d[0].code, code, "{source}: {:?}", d[0]);
+    assert!(d[0].message.contains(needle), "{source}: {}", d[0].message);
+  }
+  let d = load_errors("@fn(Scal input: Int output: Int params: {} { 1 })\n1 | Scale");
+  assert_eq!(d[0].did_you_mean, ["Scal"]);
+  // Types: sequences, tables, unions and defaults.
+  let source = "@fn(Sum input: [Int] output: Int params: {start: 10} { Count | Math.Add(start) })\n@fn(Pick input: {value: Int children: [Int]} output: Int | None params: {} { Take(\"value\") })\n[1 2 3] | Sum | Log\n[1 2 3] | Sum(start: 0) | Log\n{value: 7 children: [1]} | Pick | Log";
+  assert_eq!(lines_of(source), ["13", "3", "7"]);
+}

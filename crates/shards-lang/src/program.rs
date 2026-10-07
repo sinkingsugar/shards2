@@ -31,6 +31,25 @@ pub struct CheckReport {
   /// Successful root composes, including nested occurrences. Failed roots
   /// report diagnostics rather than presenting a partial analysis as complete.
   pub wires: Vec<WireAnalysis>,
+  /// Every declared function that composed, with its signature (inferred
+  /// effects and mesh access included) and its declaration's location.
+  pub functions: Vec<FunctionReport>,
+}
+
+pub struct FunctionReport {
+  pub signature: shards_core::signature::Signature<'static>,
+  pub line: Option<u32>,
+  pub column: Option<u32>,
+}
+
+impl FunctionReport {
+  fn to_json(&self) -> String {
+    let mut fields = vec![format!("\"signature\":{}", self.signature.to_json())];
+    if let (Some(line), Some(column)) = (self.line, self.column) {
+      fields.push(format!("\"line\":{line},\"column\":{column}"));
+    }
+    format!("{{{}}}", fields.join(","))
+  }
 }
 
 pub struct WireAnalysis {
@@ -91,7 +110,7 @@ impl CheckReport {
   pub fn to_json(&self) -> String {
     let diagnostics: Vec<String> = self.diagnostics.iter().map(Diagnostic::to_json).collect();
     format!(
-      "{{\"ok\":{},\"file\":{},\"diagnostics\":[{}],\"wires\":[{}]}}",
+      "{{\"ok\":{},\"file\":{},\"diagnostics\":[{}],\"wires\":[{}],\"functions\":[{}]}}",
       self.ok(),
       json_str(&self.file),
       diagnostics.join(","),
@@ -99,6 +118,12 @@ impl CheckReport {
         .wires
         .iter()
         .map(WireAnalysis::to_json)
+        .collect::<Vec<_>>()
+        .join(","),
+      self
+        .functions
+        .iter()
+        .map(FunctionReport::to_json)
         .collect::<Vec<_>>()
         .join(",")
     )
@@ -146,8 +171,9 @@ impl Program {
     }
   }
 
-  /// A compose error as a located diagnostic.
-  pub(crate) fn diagnostic(&self, wire: &str, err: Error) -> Diagnostic {
+  /// A compose error as a located diagnostic; `root` is the wire or
+  /// function it was composed for, used when the error names no position.
+  pub(crate) fn diagnostic(&self, root: PathStep, err: Error) -> Diagnostic {
     let mut d = match err {
       Error::Diagnostic(d) => *d,
       other => Diagnostic::new(
@@ -159,7 +185,7 @@ impl Program {
     };
     let span = self.lowered.map.locate(&d).or_else(|| {
       let mut probe = Diagnostic::new(Phase::Compose, "", "", "");
-      probe.path = vec![shards_core::diagnostic::PathStep::Wire(wire.to_string())];
+      probe.path = vec![root];
       self.lowered.map.locate(&probe)
     });
     if let Some(span) = span {
@@ -264,16 +290,13 @@ impl Program {
   }
 
   fn compose_report(&self, include_analysis: bool) -> CheckReport {
-    let mut mesh = Mesh::new();
-    for def in &self.lowered.wires {
-      mesh.add_wire(def.clone());
-    }
+    let mut mesh = self.mesh();
     let mut out: Vec<Diagnostic> = Vec::new();
     let mut wires = Vec::new();
     for wire in self.entries().into_iter().chain(self.unreachable_roots()) {
       match mesh.compile(&wire, Type::none()) {
         Err(err) => {
-          let d = self.diagnostic(&wire, err);
+          let d = self.diagnostic(PathStep::Wire(wire.clone()), err);
           if !out.contains(&d) {
             out.push(d);
           }
@@ -306,10 +329,55 @@ impl Program {
         Ok(_) => {}
       }
     }
+    // Every function is checked, called or not, against its declared input.
+    let mut functions = Vec::new();
+    for def in &self.lowered.functions {
+      match mesh.compile_function(&def.name) {
+        Err(err) => {
+          let d = self.diagnostic(PathStep::Function(def.name.clone()), err);
+          if !out.contains(&d) {
+            out.push(d);
+          }
+        }
+        Ok(compiled) if include_analysis => {
+          let mut probe = Diagnostic::new(Phase::Compose, "", "", "");
+          probe.path = vec![PathStep::Function(def.name.clone())];
+          let position = self
+            .lowered
+            .map
+            .locate(&probe)
+            .map(|s| self.source.line_col(s.start));
+          functions.push(FunctionReport {
+            signature: compiled.signature(),
+            line: position.map(|p| p.0),
+            column: position.map(|p| p.1),
+          });
+        }
+        Ok(_) => {}
+      }
+    }
     CheckReport {
       file: self.source.name.clone(),
       diagnostics: out,
       wires,
+      functions,
+    }
+  }
+
+  /// A fresh mesh with the program's wires and functions declared.
+  pub(crate) fn mesh(&self) -> Mesh {
+    let mut mesh = Mesh::new();
+    self.declare_on(&mut mesh);
+    mesh
+  }
+
+  /// Declares the program's wires and functions on `mesh`.
+  pub(crate) fn declare_on(&self, mesh: &mut Mesh) {
+    for def in &self.lowered.wires {
+      mesh.add_wire(def.clone());
+    }
+    for def in &self.lowered.functions {
+      mesh.add_function(def.clone());
     }
   }
 
@@ -317,10 +385,7 @@ impl Program {
   /// `@run` rate (as fast as possible without one) until every instance
   /// finishes or the `iterations` limit is reached.
   pub fn run(&self) -> Result<RunReport, Vec<Diagnostic>> {
-    let mut mesh = Mesh::new();
-    for def in &self.lowered.wires {
-      mesh.add_wire(def.clone());
-    }
+    let mut mesh = self.mesh();
     let entries = self.entries();
     mesh.reserve_instances(entries.len());
     let mut instances = Vec::with_capacity(entries.len());
@@ -329,9 +394,9 @@ impl Program {
       match mesh.compile(&wire, Type::none()) {
         Ok(compiled) => match mesh.spawn(&compiled, Var::None) {
           Ok(id) => instances.push((wire, id)),
-          Err(err) => errors.push(self.diagnostic(&wire, err)),
+          Err(err) => errors.push(self.diagnostic(PathStep::Wire(wire.clone()), err)),
         },
-        Err(err) => errors.push(self.diagnostic(&wire, err)),
+        Err(err) => errors.push(self.diagnostic(PathStep::Wire(wire.clone()), err)),
       }
     }
     if !errors.is_empty() {
@@ -418,6 +483,7 @@ pub fn check(source: Source, catalog: &Catalog, defines: &HashMap<String, String
       file,
       diagnostics,
       wires: Vec::new(),
+      functions: Vec::new(),
     },
     Ok(program) => program.analyze(),
   }

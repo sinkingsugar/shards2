@@ -267,7 +267,9 @@ fn call_sites_check_the_reload_registry_once_per_revision() {
 
 #[test]
 fn spawned_instances_share_one_compose() {
-  let mut mesh = bench_mesh(100);
+  // Device-sized: an entity instance holds about 2 KiB of frames.
+  let n: i64 = if cfg!(target_os = "espidf") { 40 } else { 100 };
+  let mut mesh = bench_mesh(n);
   let spawner = mesh.compile("spawner", Type::none()).unwrap();
   // The spawner and the entity it spawns, each composed once.
   let after_compile = mesh.cache_stats();
@@ -276,12 +278,12 @@ fn spawned_instances_share_one_compose() {
   mesh.spawn(&spawner, Var::None).unwrap();
   for _ in 0..10 {
     mesh.tick();
-    if mesh.get_var("ready-count") == Some(Var::Int(100)) {
+    if mesh.get_var("ready-count") == Some(Var::Int(n)) {
       break;
     }
   }
-  assert_eq!(mesh.get_var("ready-count"), Some(Var::Int(100)));
-  // 100 instances created and activated without any further compose.
+  assert_eq!(mesh.get_var("ready-count"), Some(Var::Int(n)));
+  // The instances were created and activated without any further compose.
   assert_eq!(
     mesh.cache_stats().wire_composes,
     after_compile.wire_composes

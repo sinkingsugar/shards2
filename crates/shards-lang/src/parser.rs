@@ -807,7 +807,8 @@ impl<'a> Parser<'a> {
 /// How deeply `[`, `{` and `(` may nest. Real scripts stay far below; the
 /// limit keeps generated or hostile input from overflowing the parser's or
 /// lowering's stack. Compose separately limits flow nesting
-/// (`shards_core::compose::MAX_FLOW_DEPTH`), which also counts `Do`.
+/// (`shards_core::compose::MAX_FLOW_DEPTH`), which also counts function
+/// bodies and spawned wires.
 pub const MAX_DEPTH: usize = 64;
 
 /// The index of the `}` matching the `{` at `open`, skipping strings.

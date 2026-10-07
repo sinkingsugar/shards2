@@ -244,8 +244,10 @@ pub struct ComposeCtx<'a> {
 /// for `Spawn`. Compose recurses once per level: past this, it reports
 /// `too-deep` instead of letting the stack overflow. Real scripts stay far
 /// below. Activation does not recurse (golden path §6.3); its separate
-/// limit is `Mesh::set_max_call_depth`.
-pub const MAX_FLOW_DEPTH: usize = 48;
+/// limit is `Mesh::set_max_call_depth`. A level of function compose takes
+/// about 6 KiB of native stack, so ESP-IDF's 128 KiB main task gets half the
+/// limit, like its call depth.
+pub const MAX_FLOW_DEPTH: usize = if cfg!(target_os = "espidf") { 24 } else { 48 };
 
 impl ComposeCtx<'_> {
   /// The input type of the shard being composed.
@@ -1248,7 +1250,8 @@ impl ComposeCache {
     }
     composing.push(def.name.clone());
     let result = {
-      let mut ctx = ComposeCtx {
+      // Boxed for the same reason as the function compose context below.
+      let mut ctx = Box::new(ComposeCtx {
         analysis: Analysis::default(),
         input,
         locals: FrameLayout::default(),
@@ -1267,7 +1270,7 @@ impl ComposeCache {
         blocks: 0,
         owner: Owner::Wire,
         keeps: Vec::new(),
-      };
+      });
       ctx
         .compose_flow_unscoped(&def.flow, input)
         .map(|flow| (flow, ctx.locals, ctx.deps, ctx.restart_deps, ctx.functions))
@@ -1333,7 +1336,10 @@ impl ComposeCache {
     debug_assert!(!composing.iter().any(|n| n == &def.name));
     composing.push(def.name.clone());
     let result = {
-      let mut ctx = ComposeCtx {
+      // Boxed: compose recurses once per nested body, and the device's
+      // task stack is small (the context is 400 bytes and lives for the
+      // whole recursion below it).
+      let mut ctx = Box::new(ComposeCtx {
         analysis: Analysis::default(),
         input,
         locals: FrameLayout::default(),
@@ -1352,7 +1358,7 @@ impl ComposeCache {
         blocks: 0,
         owner: Owner::Function(def.clone()),
         keeps: Vec::new(),
-      };
+      });
       let slot_of = |info: VarInfo| match info.binding {
         Binding::Local(i) => i,
         Binding::Mesh(_) => unreachable!("declared locally"),

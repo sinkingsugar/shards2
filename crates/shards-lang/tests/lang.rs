@@ -1495,9 +1495,10 @@ fn entry_outcomes_survive_retirement_of_finished_records() {
 #[test]
 fn code_after_stop_keeps_its_types() {
   assert!(check("1 | Stop\n1 | Add(1)").ok());
-  // Nested Whens count one bracket and one brace per level.
+  // Nested Whens count one bracket and one brace per level, and one
+  // compose level each (within the device's limit too).
   let mut src = String::from("1");
-  for _ in 0..30 {
+  for _ in 0..(if cfg!(target_os = "espidf") { 20 } else { 30 }) {
     src = format!("When({{true}} {{{src}}})");
   }
   let program = Program::load(Source::new("t.shs", &src), &catalog(), &no_defines())

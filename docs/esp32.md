@@ -100,9 +100,13 @@ RAM layout and enabled components. Measured in QEMU on 2026-10-05 (commit
 | ESP32-S3 | 5,768 of 65,536 B | 320,248 B |
 | ESP32-C3 | 5,140 of 65,536 B | 259,692 B |
 
-The smoke script is shallow, so 64 KiB is generous for it. It is not evidence
-that the desktop nesting limit fits on a device: deeper scripts use more stack
-while parsing and composing, and real workloads need their own measurement.
+The smoke script is shallow, so 64 KiB is generous for it. The desktop
+nesting limit does not fit the 128 KiB acceptance task: a level of function
+compose takes several KiB of stack, so on ESP-IDF `MAX_FLOW_DEPTH` is 24
+(desktop 48), as the runtime call depth is 32 (desktop 256); deeper scripts
+use more stack while parsing and composing, and real workloads need their own
+measurement. An entity instance of the acceptance workload holds about 2 KiB of
+frames, so the instance-count fixtures are device-sized too.
 Firmware uses `panic = "abort"`: panics terminate the application and do not
 provide desktop per-instance panic isolation. Shard documentation prose is
 disabled through both dependency paths; parameter contracts are retained.

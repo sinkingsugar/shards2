@@ -47,6 +47,9 @@ pub struct Mesh {
   cache: ComposeCache,
   /// Every function body compiled wires were composed against, by key.
   prepared_functions: FunctionRegistry,
+  /// `prepared_functions` as shared by running instances (recursive call
+  /// sites resolve through the table pinned at their outermost entry).
+  table: Arc<FunctionRegistry>,
   reset_policy: ResetPolicy,
   report: ReloadReport,
   instances: Vec<Instance>,
@@ -76,6 +79,7 @@ impl Mesh {
       functions: HashMap::new(),
       cache,
       prepared_functions: HashMap::new(),
+      table: Arc::new(HashMap::new()),
       reset_policy: ResetPolicy::default(),
       report: ReloadReport::default(),
       instances: Vec::new(),
@@ -191,11 +195,15 @@ impl Mesh {
     let wire = self
       .cache
       .get_or_compose(&def, input, &env, &mut Vec::new(), 0)?;
+    let mut added = false;
     for (key, body) in &wire.functions {
-      self
-        .prepared_functions
-        .entry(key.clone())
-        .or_insert_with(|| body.clone());
+      if !self.prepared_functions.contains_key(key) {
+        self.prepared_functions.insert(key.clone(), body.clone());
+        added = true;
+      }
+    }
+    if added {
+      self.table = Arc::new(self.prepared_functions.clone());
     }
     Ok(wire)
   }
@@ -324,6 +332,7 @@ impl Mesh {
     crate::reload::reuse_unchanged(&self.prepared_functions, &mut functions);
     crate::reload::reuse_unchanged(&self.revisions.functions, &mut functions);
     self.prepared_functions = functions.clone();
+    self.table = Arc::new(functions.clone());
     self.revisions.install(functions);
     self.report = std::mem::take(&mut next.report);
     self.wires = std::mem::take(&mut next.wires);
@@ -408,6 +417,7 @@ impl Mesh {
       frame,
       spawn_queue,
       revisions,
+      table,
       max_call_depth,
       ..
     } = self;
@@ -420,7 +430,14 @@ impl Mesh {
         continue;
       }
       instance.waiting = false;
-      step(instance, frame, spawn_queue, revisions, *max_call_depth);
+      step(
+        instance,
+        frame,
+        spawn_queue,
+        revisions,
+        table,
+        *max_call_depth,
+      );
     }
     for (wire, input) in std::mem::take(&mut self.spawn_queue) {
       self.start(wire, input);
@@ -532,6 +549,7 @@ fn step(
   frame: &mut Vec<Var>,
   spawn_queue: &mut Vec<(Arc<CompiledWire>, Var)>,
   revisions: &Revisions,
+  table: &Arc<FunctionRegistry>,
   max_call_depth: usize,
 ) {
   if !instance.started {
@@ -585,6 +603,7 @@ fn step(
         instance: *id,
         locals,
         revisions,
+        table,
         mesh_frame: frame,
         spawn_queue,
         waiting,

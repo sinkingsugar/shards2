@@ -7,9 +7,9 @@ use crate::Var;
 use crate::compose::CompiledWire;
 use crate::error::{Error, Result};
 use crate::flow::CompiledFlow;
-use crate::function::{CallCompiled, CompiledFunction};
+use crate::function::{CallCompiled, CallTarget, CompiledFunction};
 use crate::instance::{CleanupCtx, InstanceCtx};
-use crate::reload::FunctionKey;
+use crate::reload::{FunctionKey, FunctionRegistry};
 use crate::shard::{ActivationCtx, CompiledNode, Step};
 use crate::shards::control::{
   self, Condition, ConditionsCompiled, IfCompiled, MatchCompiled, MaybeCompiled,
@@ -123,6 +123,9 @@ struct Frame {
   /// The function frame whose locals this frame's code addresses; `None`
   /// for the instance's own locals.
   scope: Option<Handle>,
+  /// For a function frame: the table its recursive calls resolve through,
+  /// pinned at the outermost entry of the group.
+  table: Option<Arc<FunctionRegistry>>,
 }
 impl Frame {
   fn new(code: Code) -> Self {
@@ -135,6 +138,7 @@ impl Frame {
       call_depth: 0,
       locals: Vec::new(),
       scope: None,
+      table: None,
     }
   }
 }
@@ -331,53 +335,74 @@ impl Engine {
     call: &CallCompiled,
     ctx: &mut ActivationCtx<'_>,
   ) -> Result<()> {
-    let (depth, input) = {
+    let (depth, input, scope) = {
       let f = self.frames.get(h).expect("frame");
-      let input = if call.body.def.ignores_input() {
+      let input = if call.def().ignores_input() {
         Var::None
       } else {
         f.value.clone()
       };
-      (f.call_depth, input)
+      (f.call_depth, input, f.scope)
     };
-    // Body selection: once per accepted reload, at an inactive boundary.
-    let c = self.continuation(h);
-    let mut body = c.function.clone().unwrap_or_else(|| call.body.clone());
-    if c.revision != ctx.reload_revision() {
-      c.revision = ctx.reload_revision();
-      if let Some(next) = ctx.function_body(&FunctionKey::of(&body))
-        && !Arc::ptr_eq(&next, &body)
-      {
-        let old = std::mem::take(&mut c.children);
-        c.function = Some(next.clone());
-        if let (true, Some(&old_child)) = (call.stateful(), old.first()) {
-          self.migrate_component(h, old_child, &body, &next, ctx)?;
-        }
-        for child in old {
-          self.cleanup_tree(
-            child,
-            &mut CleanupCtx {
-              instance: ctx.instance(),
-            },
-          );
-        }
-        body = next;
-      }
-    }
     if depth >= ctx.max_call_depth {
       use crate::diagnostic::{Diagnostic, PathStep, Phase};
+      let name = &call.def().name;
       let mut d = Diagnostic::new(
         Phase::Activate,
         "activation-error",
         "recursion-limit",
         format!(
-          "{} exceeds max_call_depth {} at depth {depth}",
-          call.body.def.name, ctx.max_call_depth
+          "{name} exceeds max_call_depth {} at depth {depth}",
+          ctx.max_call_depth
         ),
       );
-      d.path.push(PathStep::Function(call.body.def.name.clone()));
-      return Err(Error::Diagnostic(Box::new(d.shard(&call.body.def.name))));
+      d.path.push(PathStep::Function(name.clone()));
+      return Err(Error::Diagnostic(Box::new(d.shard(name))));
     }
+    // The body, and the table it pins for recursive calls underneath it.
+    let (body, table) = match &call.target {
+      // A recursive call resolves through the table its group entered
+      // with, so the group runs as a unit across reloads (§11).
+      CallTarget::Lazy { key, def } => {
+        let table = scope
+          .and_then(|s| self.frames.get(s).expect("scope").table.clone())
+          .unwrap_or_else(|| ctx.table());
+        let body = table.get(key).cloned().ok_or_else(|| {
+          Error::Activation(format!(
+            "{} has no compiled body for input {} in this revision",
+            def.name, key.input
+          ))
+        })?;
+        (body, table)
+      }
+      CallTarget::Direct(direct) => {
+        // Body selection: once per accepted reload, at an inactive boundary.
+        let c = self.continuation(h);
+        let mut body = c.function.clone().unwrap_or_else(|| direct.clone());
+        if c.revision != ctx.reload_revision() {
+          c.revision = ctx.reload_revision();
+          if let Some(next) = ctx.function_body(&FunctionKey::of(&body))
+            && !Arc::ptr_eq(&next, &body)
+          {
+            let old = std::mem::take(&mut c.children);
+            c.function = Some(next.clone());
+            if let (true, Some(&old_child)) = (call.stateful(), old.first()) {
+              self.migrate_component(h, old_child, &body, &next, ctx)?;
+            }
+            for child in old {
+              self.cleanup_tree(
+                child,
+                &mut CleanupCtx {
+                  instance: ctx.instance(),
+                },
+              );
+            }
+            body = next;
+          }
+        }
+        (body, ctx.table())
+      }
+    };
     // Arguments are immutable snapshots for the whole invocation.
     let values: Vec<Var> = call.args.iter().map(|op| op.get(ctx)).collect();
     let body = &body;
@@ -400,7 +425,9 @@ impl Engine {
             instance: ctx.instance(),
           },
         )?;
-        self.frames.get_mut(child).expect("new call frame").locals = body.fresh_locals();
+        let frame = self.frames.get_mut(child).expect("new call frame");
+        frame.locals = body.fresh_locals();
+        frame.table = Some(table.clone());
         self.continuation(h).children.push(child);
         child
       }
@@ -440,6 +467,7 @@ impl Engine {
     }
     let frame = self.frames.get_mut(child).expect("new call frame");
     frame.locals = locals;
+    frame.table = Some(ctx.table());
     for (_, _, node) in &plan.moves {
       if let State::Leaf(state) = &mut frame.states[*node]
         && let Some(applied) = state.downcast_mut::<bool>()
@@ -563,7 +591,7 @@ impl Engine {
     let next = match result {
       Request::Enter(child) => {
         let input = match flow.nodes[index].control() {
-          Some(Control::Call(call)) if call.body.def.ignores_input() => Var::None,
+          Some(Control::Call(call)) if call.def().ignores_input() => Var::None,
           _ => f.value.clone(),
         };
         let depth = f.call_depth

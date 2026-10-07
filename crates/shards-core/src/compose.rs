@@ -14,7 +14,7 @@ use crate::args::{Args, decode};
 use crate::diagnostic::{Diagnostic, PathStep, Phase, TypeRef};
 use crate::error::{Error, Result};
 use crate::flow::CompiledFlow;
-use crate::function::{CallCompiled, CompiledFunction, FunctionDef, KeepSlot};
+use crate::function::{CallCompiled, CallTarget, CompiledFunction, FunctionDef, KeepSlot};
 use crate::reload::{FunctionKey, FunctionRegistry};
 use crate::shard::{CompiledNode, Composed, ParamValue, ShardDef, ShardType};
 use crate::shards::Operand;
@@ -894,6 +894,65 @@ impl ComposeCtx<'_> {
     } else {
       self.input
     };
+    // A call to a function being composed (direct or mutual recursion,
+    // golden path M7) composes against the declared signature: the call
+    // site resolves the body at entry, and its effects are the recursive
+    // group's, known after the group's first pass.
+    if self.composing.iter().any(|n| *n == fdef.name) {
+      if fdef.stateful {
+        return Err(fn_error(
+          name,
+          "recursive-stateful",
+          format!(
+            "{name} is stateful and calls itself (directly or through other functions): a stateful function owns one instance per call site and cannot re-enter it"
+          ),
+        ));
+      }
+      let group = self.cache.recursive_reference(name);
+      if let Owner::Function(caller) = &self.owner {
+        for access in &group.uses {
+          if !caller.may_read(&access.name) {
+            return Err(fn_error(
+              name,
+              "undeclared-mesh-access",
+              format!(
+                "{name} reads mesh variable {}; {} must declare it in `uses: [{}]` to call it",
+                access.name, caller.name, access.name
+              ),
+            ));
+          }
+        }
+        for access in &group.mutates {
+          if !caller.may_write(&access.name) {
+            return Err(fn_error(
+              name,
+              "undeclared-mesh-access",
+              format!(
+                "{name} assigns mesh variable {}; {} must declare it in `mutates: [{}]` to call it",
+                access.name, caller.name, access.name
+              ),
+            ));
+          }
+        }
+      }
+      self
+        .analysis
+        .include(&group, &[PathStep::Function(name.to_string())]);
+      self.analysis.lifetime = Lifetime::Stateless;
+      return Ok(Composed {
+        compiled: crate::shard::erase::<crate::stackless::shards::Call>(CallCompiled {
+          target: CallTarget::Lazy {
+            key: FunctionKey {
+              name: name.to_string(),
+              input,
+            },
+            def: fdef,
+          },
+          args,
+        }),
+        output: fdef_output(&self.env.functions[name]),
+      });
+    }
     let body = self
       .cache
       .get_or_compose_function(&fdef, input, self.env, self.composing, self.depth)
@@ -942,7 +1001,10 @@ impl ComposeCtx<'_> {
       Lifetime::Stateless
     };
     Ok(Composed {
-      compiled: crate::shard::erase::<crate::stackless::shards::Call>(CallCompiled { body, args }),
+      compiled: crate::shard::erase::<crate::stackless::shards::Call>(CallCompiled {
+        target: CallTarget::Direct(body),
+        args,
+      }),
       output: fdef.output,
     })
   }
@@ -969,6 +1031,10 @@ impl ComposeCtx<'_> {
     }
     Error::Diagnostic(d)
   }
+}
+
+fn fdef_output(def: &FunctionDef) -> Type {
+  def.output
 }
 
 fn compose_diagnostic(code: &'static str, message: String) -> Diagnostic {
@@ -1114,12 +1180,24 @@ fn default_hash(def: &WireDef, input: Type) -> u64 {
   hasher.finish()
 }
 
+/// A recursive group being composed (golden path M7): its root is the
+/// function whose body was referenced while composing; the group's effects
+/// and mesh access are the root's first-pass analysis, applied to every
+/// recursive call site in the second pass.
+struct RecursiveGroup {
+  root: String,
+  analysis: Analysis,
+}
+
 /// Compose cache with two-step lookup (contract §4).
 pub struct ComposeCache {
   entries: HashMap<u64, Vec<Entry>>,
   functions: HashMap<u64, Vec<FunctionEntry>>,
   hash_fn: HashFn,
   pub stats: CacheStats,
+  /// Functions referenced while being composed, in the current pass.
+  recursive_refs: Vec<String>,
+  group: Option<RecursiveGroup>,
 }
 
 impl Default for ComposeCache {
@@ -1136,6 +1214,8 @@ impl ComposeCache {
       functions: HashMap::new(),
       hash_fn,
       stats: CacheStats::default(),
+      recursive_refs: Vec::new(),
+      group: None,
     }
   }
 
@@ -1247,27 +1327,10 @@ impl ComposeCache {
       }
     }
     self.stats.misses += 1;
-    if composing.iter().any(|n| n == &def.name) {
-      return Err(if def.stateful {
-        fn_error(
-          &def.name,
-          "recursive-stateful",
-          format!(
-            "{} is stateful and calls itself (directly or through other functions): a stateful function owns one instance per call site and cannot re-enter it",
-            def.name
-          ),
-        )
-      } else {
-        fn_error(
-          &def.name,
-          "recursive-function",
-          format!(
-            "{} calls itself (directly or through other functions); recursion is not supported yet (golden path M7)",
-            def.name
-          ),
-        )
-      });
-    }
+    // A recursive reference while composing is handled by the call site
+    // (`compose_call`); reaching here with the name in `composing` cannot
+    // happen.
+    debug_assert!(!composing.iter().any(|n| n == &def.name));
     composing.push(def.name.clone());
     let result = {
       let mut ctx = ComposeCtx {
@@ -1379,6 +1442,20 @@ impl ComposeCache {
       }
     }
     self.stats.function_composes += 1;
+    // The root of a recursive group: its first pass found the group's
+    // effects; compose it again with every recursive call site carrying
+    // them (a fixpoint after one more pass, since the union is finite).
+    let referenced = self.recursive_refs.iter().any(|n| *n == def.name);
+    if referenced && self.group.as_ref().is_none_or(|g| g.root != def.name) {
+      let outer = self.group.replace(RecursiveGroup {
+        root: def.name.clone(),
+        analysis: flow.analysis.clone(),
+      });
+      self.recursive_refs.retain(|n| *n != def.name);
+      let result = self.get_or_compose_function(def, input, env, composing, depth);
+      self.group = outer;
+      return result;
+    }
     let compiled = Arc::new(CompiledFunction {
       def: def.clone(),
       input,
@@ -1390,11 +1467,37 @@ impl ComposeCache {
       deps,
       functions,
     });
-    self.functions.entry(key).or_default().push(FunctionEntry {
-      def: def.clone(),
-      input,
-      compiled: compiled.clone(),
-    });
+    // Bodies composed during a group's first pass carry provisional
+    // effects at their recursive call sites: keep them out of the cache.
+    if self.recursive_refs.is_empty() || self.group.is_some() {
+      self.functions.entry(key).or_default().push(FunctionEntry {
+        def: def.clone(),
+        input,
+        compiled: compiled.clone(),
+      });
+    }
+    if self.group.as_ref().is_some_and(|g| g.root == def.name) {
+      self.group = None;
+      self.recursive_refs.retain(|n| *n != def.name);
+    }
     Ok(compiled)
+  }
+
+  /// A call to a function being composed: records the reference and gives
+  /// the analysis its call site carries (the group's, once known).
+  pub(crate) fn recursive_reference(&mut self, name: &str) -> Analysis {
+    if !self.recursive_refs.iter().any(|n| n == name) {
+      self.recursive_refs.push(name.to_string());
+    }
+    match &self.group {
+      Some(group) => Analysis {
+        effects: group.analysis.effects,
+        lifetime: Lifetime::Stateless,
+        uses: group.analysis.uses.clone(),
+        mutates: group.analysis.mutates.clone(),
+        occurrences: Default::default(),
+      },
+      None => Analysis::default(),
+    }
   }
 }

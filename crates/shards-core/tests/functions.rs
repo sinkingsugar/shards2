@@ -690,17 +690,143 @@ fn return_at_a_looped_root_ends_the_iteration() {
 }
 
 #[test]
-fn recursion_is_rejected_at_compose_until_m7() {
+fn stateless_functions_recurse_directly_and_mutually() {
+  use shards_core::shards::math::{MULTIPLY, SUBTRACT};
+  use shards_core::shards::values::IS;
+  // Factorial: `If({IsLess(2)} {1} {input | Sub(1) | Fact | Multiply(input)})`.
   let mut mesh = Mesh::new();
   mesh.add_function(
-    FunctionDef::new("Down", Type::int(), Type::int()).body(vec![call("Down", vec![])]),
+    FunctionDef::new("Fact", Type::int(), Type::int()).body(vec![if_(
+      vec![is_less(val(Var::Int(2)))],
+      vec![konst(Var::Int(1))],
+      Some(vec![
+        ShardDef::new(&SUBTRACT, vec![val(Var::Int(1))]),
+        call("Fact", vec![]),
+        ShardDef::new(&MULTIPLY, vec![var("input")]),
+      ]),
+    )]),
+  );
+  mesh.add_wire(wire(
+    "root",
+    false,
+    vec![konst(Var::Int(5)), call("Fact", vec![])],
+  ));
+  assert_eq!(
+    run_logging(&mut mesh, 5).0,
+    Outcome::Completed(Var::Int(120))
+  );
+  assert_eq!(
+    mesh.cache_stats().function_composes,
+    2,
+    "one first pass, one final"
+  );
+
+  // Mutual recursion, with a suspension inside one member.
+  let mut mesh = Mesh::new();
+  mesh.add_function(
+    FunctionDef::new("Even", Type::int(), Type::bool()).body(vec![if_(
+      vec![ShardDef::new(&IS, vec![val(Var::Int(0))])],
+      vec![konst(Var::Bool(true))],
+      Some(vec![
+        ShardDef::new(&SUBTRACT, vec![val(Var::Int(1))]),
+        call("Odd", vec![]),
+      ]),
+    )]),
+  );
+  mesh.add_function(
+    FunctionDef::new("Odd", Type::int(), Type::bool()).body(vec![
+      pause(),
+      if_(
+        vec![ShardDef::new(&IS, vec![val(Var::Int(0))])],
+        vec![konst(Var::Bool(false))],
+        Some(vec![
+          ShardDef::new(&SUBTRACT, vec![val(Var::Int(1))]),
+          call("Even", vec![]),
+        ]),
+      ),
+    ]),
+  );
+  mesh.add_wire(wire(
+    "root",
+    false,
+    vec![
+      konst(Var::Int(7)),
+      call("Even", vec![]),
+      log(),
+      konst(Var::Int(6)),
+      call("Even", vec![]),
+      log(),
+    ],
+  ));
+  let (outcome, lines) = run_logging(&mut mesh, 50);
+  assert_eq!(outcome, Outcome::Completed(Var::Bool(true)));
+  assert_eq!(lines, ["false", "true"]);
+  // Effects are the group's: Even suspends through Odd.
+  let even = mesh.compile_function("Even").unwrap();
+  assert!(even.flow.analysis.effects.suspends);
+  let odd = mesh.compile_function("Odd").unwrap();
+  assert!(odd.flow.analysis.effects.suspends);
+  let mut mesh = Mesh::new();
+  mesh.add_function(
+    FunctionDef::new("Ping", Type::int(), Type::int())
+      .pure()
+      .body(vec![call("Pong", vec![])]),
+  );
+  mesh.add_function(
+    FunctionDef::new("Pong", Type::int(), Type::int()).body(vec![
+      pause(),
+      if_(
+        vec![is_less(val(Var::Int(1)))],
+        vec![konst(Var::Int(0))],
+        Some(vec![
+          ShardDef::new(&SUBTRACT, vec![val(Var::Int(1))]),
+          call("Ping", vec![]),
+        ]),
+      ),
+    ]),
+  );
+  mesh.add_wire(wire(
+    "root",
+    false,
+    vec![konst(Var::Int(3)), call("Ping", vec![])],
+  ));
+  let d = compile_error(&mut mesh);
+  assert_eq!((d.code, d.shard.as_deref()), ("not-pure", Some("Ping")));
+  assert!(d.message.contains("`suspends`"), "{}", d.message);
+}
+
+#[test]
+fn recursion_hits_the_call_depth_limit_and_cleans_every_frame_once() {
+  take_probe_events();
+  let mut mesh = Mesh::new();
+  mesh.set_max_call_depth(8);
+  mesh.add_function(
+    FunctionDef::new("Down", Type::int(), Type::int())
+      .body(vec![probe("down"), call("Down", vec![])]),
   );
   mesh.add_wire(wire(
     "root",
     false,
     vec![konst(Var::Int(1)), call("Down", vec![])],
   ));
-  assert_eq!(compile_error(&mut mesh).code, "recursive-function");
+  let (outcome, _) = run_logging(&mut mesh, 5);
+  let Outcome::Failed(err) = outcome else {
+    panic!("expected the depth limit, got {outcome:?}");
+  };
+  let d = err.diagnostic().unwrap();
+  assert_eq!(
+    (d.code, d.shard.as_deref()),
+    ("recursion-limit", Some("Down"))
+  );
+  assert!(d.message.contains("depth 8"), "{}", d.message);
+  let events = take_probe_events();
+  let count = |kind| events.iter().filter(|e| e.kind == kind).count();
+  assert_eq!(count(ProbeEventKind::Instantiate), 8);
+  assert_eq!(count(ProbeEventKind::Cleanup), 8);
+}
+
+#[test]
+fn a_cycle_through_a_stateful_function_is_rejected() {
   let mut mesh = Mesh::new();
   mesh.add_function(
     FunctionDef::new("Even", Type::int(), Type::int())

@@ -238,15 +238,34 @@ fn access_type(accesses: &[MeshAccess], name: &str) -> Option<MeshAccess> {
   accesses.iter().find(|a| a.name == name).cloned()
 }
 
-/// A call site: the shared body and the argument operands, one per
-/// declared parameter, in declaration order.
+/// What a call site runs: the body it was composed against, or, inside a
+/// recursive group (golden path M7), the function's identity, resolved
+/// through the table the outermost invocation entered with, so a compiled
+/// body never holds a cyclic `Arc` and a group is pinned as a unit.
+pub enum CallTarget {
+  Direct(Arc<CompiledFunction>),
+  Lazy {
+    key: crate::reload::FunctionKey,
+    def: Arc<FunctionDef>,
+  },
+}
+
+/// A call site: the target and the argument operands, one per declared
+/// parameter, in declaration order.
 pub struct CallCompiled {
-  pub body: Arc<CompiledFunction>,
+  pub target: CallTarget,
   pub args: Vec<Operand>,
 }
 
 impl CallCompiled {
+  pub fn def(&self) -> &FunctionDef {
+    match &self.target {
+      CallTarget::Direct(body) => &body.def,
+      CallTarget::Lazy { def, .. } => def,
+    }
+  }
+
   pub fn stateful(&self) -> bool {
-    self.body.def.stateful
+    self.def().stateful
   }
 }

@@ -70,7 +70,7 @@ A function is declared at the top level with its signature and called like a sha
 - Inside the body, a parameter is an immutable variable of the same name, and `input` is the value the call received.
 - A function starts with fresh variables on every call. `stateful: true` makes each call site keep its own instance, so `Keep` and `Once` work inside: `@fn(Counter stateful: true input: None output: Int params: {step: Int} { Keep(n 0) n | Math.Add(step) | Update(n) })` logs 1, 2, 3 when called repeatedly from the same place.
 - Mesh variables (declared by the host) are visible in a function only when listed in `uses: [name]` (reads) and `mutates: [name]` (writes).
-- A function may not call itself, directly or indirectly.
+- A function may call itself, directly or through other functions (a stateful one may not); the depth of nested calls is limited by the host.
 
 ## Wires, meshes and scheduling
 

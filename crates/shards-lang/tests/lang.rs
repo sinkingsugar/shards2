@@ -2014,10 +2014,42 @@ fn uncalled_functions_are_still_checked() {
     lines_of("1 | Twice | Log\n@fn(Twice input: Int output: Int params: {} { Math.Multiply(2) })"),
     ["2"]
   );
-  let report = check(
-    "@fn(A input: Int output: Int params: {} { B })\n@fn(B input: Int output: Int params: {} { A })\n1 | A",
-  );
-  assert_eq!(report.diagnostics[0].code, "recursive-function");
+  // Mutual recursion composes against the declared signatures and runs.
+  let source = "@fn(Even input: Int output: Bool params: {} { If({Is(0)} {true} {Math.Subtract(1) | Odd}) })\n@fn(Odd input: Int output: Bool params: {} { If({Is(0)} {false} {Math.Subtract(1) | Even}) })\n7 | Even | Log\n6 | Odd | Log";
+  assert_eq!(lines_of(source), ["false", "false"]);
+}
+
+#[test]
+fn recursion_folds_a_tree_of_indices() {
+  // Children are indices into flat sequences; `Sum` recurses over them.
+  let source = r#"@fn(Sum input: None output: Int params: {node: Int values: [Int] kids: [[Any]]} {
+  values | Take(node) | ExpectInt | Var(total)
+  kids | Take(node) | ExpectSeq = children
+  children | Count | Var(n)
+  0 | Var(i)
+  Repeat({
+    children | Take(i) | ExpectInt = child
+    Sum(node: child values: values kids: kids) | Math.Add(total) | Update(total)
+    Inc(i)
+  } times: n)
+  total
+})
+[1 2 3 4] = values
+[[1 2] [3] [] []] = kids
+Sum(node: 0 values: values kids: kids) | Log
+@fn(Fact input: Int output: Int params: {} { If({IsLess(2)} {1} {Math.Subtract(1) | Fact | Math.Multiply(input)}) })
+5 | Fact | Log
+@fn(Down input: Int output: Int params: {} { Pause If({IsLess(1)} {0} {Math.Subtract(1) | Down | Math.Add(1)}) })
+3 | Down | Log"#;
+  assert_eq!(lines_of(source), ["10", "120", "3"]);
+  let report = check(source);
+  assert!(report.ok(), "{}", report.to_json());
+  let down = report
+    .functions
+    .iter()
+    .find(|f| f.signature.name == "Down")
+    .unwrap();
+  assert!(down.signature.effects.suspends);
 }
 
 #[test]

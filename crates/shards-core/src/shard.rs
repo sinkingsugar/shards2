@@ -90,6 +90,9 @@ pub struct ActivationCtx<'a> {
   pub(crate) instance: InstanceId,
   pub(crate) locals: &'a mut Vec<Var>,
   pub(crate) revisions: &'a crate::reload::Revisions,
+  /// Every body this mesh compiled, by key: what recursive call sites
+  /// resolve through, pinned per outermost invocation.
+  pub(crate) table: &'a Arc<crate::reload::FunctionRegistry>,
   pub(crate) mesh_frame: &'a mut Vec<Var>,
   pub(crate) spawn_queue: &'a mut Vec<(Arc<CompiledWire>, Var)>,
   pub(crate) waiting: &'a mut bool,
@@ -110,6 +113,11 @@ impl ActivationCtx<'_> {
 
   pub(crate) fn reload_revision(&self) -> u64 {
     self.revisions.revision
+  }
+
+  /// The mesh's current function table (the newest accepted bodies).
+  pub(crate) fn table(&self) -> Arc<crate::reload::FunctionRegistry> {
+    self.table.clone()
   }
 
   pub fn instance(&self) -> InstanceId {

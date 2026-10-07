@@ -859,8 +859,10 @@ pub(crate) fn compare(input: &Var, operand: Var) -> Result<std::cmp::Ordering> {
 
 /// Compiled form of `When` and `While`: a predicate flow and a body flow.
 pub struct Predicated {
-  pub(crate) pred: CompiledFlow,
-  pub(crate) body: CompiledFlow,
+  /// Shared with the VM's `vm-branch` instruction when both flows are
+  /// straight-line code.
+  pub(crate) pred: Arc<CompiledFlow>,
+  pub(crate) body: Arc<CompiledFlow>,
 }
 
 /// Composes a predicate flow (which must output Bool) and a body flow that
@@ -892,7 +894,10 @@ fn compose_predicate_and_body(
   // The Action flow might not run (When) or might run zero times (While).
   let body = ctx.compose_flow_conditional(body, input)?;
   Ok(Composed {
-    compiled: Predicated { pred, body },
+    compiled: Predicated {
+      pred: Arc::new(pred),
+      body: Arc::new(body),
+    },
     output: input,
   })
 }
@@ -1073,11 +1078,13 @@ pub(crate) fn compose_sub(args: &Args, ctx: &mut ComposeCtx<'_>) -> Result<Compo
 }
 
 pub struct RepeatCompiled {
-  pub(crate) body: CompiledFlow,
+  /// Shared with the VM's `vm-repeat` instruction when the body is
+  /// straight-line code.
+  pub(crate) body: Arc<CompiledFlow>,
   /// `None`: no limit (Forever, or Until alone).
   pub(crate) times: Option<Operand>,
   /// Checked before each iteration; true stops the repeat.
-  pub(crate) until: Option<CompiledFlow>,
+  pub(crate) until: Option<Arc<CompiledFlow>>,
 }
 
 impl RepeatCompiled {
@@ -1207,7 +1214,11 @@ pub(crate) fn compose_repeat(
     ));
   }
   Ok(Composed {
-    compiled: RepeatCompiled { body, times, until },
+    compiled: RepeatCompiled {
+      body: Arc::new(body),
+      times,
+      until: until.map(Arc::new),
+    },
     output: input,
   })
 }

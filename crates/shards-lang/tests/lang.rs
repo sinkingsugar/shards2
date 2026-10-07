@@ -1381,9 +1381,11 @@ fn deep_do_chains_are_a_diagnostic_not_a_crash() {
     Var::Int(1)
   );
   // The device exercises the same over-limit diagnostic without parsing
-  // thousands of unrelated declarations into its constrained heap.
+  // thousands of unrelated declarations into its constrained heap: a chain
+  // of 40 function declarations is about 800 tokens (the token vector's
+  // next doubling would ask the fragmented heap for 80 KiB at once).
   let excessive: &[usize] = if cfg!(target_os = "espidf") {
-    &[80]
+    &[40]
   } else {
     &[80, 400, 3000]
   };

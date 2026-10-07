@@ -18,6 +18,7 @@ use crate::shards::math::{self, BinOp};
 use crate::shards::values;
 use crate::types::{Shape, Type};
 use crate::var::{Float4, Table, Var};
+use std::sync::Arc;
 
 /// Opaque internal optimization hook. Ordinary shards use the default `None`.
 #[doc(hidden)]
@@ -59,6 +60,172 @@ pub(crate) enum Op {
   Equal(bool, Operand),
   /// Passes the value through (`Keep`: its slot was set at frame creation).
   Pass,
+  /// A call to a straight-line body from a stateless, non-recursive site:
+  /// runs the callee's code on its kept locals right here (`VmCalls`
+  /// supplies them), without an engine step. When the site is not ready
+  /// (first call, a reload) the run stops before it and the engine enters
+  /// the frame.
+  VmCall,
+  /// A `Repeat` whose body (and `until` flow) is straight-line code: the
+  /// loop runs here, on this frame's locals, without engine steps. Boxed
+  /// so every instruction stays 48 bytes.
+  VmRepeat(Box<VmLoop>),
+  /// A `When` or `While` whose predicate and action are straight-line
+  /// code: runs here like `VmRepeat`, and passes its input through.
+  VmBranch(Box<VmBranch>),
+}
+
+#[cfg(test)]
+mod size {
+  #[test]
+  fn an_instruction_is_48_bytes_in_release_layout() {
+    // `Instruction` adds the output check in debug builds; the op itself is
+    // one value plus a tag.
+    assert_eq!(std::mem::size_of::<super::Op>(), 48);
+  }
+}
+
+/// What a VM-level `Repeat` runs.
+pub(crate) struct VmLoop {
+  pub body: Arc<crate::flow::CompiledFlow>,
+  pub times: Option<Operand>,
+  pub until: Option<Arc<crate::flow::CompiledFlow>>,
+}
+
+/// What a VM-level `When` (`looping: false`) or `While` runs.
+pub(crate) struct VmBranch {
+  pub pred: Arc<crate::flow::CompiledFlow>,
+  pub body: Arc<crate::flow::CompiledFlow>,
+  pub looping: bool,
+}
+
+/// Whether a flow's code runs through the VM from start to end: no node
+/// activates through its shard. Composite instructions (`VmCall`,
+/// `VmRepeat`, `VmBranch`) count as code; a composite without one is a
+/// `Fallback`.
+pub(crate) fn straight_line(code: &[Instruction]) -> bool {
+  code.iter().all(|i| !matches!(i.op, Op::Fallback))
+}
+
+/// Whether a flow's code is one `run` call that needs nothing from the
+/// engine: straight-line, without a site, loop or branch (which ask the
+/// engine for frames) and without a constructor (which `run` stops at).
+pub(crate) fn leaf_code(code: &[Instruction]) -> bool {
+  code.iter().all(|i| {
+    !matches!(
+      i.op,
+      Op::Fallback | Op::VmCall | Op::VmRepeat(_) | Op::VmBranch(_)
+    ) && !i.is_constructor()
+  })
+}
+
+/// What the engine lends a run for the call sites and child flows of the
+/// frame being run. Copyable, so a nested run gets its own for the frame
+/// it runs in.
+pub(crate) trait VmCalls: Copy {
+  /// The callee of the call site at instruction `site`, when it can run
+  /// here: a stateless, non-recursive site with a kept frame, the current
+  /// revision, a straight-line body whose own sites are ready too, and
+  /// within the call depth. `None` sends the run back to the engine.
+  fn enter(&self, site: usize) -> Option<VmCallee<Self>>;
+  /// The same test without entering: readiness of the site and, through
+  /// it, of everything its body would run.
+  fn site_ready(&self, site: usize) -> bool;
+  /// The frame of child flow `i` of the composite at `site`.
+  fn child(&self, site: usize, i: usize) -> Option<Self>;
+}
+
+/// A callee a run enters: its code, its kept locals (a buffer that outlives
+/// the run and never resizes, see the engine's `switch_scope` contract)
+/// and how to bind the arguments.
+pub(crate) struct VmCallee<C> {
+  pub code: &'static [Instruction],
+  /// Whether the code holds a constructor (then it runs through
+  /// `run_segment`, otherwise through `run` directly).
+  pub constructors: bool,
+  pub locals: *mut [Var],
+  pub param_slots: &'static [usize],
+  /// The locals that are neither parameters nor the input: cleared at
+  /// entry (the others are bound).
+  pub scratch: &'static [usize],
+  pub input_slot: usize,
+  pub args: &'static [Operand],
+  pub ignores_input: bool,
+  pub calls: C,
+}
+
+/// No engine: calls are never ready, child flows have no frame. For code
+/// that needs none (`leaf_code`), and tests.
+#[derive(Clone, Copy)]
+pub(crate) struct NoCalls;
+
+impl VmCalls for NoCalls {
+  fn enter(&self, _: usize) -> Option<VmCallee<Self>> {
+    None
+  }
+  fn site_ready(&self, _: usize) -> bool {
+    false
+  }
+  fn child(&self, _: usize, _: usize) -> Option<Self> {
+    Some(NoCalls)
+  }
+}
+
+/// Whether every call site and loop in `code` can run here now: checked
+/// before a VM loop starts, so a body never runs halfway and then needs
+/// the engine (a reload, the one thing that changes readiness, happens
+/// between ticks).
+pub(crate) fn vm_ready<C: VmCalls>(code: &[Instruction], calls: &C) -> bool {
+  code
+    .iter()
+    .enumerate()
+    .all(|(i, instruction)| match &instruction.op {
+      Op::VmCall => calls.site_ready(i),
+      Op::VmRepeat(l) => {
+        calls
+          .child(i, 0)
+          .is_some_and(|c| vm_ready(&l.body.code, &c))
+          && l
+            .until
+            .as_ref()
+            .is_none_or(|u| calls.child(i, 1).is_some_and(|c| vm_ready(&u.code, &c)))
+      }
+      Op::VmBranch(b) => {
+        calls
+          .child(i, 0)
+          .is_some_and(|c| vm_ready(&b.pred.code, &c))
+          && calls
+            .child(i, 1)
+            .is_some_and(|c| vm_ready(&b.body.code, &c))
+      }
+      _ => true,
+    })
+}
+
+/// Runs `code` from `from` as far as the VM goes: constructors through
+/// `construct`, everything else through `run`, until the end of the code
+/// or an instruction the VM cannot run (a `Fallback`, or a call site that
+/// is not ready), which it stops before.
+pub(crate) fn run_segment<C: VmCalls>(
+  code: &[Instruction],
+  from: usize,
+  input: Var,
+  locals: &mut [Var],
+  mesh: &mut [Var],
+  calls: &C,
+) -> Result<(usize, Var)> {
+  let (mut pc, mut value) = (from, input);
+  loop {
+    let before = pc;
+    (pc, value) = if pc < code.len() && code[pc].is_constructor() {
+      construct(code, pc, value, locals, mesh)?
+    } else {
+      run(code, pc, value, locals, mesh, calls)?
+    };
+    if pc == code.len() || pc == before {
+      return Ok((pc, value));
+    }
+  }
 }
 
 /// Which ordering a comparison instruction tests for.
@@ -111,6 +278,9 @@ impl Op {
       Op::Compare(..) => "compare",
       Op::Equal(..) => "equal",
       Op::Pass => "pass",
+      Op::VmCall => "vm-call",
+      Op::VmRepeat(_) => "vm-repeat",
+      Op::VmBranch(_) => "vm-branch",
     }
   }
 }
@@ -189,6 +359,9 @@ pub(crate) fn lower_scratch_releases(code: &mut [Instruction]) {
       | Op::Take(_)
       | Op::TakeSlot(_)
       | Op::Push(_)
+      | Op::VmCall
+      | Op::VmRepeat(_)
+      | Op::VmBranch(_)
       | Op::AddFloat4Const(_)
       | Op::AddFloat4Bound(_) => may_own = true,
       Op::Const(_)
@@ -329,12 +502,13 @@ impl Frames {
 /// are no callbacks, suspension points, frame resizes or escaping references.
 /// Code must be lowered and entry must be at a segment boundary (flow start or
 /// immediately after a fallback/constructor), as enforced by both flow loops.
-pub(crate) fn run(
+pub(crate) fn run<C: VmCalls>(
   code: &[Instruction],
   mut index: usize,
   input: Var,
   locals: &mut [Var],
   mesh: &mut [Var],
+  calls: &C,
 ) -> Result<(usize, Var)> {
   let frames = Frames {
     locals: locals.as_mut_ptr(),
@@ -433,12 +607,20 @@ pub(crate) fn run(
           value = &scratch;
         }
         Op::Push(b) => {
-          // Snapshot before mutating the slot: the input may alias the
-          // destination (including a sequence pushing itself).
-          scratch = (*value).clone();
-          value = &scratch;
-          match &mut *frames.slot(*b) {
-            Var::Seq(items) => std::sync::Arc::make_mut(items).push(scratch.clone()),
+          // The accumulator never points into a sequence's buffer (a Take
+          // copies its element out), so only an input that is the
+          // destination itself (a sequence pushing itself) needs a
+          // snapshot before the slot is mutated.
+          let target = frames.slot(*b);
+          let pushed = if std::ptr::eq(value, target) {
+            scratch = (*value).clone();
+            value = &scratch;
+            scratch.clone()
+          } else {
+            (*value).clone()
+          };
+          match &mut *target {
+            Var::Seq(items) => std::sync::Arc::make_mut(items).push(pushed),
             _ => {
               return Err(Error::Activation(
                 "Push: the variable is not a sequence".into(),
@@ -503,6 +685,34 @@ pub(crate) fn run(
           }
         }
         Op::Pass => {}
+        Op::VmCall => match vm_call_op(calls, index, value, &frames)? {
+          Some(output) => {
+            scratch = output;
+            value = &scratch;
+          }
+          None => break,
+        },
+        Op::VmRepeat(l) => {
+          // The loop's input is its output; the body may write the slot
+          // the accumulator points at, so take a snapshot first.
+          if !std::ptr::eq(value, &scratch) && !std::ptr::eq(value, numeric.as_ptr()) {
+            scratch = (*value).clone();
+            value = &scratch;
+          }
+          if !vm_repeat_op(l, calls, index, value, &frames)? {
+            break;
+          }
+        }
+        Op::VmBranch(b) => {
+          // Pass-through like the loop: snapshot the input first.
+          if !std::ptr::eq(value, &scratch) && !std::ptr::eq(value, numeric.as_ptr()) {
+            scratch = (*value).clone();
+            value = &scratch;
+          }
+          if !vm_branch_op(b, calls, index, value, &frames)? {
+            break;
+          }
+        }
         Op::Arith(op, rhs) => {
           let rhs = match rhs {
             Operand::Const(v) => v,
@@ -554,6 +764,172 @@ fn arith_name(op: BinOp) -> &'static str {
   }
 }
 
+/// Out of line so `run`'s own frame stays small: a VM call's state would
+/// otherwise be set up in every segment's prologue.
+#[inline(never)]
+unsafe fn vm_call_op<C: VmCalls>(
+  calls: &C,
+  index: usize,
+  value: *const Var,
+  frames: &Frames,
+) -> Result<Option<Var>> {
+  unsafe {
+    let Some(callee) = calls.enter(index) else {
+      return Ok(None);
+    };
+    // SAFETY: the callee's locals are a kept frame's buffer, distinct
+    // from this frame's, alive and unmoved for the run (the engine's
+    // contract for invocation locals); nothing else addresses it
+    // while the callee runs.
+    let callee_locals: &mut [Var] = &mut *callee.locals;
+    let input = if callee.ignores_input {
+      Var::None
+    } else {
+      (*value).clone()
+    };
+    for slot in callee.scratch {
+      callee_locals[*slot] = Var::None;
+    }
+    for (slot, op) in callee.param_slots.iter().zip(callee.args) {
+      callee_locals[*slot] = match op {
+        Operand::Const(v) => v.clone(),
+        Operand::Bound(b) => (*frames.slot(*b)).clone(),
+      };
+    }
+    callee_locals[callee.input_slot] = input.clone();
+    // SAFETY: the mesh frame through the same pointer this run uses.
+    let mesh = std::slice::from_raw_parts_mut(frames.mesh, frames.mesh_len);
+    let (_, output) = if callee.constructors {
+      run_segment(callee.code, 0, input, callee_locals, mesh, &callee.calls)?
+    } else {
+      run(callee.code, 0, input, callee_locals, mesh, &callee.calls)?
+    };
+    Ok(Some(output))
+  }
+}
+
+/// Out of line, like [`vm_call_op`]. `Ok(false)`: the loop cannot run here
+/// (a call site in it is not ready), nothing was executed.
+#[inline(never)]
+unsafe fn vm_repeat_op<C: VmCalls>(
+  l: &VmLoop,
+  calls: &C,
+  index: usize,
+  value: *const Var,
+  frames: &Frames,
+) -> Result<bool> {
+  unsafe {
+    let (Some(body_calls), until_calls) = (
+      calls.child(index, 0),
+      l.until.as_ref().map(|_| calls.child(index, 1)),
+    ) else {
+      return Ok(false);
+    };
+    if !vm_ready(&l.body.code, &body_calls)
+      || until_calls.as_ref().is_some_and(|u| {
+        u.as_ref()
+          .is_none_or(|c| !vm_ready(&l.until.as_ref().expect("until").code, c))
+      })
+    {
+      return Ok(false);
+    }
+    let limit = match &l.times {
+      None => None,
+      Some(op) => match op {
+        Operand::Const(Var::Int(t)) => Some((*t).max(0)),
+        Operand::Bound(b) => match &*frames.slot(*b) {
+          Var::Int(t) => Some((*t).max(0)),
+          _ => return Err(Error::Activation("Repeat: times is not an Int".into())),
+        },
+        Operand::Const(_) => {
+          return Err(Error::Activation("Repeat: times is not an Int".into()));
+        }
+      },
+    };
+    // SAFETY: the frames through the same pointers this run uses; the
+    // body runs on the same locals, with this run's accumulator kept
+    // in owned storage (above) and no instruction of this run live.
+    let (locals, mesh) = (
+      std::slice::from_raw_parts_mut(frames.locals, frames.locals_len),
+      std::slice::from_raw_parts_mut(frames.mesh, frames.mesh_len),
+    );
+    let body = &l.body.code;
+    let constructors = body.iter().any(Instruction::is_constructor);
+    let mut count = 0;
+    while !crate::shards::control::repeat_exhausted(limit, count) {
+      if let (Some(until), Some(Some(c))) = (&l.until, &until_calls) {
+        let (_, stop) = run_segment(&until.code, 0, (*value).clone(), locals, mesh, c)?;
+        match stop {
+          Var::Bool(true) => break,
+          Var::Bool(false) => {}
+          _ => return Err(Error::Activation("Repeat: until is not a Bool".into())),
+        }
+      }
+      if constructors {
+        run_segment(body, 0, (*value).clone(), locals, mesh, &body_calls)?;
+      } else {
+        run(body, 0, (*value).clone(), locals, mesh, &body_calls)?;
+      }
+      count += 1;
+    }
+
+    Ok(true)
+  }
+}
+
+/// Out of line, like [`vm_repeat_op`]: `Ok(false)` when a call site in
+/// the predicate or the action is not ready, nothing executed.
+#[inline(never)]
+unsafe fn vm_branch_op<C: VmCalls>(
+  b: &VmBranch,
+  calls: &C,
+  index: usize,
+  value: *const Var,
+  frames: &Frames,
+) -> Result<bool> {
+  unsafe {
+    let (Some(pred_calls), Some(body_calls)) = (calls.child(index, 0), calls.child(index, 1))
+    else {
+      return Ok(false);
+    };
+    if !vm_ready(&b.pred.code, &pred_calls) || !vm_ready(&b.body.code, &body_calls) {
+      return Ok(false);
+    }
+    // SAFETY: as in `vm_repeat_op`.
+    let (locals, mesh) = (
+      std::slice::from_raw_parts_mut(frames.locals, frames.locals_len),
+      std::slice::from_raw_parts_mut(frames.mesh, frames.mesh_len),
+    );
+    let pred = &b.pred.code;
+    let body = &b.body.code;
+    let pred_constructors = pred.iter().any(Instruction::is_constructor);
+    let body_constructors = body.iter().any(Instruction::is_constructor);
+    loop {
+      let (_, taken) = if pred_constructors {
+        run_segment(pred, 0, (*value).clone(), locals, mesh, &pred_calls)?
+      } else {
+        run(pred, 0, (*value).clone(), locals, mesh, &pred_calls)?
+      };
+      match taken {
+        Var::Bool(true) => {}
+        Var::Bool(false) => break,
+        _ => {
+          return Err(Error::Activation("predicate did not output a Bool".into()));
+        }
+      }
+      if body_constructors {
+        run_segment(body, 0, (*value).clone(), locals, mesh, &body_calls)?;
+      } else {
+        run(body, 0, (*value).clone(), locals, mesh, &body_calls)?;
+      }
+      if !b.looping {
+        break;
+      }
+    }
+    Ok(true)
+  }
+}
+
 #[cold]
 fn add_generic(a: &Var, b: &Var) -> Result<Var> {
   crate::shards::math::arith(crate::shards::math::BinOp::Add, "Math.Add", a, b)
@@ -579,29 +955,42 @@ pub(crate) fn construct(
   while let Some(instruction) = code.get(index) {
     match &instruction.op {
       Op::SeqMake(_) => {
-        // Consume the old output. A shared allocation belongs to a saved
-        // snapshot, so leave it alone and start empty; never copy its items.
-        let mut output = match std::mem::take(&mut value) {
-          Var::Seq(items) => Arc::try_unwrap(items).unwrap_or_default(),
-          _ => Vec::new(),
+        // Consume the old output. A uniquely owned sequence is rebuilt in
+        // place, handle and buffer included; a shared one belongs to a
+        // saved snapshot, so it is left alone and a new one is built.
+        let mut output: Option<Arc<Vec<Var>>> = match std::mem::take(&mut value) {
+          Var::Seq(items) => Some(items),
+          _ => None,
         };
         while let Some(instruction) = code.get(index) {
           let Op::SeqMake(items) = &instruction.op else {
             break;
           };
-          output.clear();
-          output.extend(items.iter().map(&read));
+          match output.as_mut().and_then(Arc::get_mut) {
+            // Same length: overwrite the slots (one drop and one write
+            // each, no length bookkeeping).
+            Some(buffer) if buffer.len() == items.len() => {
+              for (slot, operand) in buffer.iter_mut().zip(items) {
+                *slot = read(operand);
+              }
+            }
+            Some(buffer) => {
+              buffer.clear();
+              buffer.extend(items.iter().map(&read));
+            }
+            None => output = Some(Arc::new(items.iter().map(&read).collect())),
+          }
           // Checking builds materialize each intermediate output; release
           // keeps the owned buffer until the constructor segment ends.
           #[cfg(any(debug_assertions, feature = "output-checks"))]
           leaf::check_output(
             instruction.check.0,
             instruction.check.1,
-            &Var::Seq(Arc::new(output.clone())),
+            &Var::Seq(output.clone().expect("built above")),
           )?;
           index += 1;
         }
-        value = Var::Seq(Arc::new(output));
+        value = Var::Seq(output.expect("a constructor ran"));
       }
       Op::TableMake(..) => {
         // Consume the old output: a struct table of the same shape that
@@ -700,7 +1089,8 @@ mod tests {
           (captured, vec![])
         };
         ops.extend([replacement, Op::Push(Binding::Local(0))]);
-        let (_, output) = run(&instructions(ops), 0, input, &mut locals, &mut []).unwrap();
+        let (_, output) =
+          run(&instructions(ops), 0, input, &mut locals, &mut [], &NoCalls).unwrap();
         assert_eq!(output, Var::Int(1));
         let Var::Seq(items) = &locals[0] else {
           unreachable!()
@@ -726,7 +1116,7 @@ mod tests {
           }
         ];
         let mut mesh = vec![Var::Int(2); 3];
-        run(&code, 0, Var::None, &mut locals, &mut mesh)
+        run(&code, 0, Var::None, &mut locals, &mut mesh, &NoCalls)
       }));
       assert!(result.is_err(), "out-of-frame offset must be rejected");
     }
@@ -748,12 +1138,12 @@ mod tests {
       Op::Const(Var::Int(1)),
       Op::Push(Binding::Local(0)),
     ]);
-    let (next, _) = run(&code, 0, Var::None, &mut locals, &mut []).unwrap();
+    let (next, _) = run(&code, 0, Var::None, &mut locals, &mut [], &NoCalls).unwrap();
     assert_eq!(next, 1);
     // The fallback can return a fresh owner even though the preceding segment
     // had already cleared scratch. Its successor must release that new owner.
     let input = Var::Seq(Arc::new(vec![locals[0].clone()]));
-    let (_, output) = run(&code, next + 1, input, &mut locals, &mut []).unwrap();
+    let (_, output) = run(&code, next + 1, input, &mut locals, &mut [], &NoCalls).unwrap();
     assert_eq!(output, Var::Int(1));
     let Var::Seq(items) = &locals[0] else {
       unreachable!()
@@ -767,11 +1157,11 @@ mod tests {
     use std::sync::Arc;
     let input = Var::Seq(Arc::new(vec![Var::Int(7)]));
     let code = instructions([Op::Fallback]);
-    let (_, output) = run(&code, 0, input.clone(), &mut [], &mut []).unwrap();
+    let (_, output) = run(&code, 0, input.clone(), &mut [], &mut [], &NoCalls).unwrap();
     assert_eq!(output, input);
     let mut locals = vec![input.clone()];
     let code = instructions([Op::Push(Binding::Local(0))]);
-    let (_, output) = run(&code, 0, input.clone(), &mut locals, &mut []).unwrap();
+    let (_, output) = run(&code, 0, input.clone(), &mut locals, &mut [], &NoCalls).unwrap();
     assert_eq!(output, input);
     assert_eq!(locals[0], Var::Seq(Arc::new(vec![Var::Int(7), input])));
   }
@@ -836,7 +1226,7 @@ mod tests {
         code.push(op);
       }
       let code = instructions(code);
-      let (index, actual) = run(&code, 0, input, &mut locals, &mut mesh).unwrap();
+      let (index, actual) = run(&code, 0, input, &mut locals, &mut mesh, &NoCalls).unwrap();
       assert_eq!(index, code.len());
       assert_eq!(actual, expected);
       assert_eq!(locals, expected_locals);
@@ -852,7 +1242,7 @@ mod tests {
       Op::Set(Binding::Local(0)),
       Op::Fallback,
     ]);
-    let (index, output) = run(&code, 0, Var::None, &mut locals, &mut []).unwrap();
+    let (index, output) = run(&code, 0, Var::None, &mut locals, &mut [], &NoCalls).unwrap();
     assert_eq!(index, 2);
     locals[0] = Var::string("changed");
     drop(code);
@@ -869,7 +1259,7 @@ mod tests {
       Op::Take(Operand::Const(Var::Int(0))),
       Op::Set(Binding::Local(0)),
     ]);
-    let (_, output) = run(&code, 0, Var::None, &mut locals, &mut []).unwrap();
+    let (_, output) = run(&code, 0, Var::None, &mut locals, &mut [], &NoCalls).unwrap();
     assert_eq!(output, Var::string("element"));
     assert_eq!(locals[0], output);
     locals[0] = old.clone();
@@ -878,7 +1268,7 @@ mod tests {
       Op::Push(Binding::Local(0)),
       Op::Push(Binding::Local(0)),
     ]);
-    let (_, output) = run(&code, 0, Var::None, &mut locals, &mut []).unwrap();
+    let (_, output) = run(&code, 0, Var::None, &mut locals, &mut [], &NoCalls).unwrap();
     assert_eq!(output, old);
     assert_eq!(
       locals[0],
@@ -912,7 +1302,7 @@ mod tests {
       ),
     ] {
       let expected = add_generic(&lhs, &rhs).unwrap();
-      let (_, actual) = run(&instructions([op]), 0, lhs, &mut [rhs], &mut []).unwrap();
+      let (_, actual) = run(&instructions([op]), 0, lhs, &mut [rhs], &mut [], &NoCalls).unwrap();
       assert_eq!(actual, expected);
     }
     let error = run(
@@ -921,8 +1311,130 @@ mod tests {
       Var::Int(i64::MAX),
       &mut [],
       &mut [],
+      &NoCalls,
     )
     .unwrap_err();
     assert_eq!(error.to_string(), overflow().to_string());
+  }
+
+  #[test]
+  fn a_vm_branch_runs_its_action_on_a_true_predicate_and_loops_for_while() {
+    use crate::flow::CompiledFlow;
+    use std::sync::Arc;
+    let flow = |ops: Vec<Op>| {
+      Arc::new(CompiledFlow {
+        nodes: Vec::new(),
+        code: instructions(ops),
+        output: Type::any(),
+        analysis: Default::default(),
+        leaf: false,
+      })
+    };
+    // Predicate: local 0 < 3; action: Inc(local 0). The branch's output is
+    // its input, snapshotted from the slot the action writes.
+    let pred = flow(vec![
+      Op::get(Binding::Local(0)),
+      Op::Compare(Cmp::Less, Operand::Const(Var::Int(3))),
+    ]);
+    let body = flow(vec![Op::Inc(Binding::Local(0))]);
+    for (looping, expected) in [(false, 1), (true, 3)] {
+      let mut locals = vec![Var::Int(0)];
+      let code = instructions([
+        Op::get(Binding::Local(0)),
+        Op::VmBranch(Box::new(VmBranch {
+          pred: pred.clone(),
+          body: body.clone(),
+          looping,
+        })),
+      ]);
+      let (pc, out) = run(&code, 0, Var::None, &mut locals, &mut [], &NoCalls).unwrap();
+      assert_eq!((pc, out), (2, Var::Int(0)), "the input before the branch");
+      assert_eq!(locals[0], Var::Int(expected));
+    }
+    // A false predicate skips the action.
+    let mut locals = vec![Var::Int(5)];
+    let code = instructions([
+      Op::Const(Var::Int(9)),
+      Op::VmBranch(Box::new(VmBranch {
+        pred: pred.clone(),
+        body: body.clone(),
+        looping: false,
+      })),
+    ]);
+    let (pc, out) = run(&code, 0, Var::None, &mut locals, &mut [], &NoCalls).unwrap();
+    assert_eq!((pc, out), (2, Var::Int(9)));
+    assert_eq!(locals[0], Var::Int(5));
+    // A predicate without a Bool output is an error; a call site that is
+    // not ready stops the run before the branch.
+    let code = instructions([
+      Op::Const(Var::Int(9)),
+      Op::VmBranch(Box::new(VmBranch {
+        pred: flow(vec![Op::Const(Var::Int(1))]),
+        body: body.clone(),
+        looping: false,
+      })),
+    ]);
+    let err = run(&code, 0, Var::None, &mut locals, &mut [], &NoCalls).unwrap_err();
+    assert!(err.to_string().contains("Bool"), "{err}");
+    let code = instructions([
+      Op::Const(Var::Int(9)),
+      Op::VmBranch(Box::new(VmBranch {
+        pred: pred.clone(),
+        body: flow(vec![Op::VmCall]),
+        looping: false,
+      })),
+    ]);
+    let (pc, out) = run(&code, 0, Var::None, &mut locals, &mut [], &NoCalls).unwrap();
+    assert_eq!((pc, out), (1, Var::Int(9)));
+  }
+
+  #[test]
+  fn a_vm_loop_runs_its_body_the_given_times_and_keeps_its_input() {
+    use crate::flow::CompiledFlow;
+    use std::sync::Arc;
+    // Body: Inc(local 0), four times, from a literal and from a bound count;
+    // the loop's output is its input, snapshotted from the slot it points at.
+    let body = Arc::new(CompiledFlow {
+      nodes: Vec::new(),
+      code: instructions([Op::Inc(Binding::Local(0))]),
+      output: Type::any(),
+      analysis: Default::default(),
+      leaf: false,
+    });
+    for times in [
+      Operand::Const(Var::Int(4)),
+      Operand::Bound(Binding::Local(1)),
+    ] {
+      let mut locals = vec![Var::Int(0), Var::Int(4)];
+      let code = instructions([
+        Op::get(Binding::Local(0)),
+        Op::VmRepeat(Box::new(VmLoop {
+          body: body.clone(),
+          times: Some(times),
+          until: None,
+        })),
+      ]);
+      let (pc, out) = run(&code, 0, Var::None, &mut locals, &mut [], &NoCalls).unwrap();
+      assert_eq!((pc, out), (2, Var::Int(0)), "the input before the loop");
+      assert_eq!(locals[0], Var::Int(4));
+    }
+    // A body with a call site that is not ready stops the run before the loop.
+    let calling = Arc::new(CompiledFlow {
+      nodes: Vec::new(),
+      code: instructions([Op::VmCall]),
+      output: Type::any(),
+      analysis: Default::default(),
+      leaf: false,
+    });
+    let code = instructions([
+      Op::Const(Var::Int(1)),
+      Op::VmRepeat(Box::new(VmLoop {
+        body: calling,
+        times: None,
+        until: None,
+      })),
+    ]);
+    let (pc, out) = run(&code, 0, Var::None, &mut [], &mut [], &NoCalls).unwrap();
+    assert_eq!((pc, out), (1, Var::Int(1)));
   }
 }

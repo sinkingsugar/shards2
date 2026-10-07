@@ -686,11 +686,13 @@ impl ComposeCtx<'_> {
     self.input = saved;
     let output = if diverged { Type::never() } else { ty };
     crate::inline::lower_scratch_releases(&mut code);
+    let leaf = crate::inline::leaf_code(&code);
     Ok(CompiledFlow {
       analysis,
       nodes,
       code,
       output,
+      leaf,
     })
   }
 
@@ -1560,10 +1562,24 @@ impl ComposeCache {
     }
     let native_state =
       flow.analysis.lifetime != Lifetime::Stateless || functions.values().any(|f| f.native_state);
+    let vm_only = !def.stateful && crate::inline::straight_line(&flow.code);
+    let vm_leaf = vm_only
+      && !flow.code.iter().any(|i| {
+        matches!(
+          i.op,
+          crate::inline::Op::VmCall | crate::inline::Op::VmRepeat(_)
+        )
+      });
+    let scratch_slots: Vec<usize> = (0..locals.len())
+      .filter(|slot| *slot != input_slot && !param_slots.contains(slot))
+      .collect();
     let compiled = Arc::new(CompiledFunction {
       def: def.clone(),
       input,
       native_state,
+      vm_only,
+      vm_leaf,
+      scratch_slots,
       lazy_refs,
       flow,
       locals,

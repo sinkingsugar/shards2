@@ -12,6 +12,7 @@ import platform
 import random
 import re
 import statistics
+import shutil
 import subprocess
 import sys
 import time
@@ -105,12 +106,14 @@ def script(case, width, iterations, batches):
 
 def dialect(text, engine):
     """The same workload in an engine's syntax. Scripts are written in the
-    1.x dialect; 2.0 declares with Var, labels lowercase, and Push neither
-    declares nor clears."""
+    1.x dialect; 2.0 declares with Var, labels lowercase, Push neither
+    declares nor clears, and a named sub-flow is a function (`Do` is gone)."""
     if engine == "1x":
         return text
     return (text.replace("Push(items Clear: false)", "Push(items)")
-            .replace(" | Set(", " | Var(").replace("Times:", "times:"))
+            .replace(" | Set(", " | Var(").replace("Times:", "times:")
+            .replace("@wire(step { Math.Add(1) })", "@fn(Step input: Int output: Int params: {} { Math.Add(1) })")
+            .replace("Do(step)", "Step"))
 
 
 def parse_output(output, iterations, batches):
@@ -137,7 +140,10 @@ def run(command, path, iterations, batches, timeout):
 
 
 def capture(command, cwd=None):
-    p = subprocess.run(command, cwd=cwd, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    try:
+        p = subprocess.run(command, cwd=cwd, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    except FileNotFoundError:
+        return f"{command[0]}: not available on this platform"
     return p.stdout.strip()
 
 
@@ -156,7 +162,7 @@ def provenance(args, engines):
         "arguments": {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()},
         "commands": engines, "binaries": {}, "repositories": {},
         "rustc": capture(["rustc", "-Vv"], ROOT),
-        "cpu": capture(["lscpu"]),
+        "cpu": capture(["lscpu"]) if shutil.which("lscpu") else capture(["sysctl", "-n", "machdep.cpu.brand_string"]),
         "affinity": sorted(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else None,
         "script_generator_sha256": sha256(Path(__file__)),
     }

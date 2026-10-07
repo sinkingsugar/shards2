@@ -985,3 +985,107 @@ fn a_looped_wire_starts_each_iteration_with_fresh_locals() {
   assert_eq!(mesh.instance_locals(id).unwrap()[0], Var::Int(3));
   mesh.cancel(id);
 }
+
+/// `When` and `While` whose predicate and action are straight-line code
+/// are one VM instruction each: no composite step for the predicate or
+/// the action, the input passed through, errors raised like any VM error.
+#[test]
+fn straight_line_branches_run_inside_the_vm() {
+  let mut mesh = Mesh::new();
+  mesh.add_wire(wire(
+    "root",
+    false,
+    vec![
+      konst(Var::Int(0)),
+      declare("n"),
+      while_(vec![get("n"), is_less(val(Var::Int(10)))], vec![inc("n")]),
+      get("n"),
+      when(
+        vec![is_more_equal(val(Var::Int(10)))],
+        vec![konst(Var::Int(100)), update("n")],
+      ),
+      when(
+        vec![is_less(val(Var::Int(0)))],
+        vec![konst(Var::Int(-1)), update("n")],
+      ),
+      get("n"),
+      log(),
+      maybe(
+        vec![when(
+          vec![konst(Var::Bool(true))],
+          vec![
+            konst(Var::Int(1)),
+            ShardDef::new(&shards_core::shards::math::DIVIDE, vec![val(Var::Int(0))]),
+          ],
+        )],
+        Some(vec![konst(Var::Int(-1))]),
+      ),
+    ],
+  ));
+  let compiled = mesh.compile("root", Type::none()).unwrap();
+  let kinds = compiled.flow.instruction_kinds();
+  assert_eq!(
+    kinds.iter().filter(|k| **k == "vm-branch").count(),
+    3,
+    "{kinds:?}"
+  );
+  let before = mesh.composite_dispatches();
+  let (outcome, lines) = run_logging(&mut mesh, 5);
+  assert_eq!(outcome, Outcome::Completed(Var::Int(-1)));
+  assert_eq!(lines, ["100"]);
+  // Only Maybe takes composite steps (its entry and the caught failure).
+  let steps = mesh.composite_dispatches() - before;
+  assert!(steps <= 3, "{steps} composite steps");
+}
+
+/// A call to a body of straight-line VM code runs inside the caller's
+/// step: one composite step per call, nothing entered, the same result and
+/// the same error behavior as the frame path.
+#[test]
+fn a_straight_line_function_runs_inside_the_callers_step() {
+  let mut mesh = Mesh::new();
+  mesh.add_function(
+    FunctionDef::new("Scale", Type::int(), Type::int())
+      .param("by", Type::int())
+      .body(vec![
+        ShardDef::new(&shards_core::shards::math::MULTIPLY, vec![var("by")]),
+        add(val(Var::Int(1))),
+      ]),
+  );
+  mesh.add_function(
+    FunctionDef::new("Halve", Type::int(), Type::int()).body(vec![ShardDef::new(
+      &shards_core::shards::math::DIVIDE,
+      vec![val(Var::Int(0))],
+    )]),
+  );
+  mesh.add_wire(wire(
+    "root",
+    false,
+    vec![
+      konst(Var::Int(0)),
+      declare("acc"),
+      repeat(
+        vec![
+          get("acc"),
+          call("Scale", vec![Arg::named("by", val(Var::Int(2)))]),
+          update("acc"),
+        ],
+        val(Var::Int(10)),
+      ),
+      get("acc"),
+      maybe(vec![call("Halve", vec![])], Some(vec![konst(Var::Int(-1))])),
+      log(),
+    ],
+  ));
+  let before = mesh.composite_dispatches();
+  let (outcome, lines) = run_logging(&mut mesh, 5);
+  // 0 -> 1 -> 3 -> 7 -> ... (2n + 1), ten times: 1023; dividing it by zero
+  // fails and Maybe falls back.
+  assert_eq!(outcome, Outcome::Completed(Var::Int(-1)));
+  assert_eq!(lines, ["-1"]);
+  // Repeat enters and completes its body (two steps per iteration); the
+  // first Scale call takes the frame path (prepare, enter, complete), the
+  // other nine one step each; Maybe and its failing call likewise.
+  let steps = mesh.composite_dispatches() - before;
+  assert!(steps < 60, "{steps} composite steps for ten calls");
+}

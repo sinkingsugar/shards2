@@ -84,6 +84,10 @@ There is no matched table-field mutation benchmark: the needed 2.0 shard is
 not implemented. This suite does not add substitute host shards that would
 bypass the runtime path under investigation.
 
+## Dialects and platforms
+
+Scripts are generated in the 1.x dialect and translated for 2.0 (`dialect()` in `run.py`): `Var` declarations, lowercase labels, `Push` without `Clear`, and the `do-*` call case as a function (`@fn(Step ...)` called as `Step`; 2.0 has no `Do`). Provenance tolerates a platform without `lscpu` (macOS records `sysctl`'s CPU brand); `--cpu` pinning is Linux only, so runs elsewhere are unpinned and say so in their metadata.
+
 ## Output and analysis
 
 - `metadata.json`: commands, binary hashes, source revisions/status, toolchain,

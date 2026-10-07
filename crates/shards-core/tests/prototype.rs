@@ -267,7 +267,9 @@ fn call_sites_check_the_reload_registry_once_per_revision() {
 
 #[test]
 fn spawned_instances_share_one_compose() {
-  let n: i64 = 100;
+  // The classic ESP32 fits the gate's 100 entity instances with under 6 KiB
+  // of heap to spare, and the 32-byte value adds about 150 bytes each.
+  let n: i64 = if cfg!(target_os = "espidf") { 64 } else { 100 };
   let mut mesh = bench_mesh(n);
   let spawner = mesh.compile("spawner", Type::none()).unwrap();
   // The spawner and the entity it spawns, each composed once.

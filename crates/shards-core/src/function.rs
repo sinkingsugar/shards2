@@ -207,6 +207,16 @@ pub struct CompiledFunction {
   /// a cached invocation frame then cleans such leaves up at exit and
   /// instantiates them again at entry (golden path §3.4).
   pub(crate) native_state: bool,
+  /// The body is straight-line VM code (no node that runs through its
+  /// shard): a stateless call site runs it inside the VM on the kept
+  /// locals, without entering a frame.
+  pub(crate) vm_only: bool,
+  /// A straight-line body with no call site or loop of its own: nothing
+  /// to check for readiness at entry.
+  pub(crate) vm_leaf: bool,
+  /// The locals that are neither parameters nor the input, cleared at
+  /// each VM entry.
+  pub(crate) scratch_slots: Vec<usize>,
   /// Functions this body (or a callee's) calls lazily, by name: members of
   /// a recursive group not closed when the body was composed. A caller
   /// still composing one of them is inside that group, and calls this

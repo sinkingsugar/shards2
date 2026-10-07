@@ -13,6 +13,11 @@ pub struct CompiledFlow {
   pub(crate) code: Vec<crate::inline::Instruction>,
   pub output: Type,
   pub analysis: crate::signature::Analysis,
+  /// The code runs through one `inline::run` call with no engine help: no
+  /// node activates through its shard, no call site, loop or branch, no
+  /// constructor (`inline::leaf_code`). A composite runs such a child flow
+  /// inside its own step instead of entering a frame for it.
+  pub(crate) leaf: bool,
 }
 
 impl CompiledFlow {

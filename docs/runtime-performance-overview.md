@@ -88,6 +88,18 @@ The 1.x `Do` case runs as a 2.0 function (`@fn`) called per element; its 2.0 cos
 
 The VM suite's other cells moved within a few percent of 7bac245 (`take-table` 15 percent faster, `add-float4` 12 percent). The `do-int` row is from a supplementary three-round run of that case alone, [`2026-10-07-aae5c01-do-int`](../bench/vm-execution/results/2026-10-07-aae5c01-do-int): in the full run, both `do-int` processes at widths 64 and 256 ran in a slow mode this laptop shows intermittently under background load, where a whole process runs at about 1.7× its usual time for its whole life, presumably on efficiency cores. The full run's `do-int` cells (2,610 and 10,511) are recorded as measured and should not be read as the engine's cost; the nine processes of the supplementary run were all in the normal mode. Comparisons on this machine are only valid interleaved, and the 1.x column of the supplementary run matches the full run's within 2 percent.
 
+### Inlined calls (`26e21be`, the same day)
+
+A call to a small stateless straight-line body is inlined at compose ([current-state.md](current-state.md)). Same machine and method; [`bench/runtime-overview/results/2026-10-07-26e21be`](../bench/runtime-overview/results/2026-10-07-26e21be) and [`bench/vm-execution/results/2026-10-07-26e21be`](../bench/vm-execution/results/2026-10-07-26e21be):
+
+| Workload | 1.x | 2.0 at aae5c01 | 2.0 at 26e21be |
+|---|---:|---:|---:|
+| Function call per element (`do-int`), width 8 / 64 / 256 | 74 / 584 / 2,581 | 183 / 2,610 / 10,511 (slow mode; 1,460 / 5,973 clean) | 11 / 62 / 206 |
+| Entity, 1,000 instances, ns per instance tick | 145 | 89 | 90 |
+| Nested resume, depth 32 | 109 | 39 | 38 |
+
+A call to `Math.Add(1)` is one instruction in the caller's stream now, which is what 1.x's inline dispatch does per shard, resolved once at compose instead of at every activation. Every other VM cell is within 5 percent of aae5c01 except `add-float` at widths 64 and 256 (77 and 270 ns against 60 and 206; 1.25× 1.x at width 64). That path did not change: the runner's machine code for the float add is identical in both binaries, and the loop head moved to a 4-byte-misaligned address in this build. Building with `-C llvm-args=-align-all-nofallthru-blocks=4` restores it (21.4 against 20.9 ms per batch for aae5c01, 26.2 unaligned) with no measurable cost on the integer, get, const and call cases; it is not adopted here, since a global code-alignment flag is a build-profile decision, but it is the known lever if the runner's layout drifts again.
+
 ## Lessons from the VM optimization work
 
 Conclusions at `12ef2f0`, after the assembly comparison, controlled layout

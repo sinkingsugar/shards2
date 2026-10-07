@@ -222,6 +222,11 @@ pub struct CompiledFunction {
   /// still composing one of them is inside that group, and calls this
   /// body lazily too, so the group is pinned as a unit across reloads.
   pub(crate) lazy_refs: Vec<String>,
+  /// Levels of inlined calls inside the body: 0 when none, else one more
+  /// than the deepest inlined callee's. A chain of small functions is
+  /// inlined only `compose::INLINE_DEPTH` levels deep, so a level holds a
+  /// bounded copy of the code below it.
+  pub(crate) inline_depth: u8,
 }
 
 impl CompiledFunction {

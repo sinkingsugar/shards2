@@ -135,6 +135,13 @@ impl FrameLayout {
 /// costs one nested run per call but no code or frame slots per site.
 const INLINE_BUDGET: usize = 24;
 
+/// How many levels of inlined calls a body may contain and still be inlined
+/// itself (`CompiledFunction::inline_depth`): a chain of small functions
+/// is flattened this deep and called beyond it, which bounds the code and
+/// dependency lists a level copies (a 24-deep chain compiled on the device
+/// otherwise peaked 90 KiB higher).
+const INLINE_DEPTH: u8 = 2;
+
 /// A flow's code under construction: nodes, instructions and the node each
 /// instruction stands for (`CompiledFlow::pc_nodes`).
 struct Flat {
@@ -363,6 +370,8 @@ pub struct ComposeCtx<'a> {
   /// Names called lazily in this body or its callees (see
   /// `CompiledFunction::lazy_refs`).
   lazy_refs: Vec<String>,
+  /// `CompiledFunction::inline_depth` of the body being composed.
+  inline_depth: u8,
 }
 
 /// How deeply flows may nest, counting function bodies and wires composed
@@ -634,9 +643,11 @@ impl ComposeCtx<'_> {
           || !body.keeps.is_empty()
           || !body.lazy_refs.is_empty()
           || body.flow.code.len() > INLINE_BUDGET
+          || body.inline_depth >= INLINE_DEPTH
         {
           return false;
         }
+        self.inline_depth = self.inline_depth.max(body.inline_depth + 1);
         let fdef = body.def.clone();
         let base = self.declare_hidden(Type::any());
         for _ in 1..body.locals.len() {
@@ -1623,6 +1634,7 @@ impl ComposeCache {
         owner: Owner::Wire,
         keeps: Vec::new(),
         lazy_refs: Vec::new(),
+        inline_depth: 0,
       });
       ctx
         .compose_flow_unscoped(&def.flow, input)
@@ -1722,6 +1734,7 @@ impl ComposeCache {
         owner: Owner::Function(def.clone()),
         keeps: Vec::new(),
         lazy_refs: Vec::new(),
+        inline_depth: 0,
       });
       let slot_of = |info: VarInfo| match info.binding {
         Binding::Local(i) => i,
@@ -1763,12 +1776,14 @@ impl ComposeCache {
             input_slot,
             param_slots,
             ctx.lazy_refs,
+            ctx.inline_depth,
           )
         })
         .map_err(|err| err.prefix_path(PathStep::Function(def.name.clone())))
     };
     composing.pop();
-    let (flow, locals, deps, keeps, functions, input_slot, param_slots, lazy_refs) = result?;
+    let (flow, locals, deps, keeps, functions, input_slot, param_slots, lazy_refs, inline_depth) =
+      result?;
     if def.pure {
       let analysis = &flow.analysis;
       let effect = [
@@ -1844,6 +1859,7 @@ impl ComposeCache {
       vm_leaf,
       scratch_slots,
       lazy_refs,
+      inline_depth,
       flow,
       locals,
       input_slot,

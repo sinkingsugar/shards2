@@ -853,10 +853,18 @@ impl Engine {
     // For a call being entered: whether the callee ignores its input (so the
     // enter path asks the node nothing).
     let mut call_entry: Option<bool> = None;
-    // The instruction the VM stopped at stands for a node: the one
-    // activated or dispatched here (flat control code never stops a run).
-    let node = flow.node_at(index);
-    let result = if index == flow.code.len() {
+    // A failed segment fails the frame from the instruction it started at,
+    // which may be flat control code standing for no node: decided before
+    // any node lookup. Otherwise the instruction the VM stopped at stands
+    // for a node, the one activated or dispatched here.
+    let node = if vm_error.is_none() {
+      flow.node_at(index)
+    } else {
+      usize::MAX
+    };
+    let result = if let Some(err) = vm_error.take() {
+      Request::Complete(Err(err))
+    } else if index == flow.code.len() {
       Request::Complete(Ok(Step::Next(std::mem::replace(&mut f.value, Var::None))))
     } else if let State::Control(c) = &mut f.states[node] {
       self.dispatches += 1;
@@ -870,14 +878,11 @@ impl Engine {
       if let Control::Call(call) = &control {
         call_entry = Some(call.def().ignores_input());
       }
-      let result = match vm_error.take() {
-        Some(err) => Request::Complete(Err(err)),
-        None => match dispatch(control, c, ctx, &f.value, completed.take()) {
-          Ok(Dispatch::Enter(i)) => Request::Enter(c.children[i]),
-          Ok(Dispatch::Complete(result)) => Request::Complete(result),
-          Ok(Dispatch::Prepare) => Request::Prepare,
-          Err(err) => Request::Complete(Err(err)),
-        },
+      let result = match dispatch(control, c, ctx, &f.value, completed.take()) {
+        Ok(Dispatch::Enter(i)) => Request::Enter(c.children[i]),
+        Ok(Dispatch::Complete(result)) => Request::Complete(result),
+        Ok(Dispatch::Prepare) => Request::Prepare,
+        Err(err) => Request::Complete(Err(err)),
       };
       if let Request::Complete(_) = &result {
         c.reset();
@@ -888,8 +893,6 @@ impl Engine {
         }
       }
       result
-    } else if let Some(err) = vm_error.take() {
-      Request::Complete(Err(err))
     } else {
       debug_assert!(completed.is_none());
       let State::Leaf(state) = &mut f.states[node] else {

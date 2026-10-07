@@ -73,6 +73,7 @@ pub(super) fn watch(o: &Options) -> Result<ExitCode, String> {
             ("retained", &report.retained),
             ("reset", &report.reset),
             ("restarted", &report.restarted),
+            ("swapped", &report.swapped),
           ] {
             if !names.is_empty() {
               parts.push(format!("{label}: {}", names.join(", ")));

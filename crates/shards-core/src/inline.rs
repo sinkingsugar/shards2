@@ -262,6 +262,10 @@ impl SlotOffset {
         .expect("inline slot offset overflow"),
     )
   }
+
+  fn index(self) -> usize {
+    self.0 / size_of::<Var>()
+  }
 }
 
 impl Op {
@@ -307,6 +311,70 @@ impl Instruction {
     if let Op::Jump(t) | Op::JumpIfNot(t) | Op::JumpIf(t) | Op::LoopTest(_, t) = &mut self.op {
       *t += base;
     }
+  }
+
+  /// Visits every local slot the instruction addresses (mesh slots are
+  /// left alone): how an inlined callee's code is moved onto the caller's
+  /// frame.
+  fn for_each_local(&mut self, f: &mut dyn FnMut(&mut usize)) {
+    fn binding(b: &mut Binding, f: &mut dyn FnMut(&mut usize)) {
+      if let Binding::Local(i) = b {
+        f(i);
+      }
+    }
+    fn operand(o: &mut Operand, f: &mut dyn FnMut(&mut usize)) {
+      if let Operand::Bound(b) = o {
+        binding(b, f);
+      }
+    }
+    match &mut self.op {
+      Op::GetLocal(offset) | Op::GetLocalDrop(offset) => {
+        let mut i = offset.index();
+        f(&mut i);
+        *offset = SlotOffset::new(i);
+      }
+      Op::Set(b)
+      | Op::SetDrop(b)
+      | Op::Inc(b)
+      | Op::IncDrop(b)
+      | Op::Push(b)
+      | Op::AddIntBound(b)
+      | Op::AddFloatBound(b)
+      | Op::AddFloat4Bound(b)
+      | Op::LoopTest(b, _) => binding(b, f),
+      Op::Take(o) | Op::Arith(_, o) | Op::Compare(_, o) | Op::Equal(_, o) => operand(o, f),
+      Op::SeqMake(ops) | Op::TableMake(_, ops) => {
+        for o in ops {
+          operand(o, f);
+        }
+      }
+      Op::Fallback
+      | Op::Const(_)
+      | Op::ConstDrop(_)
+      | Op::GetMesh(_)
+      | Op::GetMeshDrop(_)
+      | Op::TakeSlot(_)
+      | Op::AddIntConst(_)
+      | Op::AddFloatConst(_)
+      | Op::AddFloat4Const(_)
+      | Op::Pass
+      | Op::VmCall
+      | Op::Jump(_)
+      | Op::JumpIfNot(_)
+      | Op::JumpIf(_) => {}
+    }
+  }
+
+  /// Moves every local slot the instruction addresses up by `base`.
+  pub(crate) fn rebase_locals(&mut self, base: usize) {
+    self.for_each_local(&mut |i| *i += base);
+  }
+
+  /// Whether the instruction addresses local `slot`.
+  pub(crate) fn mentions_local(&self, slot: usize) -> bool {
+    let mut found = false;
+    self.clone().for_each_local(&mut |i| found |= *i == slot);
+    found
   }
 }
 

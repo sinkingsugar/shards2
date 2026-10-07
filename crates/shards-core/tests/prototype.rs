@@ -211,7 +211,9 @@ fn inline_assignment_preserves_other_aliases() {
 fn call_sites_check_the_reload_registry_once_per_revision() {
   use std::collections::HashSet;
   let declare = |mesh: &mut Mesh, both: bool| {
-    let mut body = vec![inc("a")];
+    // The probe keeps the body on the frame path (a small straight-line
+    // body would be inlined into the caller, with no call site to check).
+    let mut body = vec![inc("a"), probe("f")];
     if both {
       body.push(inc("b"));
     }

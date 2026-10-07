@@ -90,17 +90,49 @@ pub struct ReloadReport {
   pub retained: Vec<String>,
   pub reset: Vec<String>,
   pub restarted: Vec<String>,
+  /// Wires whose instances got the candidate's body because a function
+  /// inlined into it changed: the instance keeps its `Keep` slots (by name
+  /// and type) and starts its next iteration on the new body.
+  pub swapped: Vec<String>,
 }
 
 impl ReloadReport {
   pub fn is_empty(&self) -> bool {
-    self.retained.is_empty() && self.reset.is_empty() && self.restarted.is_empty()
+    self.retained.is_empty()
+      && self.reset.is_empty()
+      && self.restarted.is_empty()
+      && self.swapped.is_empty()
   }
 }
 
-pub(crate) fn reusable(wire: &CompiledWire, env: &ComposeEnv<'_>) -> bool {
-  env.wires.get(&wire.name) == Some(wire.definition.as_ref())
-    && wire.restart_deps.iter().all(|d| d.still_valid(env))
+/// What a preserving reload does with a live instance of `wire`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Retention {
+  /// The compiled body is still the program the candidate declares.
+  Reuse,
+  /// Only functions inlined into the body changed: the instance takes the
+  /// candidate's body, keeping its `Keep` slots.
+  Swap,
+  /// The wire itself, or something it depends on at compose, changed.
+  Restart,
+}
+
+pub(crate) fn retention(wire: &CompiledWire, env: &ComposeEnv<'_>) -> Retention {
+  use crate::compose::Dep;
+  if env.wires.get(&wire.name) != Some(wire.definition.as_ref()) {
+    return Retention::Restart;
+  }
+  let mut retention = Retention::Reuse;
+  for dep in &wire.restart_deps {
+    if dep.still_valid(env) {
+      continue;
+    }
+    match dep {
+      Dep::Inlined { .. } | Dep::Function { .. } => retention = Retention::Swap,
+      Dep::MeshVar { .. } | Dep::Wire { .. } => return Retention::Restart,
+    }
+  }
+  retention
 }
 
 fn incompatible(name: &str, reason: String) -> Error {

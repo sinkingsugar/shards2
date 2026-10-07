@@ -130,6 +130,11 @@ impl FrameLayout {
   }
 }
 
+/// The most instructions a callee body may have to be inlined at its call
+/// sites (`ComposeCtx::flatten`): a larger body stays a `VmCall`, which
+/// costs one nested run per call but no code or frame slots per site.
+const INLINE_BUDGET: usize = 24;
+
 /// A flow's code under construction: nodes, instructions and the node each
 /// instruction stands for (`CompiledFlow::pc_nodes`).
 struct Flat {
@@ -177,10 +182,20 @@ impl Flat {
   /// Appends a child flow: its nodes, and its code with jump targets
   /// relocated and node references offset.
   fn append(&mut self, flow: &CompiledFlow) {
+    self.append_rebased(flow, 0);
+  }
+
+  /// Like `append`, with every local slot the code addresses moved up by
+  /// `slots`: an inlined callee's frame lives at that offset in the
+  /// caller's.
+  fn append_rebased(&mut self, flow: &CompiledFlow, slots: usize) {
     let base = self.here();
     let node_base = u32::try_from(self.nodes.len()).expect("node count fits u32");
     for (instruction, node) in flow.code.iter().zip(&flow.pc_nodes) {
       let mut instruction = instruction.clone();
+      if slots != 0 {
+        instruction.rebase_locals(slots);
+      }
       instruction.relocate(base);
       self.code.push(instruction);
       self.pc_nodes.push(if *node == crate::flow::NO_NODE {
@@ -208,6 +223,13 @@ pub enum Dep {
     name: String,
     def: Option<Arc<FunctionDef>>,
   },
+  /// A function whose body was inlined into this code (`ComposeCtx::flatten`),
+  /// so an edit to it changes this body too: unlike `Function`, a body
+  /// comparison counts it, and a wire holding it is swapped on reload.
+  Inlined {
+    name: String,
+    def: Option<Arc<FunctionDef>>,
+  },
 }
 
 /// What compose may read besides parameters and input type.
@@ -222,7 +244,9 @@ impl Dep {
     match self {
       Dep::MeshVar { name, found } => env.mesh_layout.lookup(name) == *found,
       Dep::Wire { name, def } => env.wires.get(name) == def.as_deref(),
-      Dep::Function { name, def } => env.functions.get(name) == def.as_deref(),
+      Dep::Function { name, def } | Dep::Inlined { name, def } => {
+        env.functions.get(name) == def.as_deref()
+      }
     }
   }
 }
@@ -538,8 +562,12 @@ impl ComposeCtx<'_> {
   }
 
   /// Lowers a `Repeat`, `While`, `When` or `If` to flat code in the parent
-  /// flow: its children's nodes and instructions, with jumps and hidden
-  /// slots for its own control. An iteration or a branch is then a jump
+  /// flow (its children's nodes and instructions, with jumps and hidden
+  /// slots for its own control), and a call to a small stateless
+  /// straight-line body to that body's code on hidden slots of the
+  /// caller's frame (arguments bound by instructions, the input through
+  /// the accumulator; the callee becomes a dependency of this body, see
+  /// `Dep::Inlined`). An iteration or a branch is then a jump
   /// inside one VM run instead of a frame entered and completed through
   /// the engine, and the composite needs no frames of its own. Children
   /// that must suspend keep their nodes: the engine activates them where
@@ -596,6 +624,66 @@ impl ComposeCtx<'_> {
           flat.target(exit);
         }
         flat.op(Op::get(saved), input);
+      }
+      Control::Call(c) => {
+        let CallTarget::Direct(body) = &c.target else {
+          return false;
+        };
+        if c.stateful()
+          || !body.vm_leaf
+          || !body.keeps.is_empty()
+          || !body.lazy_refs.is_empty()
+          || body.flow.code.len() > INLINE_BUDGET
+        {
+          return false;
+        }
+        let fdef = body.def.clone();
+        let base = self.declare_hidden(Type::any());
+        for _ in 1..body.locals.len() {
+          self.declare_hidden(Type::any());
+        }
+        let input_slot = Binding::Local(base + body.input_slot);
+        let reads_input = body
+          .flow
+          .code
+          .iter()
+          .any(|i| i.mentions_local(body.input_slot));
+        // The input is saved when the body reads it by name, or when
+        // binding the arguments clobbers the accumulator; otherwise it
+        // flows straight into the body.
+        if !fdef.ignores_input() && (reads_input || !c.args.is_empty()) {
+          flat.op(Op::Set(input_slot), input);
+        }
+        for (slot, arg) in body.param_slots.iter().zip(&c.args) {
+          match arg {
+            Operand::Const(v) => flat.op(Op::Const(v.clone()), Type::any()),
+            Operand::Bound(b) => flat.op(Op::get(*b), Type::any()),
+          };
+          flat.op(Op::Set(Binding::Local(base + slot)), Type::any());
+        }
+        if fdef.ignores_input() {
+          flat.op(Op::Const(Var::None), Type::none());
+        } else if !c.args.is_empty() {
+          flat.op(Op::get(input_slot), input);
+        }
+        flat.append_rebased(&body.flow, base);
+        let dep = Dep::Inlined {
+          name: fdef.name.clone(),
+          def: Some(fdef),
+        };
+        // The callee's own dependencies already came with the call
+        // (`compose_call` propagates them for cache validation); what a
+        // reload must also see is which functions this code embeds: the
+        // callee, and whatever it embedded in turn.
+        self.deps.push(dep.clone());
+        self.restart_deps.push(dep);
+        self.restart_deps.extend(
+          body
+            .deps
+            .iter()
+            .filter(|d| matches!(d, Dep::Inlined { .. }))
+            .cloned(),
+        );
       }
       Control::If(i) => {
         let saved = Binding::Local(self.declare_hidden(input));

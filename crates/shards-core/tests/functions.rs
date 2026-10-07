@@ -850,12 +850,15 @@ fn a_cycle_through_a_stateful_function_is_rejected() {
   );
 }
 
+/// The limit counts invocation frames entered. A call inlined at compose
+/// (a small straight-line body) enters none, so `C` activates through its
+/// shard here to keep the chain on the frame path.
 #[test]
 fn the_call_depth_limit_applies_to_function_entries() {
   let mut mesh = Mesh::new();
   mesh.set_max_call_depth(2);
   mesh.add_function(
-    FunctionDef::new("C", Type::int(), Type::int()).body(vec![add(val(Var::Int(1)))]),
+    FunctionDef::new("C", Type::int(), Type::int()).body(vec![add(val(Var::Int(1))), log()]),
   );
   mesh.add_function(FunctionDef::new("B", Type::int(), Type::int()).body(vec![call("C", vec![])]));
   mesh.add_function(FunctionDef::new("A", Type::int(), Type::int()).body(vec![call("B", vec![])]));
@@ -984,6 +987,69 @@ fn a_looped_wire_starts_each_iteration_with_fresh_locals() {
   mesh.tick();
   assert_eq!(mesh.instance_locals(id).unwrap()[0], Var::Int(3));
   mesh.cancel(id);
+}
+
+/// A call to a small stateless straight-line body is inlined at compose:
+/// the callee's code runs on hidden slots of the caller's frame, arguments
+/// are bound by instructions, a callee's own inlined calls come along, and
+/// nothing is entered. A body over the budget stays a VM call.
+#[test]
+fn small_straight_line_functions_are_inlined_into_their_callers() {
+  let mut mesh = Mesh::new();
+  mesh.add_function(
+    FunctionDef::new("Scale", Type::int(), Type::int())
+      .param("by", Type::int())
+      .body(vec![
+        ShardDef::new(&shards_core::shards::math::MULTIPLY, vec![var("by")]),
+        add(val(Var::Int(1))),
+      ]),
+  );
+  mesh.add_function(
+    FunctionDef::new("Twice", Type::int(), Type::int()).body(vec![
+      call("Scale", vec![Arg::named("by", val(Var::Int(2)))]),
+      call("Scale", vec![Arg::named("by", val(Var::Int(2)))]),
+    ]),
+  );
+  mesh.add_function(
+    FunctionDef::new("Ten", Type::none(), Type::int()).body(vec![konst(Var::Int(10))]),
+  );
+  mesh.add_function(
+    FunctionDef::new("Big", Type::int(), Type::int())
+      .body((0..30).map(|_| add(val(Var::Int(1)))).collect()),
+  );
+  mesh.add_wire(wire(
+    "root",
+    false,
+    vec![
+      konst(Var::Int(3)),
+      call("Twice", vec![]),
+      declare("x"),
+      call("Ten", vec![]),
+      add(var("x")),
+      log(),
+    ],
+  ));
+  mesh.add_wire(wire(
+    "big",
+    false,
+    vec![konst(Var::Int(0)), call("Big", vec![]), log()],
+  ));
+  let compiled = mesh.compile("root", Type::none()).unwrap();
+  let kinds = compiled.flow.instruction_kinds();
+  assert!(!kinds.contains(&"vm-call"), "{kinds:?}");
+  assert_eq!(
+    kinds.iter().filter(|k| **k == "fallback").count(),
+    1,
+    "only Log activates through the engine: {kinds:?}"
+  );
+  let big = mesh.compile("big", Type::none()).unwrap();
+  assert!(big.flow.instruction_kinds().contains(&"vm-call"));
+  let before = mesh.composite_dispatches();
+  let (outcome, lines) = run_logging(&mut mesh, 3);
+  // Twice: (3 * 2 + 1) * 2 + 1 = 15; Ten ignores its input; 10 + 15.
+  assert_eq!(outcome, Outcome::Completed(Var::Int(25)));
+  assert_eq!(lines, ["25"]);
+  assert_eq!(mesh.composite_dispatches() - before, 0);
 }
 
 /// `When` and `While` are flat code with jumps: no composite step for the

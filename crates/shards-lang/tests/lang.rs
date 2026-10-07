@@ -166,6 +166,34 @@ fn preserving_reload_keeps_unrelated_wires_and_mesh_values() {
   assert_eq!(lines, ["1", "10", "101", "102", "2", "20"]);
 }
 
+/// Editing a function that was inlined into a running wire gives the
+/// wire's instances the new body at their next iteration, with `Keep`
+/// slots carried over; the reload report lists the wire as swapped, not
+/// restarted.
+#[test]
+fn editing_an_inlined_function_swaps_the_callers_body_and_keeps_its_state() {
+  let source = |value| {
+    format!(
+      r#"@fn(Step input: Int output: Int params: {{}} {{ Math.Add({value}) }})
+@wire(main {{ Keep(n 0) n | Step | Update(n) Log }} looped: true)
+@mesh(m) @schedule(m main) @run(m)"#
+    )
+  };
+  let mut session = shards_lang::Session::new();
+  preserve(&mut session, &source(1));
+  let (_, lines) = shards_core::log::capture(|| {
+    session.tick();
+    session.tick();
+    let ended = preserve(&mut session, &source(10));
+    assert!(ended.is_empty(), "the instance is kept, not restarted");
+    let report = session.reload_report().unwrap();
+    assert_eq!(report.swapped, ["main"]);
+    assert!(report.restarted.is_empty());
+    session.tick();
+  });
+  assert_eq!(lines, ["1", "2", "12"]);
+}
+
 #[test]
 fn preserving_reload_rejects_incompatible_function_interfaces_atomically() {
   let source = |signature, body| {
@@ -430,11 +458,37 @@ fn an_in_flight_parent_selects_the_newest_callee_at_its_next_entry() {
   let (_, lines) = shards_core::log::capture(|| {
     session.tick();
     preserve(&mut session, &source("Pause() 0 Inner", 20));
-    // The old Outer invocation finishes on its body, but its Inner call
-    // enters after the reload and selects the newest Inner (§11).
+    // `Inner` is small and straight-line, so it is inlined into `Outer`
+    // at compose: the old Outer invocation finishes on its pinned body,
+    // Inner included, and the next Outer entry selects the recomposed
+    // Outer with the new Inner (§11 as it applies to inlined sites).
     session.tick();
     session.tick();
     session.tick();
+  });
+  assert_eq!(lines, ["10", "20"]);
+}
+
+/// A callee that keeps its frames (it suspends) is selected at its own
+/// entry, even inside an in-flight caller (§11).
+#[test]
+fn an_in_flight_parent_selects_the_newest_framed_callee_at_its_next_entry() {
+  let source = |outer: &str, value| {
+    format!(
+      r#"@fn(Inner input: None output: Int params: {{}} {{Pause() {value}}})
+@fn(Outer input: None output: Int params: {{}} {{{outer}}})
+@wire(main {{Outer Log}} looped: true)
+@mesh(m) @schedule(m main) @run(m)"#
+    )
+  };
+  let mut session = shards_lang::Session::new();
+  preserve(&mut session, &source("Pause() Inner", 10));
+  let (_, lines) = shards_core::log::capture(|| {
+    session.tick();
+    preserve(&mut session, &source("Pause() 0 Inner", 20));
+    for _ in 0..5 {
+      session.tick();
+    }
   });
   assert_eq!(lines, ["20", "20"]);
 }
@@ -524,7 +578,12 @@ fn preserving_reload_recovers_failed_entries_on_the_next_accepted_save() {
   };
   let mut session = shards_lang::Session::new();
   preserve(&mut session, &source(0));
-  assert!(matches!(session.tick()[0].outcome, Outcome::Failed(_)));
+  // `Inner` is inlined and fails at its first instruction, which follows
+  // flat control code: a plain failure, not a panic in the engine.
+  let Outcome::Failed(err) = &session.tick()[0].outcome else {
+    panic!("expected the division to fail");
+  };
+  assert!(!err.to_string().contains("panic"), "{err}");
   assert!(session.tick().is_empty());
   preserve(&mut session, &source(1));
   assert!(matches!(

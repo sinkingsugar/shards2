@@ -221,7 +221,11 @@ impl Mesh {
   }
 
   pub fn can_retain(&self, wire: &CompiledWire) -> bool {
-    crate::reload::reusable(
+    self.retention(wire) != crate::reload::Retention::Restart
+  }
+
+  fn retention(&self, wire: &CompiledWire) -> crate::reload::Retention {
+    crate::reload::retention(
       wire,
       &ComposeEnv {
         mesh_layout: &self.layout,
@@ -281,11 +285,19 @@ impl Mesh {
         .collect();
       let mut olds: Vec<(&Arc<CompiledFunction>, bool)> =
         composed.into_iter().chain(live).collect();
+      // Functions whose own definition changed are admitted first: a body
+      // that changed only because it inlined one of them fails for the
+      // same reason, and the diagnostic should name the edited function.
+      let edited = |body: &CompiledFunction| {
+        next
+          .prepared_functions
+          .get(&FunctionKey::of(body))
+          .is_some_and(|new| new.def != body.def)
+      };
       olds.sort_by(|a, b| {
-        a.0
-          .def
-          .name
-          .cmp(&b.0.def.name)
+        edited(b.0)
+          .cmp(&edited(a.0))
+          .then(a.0.def.name.cmp(&b.0.def.name))
           .then(Arc::as_ptr(a.0).cmp(&Arc::as_ptr(b.0)))
           .then(b.1.cmp(&a.1))
       });
@@ -364,6 +376,24 @@ impl Mesh {
     self.wires = std::mem::take(&mut next.wires);
     self.functions = std::mem::take(&mut next.functions);
     self.cache = std::mem::take(&mut next.cache);
+    // A retained instance whose body inlined a changed function takes the
+    // candidate's body (compiled by `validate_reload`) and keeps its
+    // `Keep` slots; its next iteration starts on the new code.
+    for i in 0..self.instances.len() {
+      let instance = &self.instances[i];
+      if instance.outcome.is_some()
+        || removed.contains(&instance.id)
+        || self.retention(&instance.wire) != crate::reload::Retention::Swap
+      {
+        continue;
+      }
+      let (name, input) = (instance.wire.name.clone(), instance.wire.input);
+      let wire = self
+        .compile(&name, input)
+        .expect("swapped body compiled during validation");
+      swap_body(&mut self.instances[i], wire);
+      self.report.swapped.push(name);
+    }
   }
 
   /// How many times call sites consulted the reload registry. A call site
@@ -681,6 +711,46 @@ fn step(
 
 /// Ends an instance: cleans up its state exactly once (if it was
 /// instantiated) and records the outcome.
+/// Gives a live instance a new body of its wire: cleans up its frames (the
+/// iteration in flight ends; its native state is released), lays out fresh
+/// locals with `Keep` slots carried over by name and type, and leaves it to
+/// start on the new body at its next tick.
+fn swap_body(instance: &mut Instance, wire: Arc<CompiledWire>) {
+  if let Some(mut state) = instance.state.take() {
+    let mut ctx = InstanceCtx {
+      instance: instance.id,
+    }
+    .cleanup_ctx();
+    if let Err(payload) = catch_unwind(AssertUnwindSafe(|| state.cleanup(&mut ctx))) {
+      finish(
+        instance,
+        Outcome::Failed(Error::Activation(format!(
+          "panic in cleanup: {}",
+          panic_message(&*payload)
+        ))),
+      );
+      return;
+    }
+  }
+  let mut locals = wire.fresh_locals();
+  for keep in &wire.keeps {
+    if let Some(old) = instance
+      .wire
+      .keeps
+      .iter()
+      .find(|k| k.name == keep.name && k.ty == keep.ty)
+      && let Some(value) = instance.locals.get(old.slot)
+    {
+      locals[keep.slot] = value.clone();
+    }
+  }
+  instance.locals = locals;
+  instance.wire = wire;
+  instance.started = false;
+  instance.waiting = false;
+  instance.memory = InstanceMemory::default();
+}
+
 fn finish(instance: &mut Instance, mut outcome: Outcome) {
   if let Some(mut state) = instance.state.take() {
     let mut ctx = InstanceCtx {

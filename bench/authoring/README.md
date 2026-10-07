@@ -5,7 +5,7 @@ Spec: [docs/golden-path.md §8](../../docs/golden-path.md). It measures how well
 ## Pieces
 
 - `tasks/*.task`: small tasks, each with a `prompt`, the `expected` log lines and a hidden `reference` solution. `cargo test -p authoring-eval` runs every reference in-process and requires exactly the expected log, so the tasks stay solvable as the language changes (M2 rewrites the references with the rest of the suite). The tree-fold task arrives with recursion (M7).
-- `reference/<variant>.md`: the language primer for a syntax variant. The model gets the primer followed by `shards2 catalog` and `shards2 describe` for every shard (`authoring-eval reference` prints it). `current` is the pre-M2 syntax; keep it after M2. A later variant's primer changes only what its syntax requires, so a difference in results is the syntax's, not the primer's.
+- `reference/<variant>.md`: the language primer for a syntax variant. The model gets the primer followed by `shards2 catalog` and `shards2 describe` for every shard (`authoring-eval reference` prints it). `current` is the pre-M2 syntax; keep it after M2. `functions` is the M2 plus M5 syntax (assignment forms, lowercase labels, `Keep`, exhaustive `Match`, `@fn`). A later variant's primer changes only what its syntax requires, so a difference in results is the syntax's, not the primer's.
 - `src/main.rs`: the runner. It shells out to a model command; there is no embedded API client.
 
 ## Running

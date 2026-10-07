@@ -75,6 +75,7 @@ The language is the 1.x syntax with the changes in [surface-syntax-review.md](su
 - `f"..."` strings and `t.key` / `s.0` paths are supported.
 - `Maybe` without `else` passes its input through.
 - Code goes in wires on a mesh run by `@run(mesh fps: n)`; loose code runs as the `root` wire when there is no `@run`.
+- Named, reusable code is a function: `@fn(Scale input: Float output: Float params: {factor: Float} { Math.Multiply(factor) })`, called like a shard (`3.0 | Scale(factor: 2.0)`). A function sees only its input, its parameters and the mesh variables it declares in `uses:`/`mutates:`; `stateful: true` gives it one persistent instance per call site (`Keep` allowed); `pure: true` is checked. `Return` ends the function with its input.
 
 ## 4. Testing a host
 

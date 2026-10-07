@@ -2,7 +2,7 @@
 
 A new Rust implementation of the [Shards](https://github.com/fragcolor-xyz/shards) runtime.
 
-**Status:** core prototype and language frontend working (2026-10-07): the compiled/state split on one directly resumable (stackless) engine, real async I/O (`Http.Get`), a hand-written frontend with `check --json`, hot reload, wasm (WASI) and ESP32 (QEMU) builds. **Next:** the language redesign in [`docs/golden-path.md`](docs/golden-path.md) (functions, scope, struct tables). Current status is in `docs/current-state.md`.
+**Status:** core prototype and language frontend working (2026-10-07): the compiled/state split on one directly resumable (stackless) engine, real async I/O (`Http.Get`), a hand-written frontend with `check --json`, hot reload, wasm (WASI) and ESP32 (QEMU) builds. Functions (`@fn`, golden path M5) are in, with private frames and state-preserving reload of edited bodies. **Next:** values (M6: 32-byte `Var`, f32 vectors, struct tables) and recursion (M7) from [`docs/golden-path.md`](docs/golden-path.md). Current status is in `docs/current-state.md`.
 
 ## Starting work
 

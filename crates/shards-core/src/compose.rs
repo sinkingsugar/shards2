@@ -80,6 +80,11 @@ impl FrameLayout {
     slot
   }
 
+  /// The type a slot was declared with.
+  pub(crate) fn slot_type(&self, index: usize) -> Type {
+    self.slots[index].1.ty
+  }
+
   /// A slot no name reaches: a flattened composite keeps its input or a
   /// loop counter there (`ComposeCtx::declare_hidden`).
   pub(crate) fn declare_hidden(&mut self, ty: Type) -> Slot {
@@ -151,6 +156,9 @@ struct Flat {
   nodes: Vec<Arc<dyn CompiledNode>>,
   code: Vec<crate::inline::Instruction>,
   pc_nodes: Vec<u32>,
+  /// `Lowered::inlined` and `Lowered::released_slots`.
+  inlined: Vec<(u32, u32)>,
+  released_slots: Vec<u32>,
 }
 
 impl Flat {
@@ -189,18 +197,56 @@ impl Flat {
     self.code[at as usize].retarget(here);
   }
 
-  /// Appends a child flow: its nodes, and its code with jump targets
-  /// relocated and node references offset.
+  /// Appends a child flow on this frame (a flattened composite's): its
+  /// nodes, and its code with jump targets relocated and node references
+  /// offset; the calls inlined into it stay inlined calls of this flow.
   fn append(&mut self, flow: &CompiledFlow) {
+    let node_base = self.node_base();
+    self.inlined.extend(
+      flow
+        .inlined()
+        .iter()
+        .map(|(start, len)| (start + node_base, *len)),
+    );
+    self
+      .released_slots
+      .extend(flow.released_slots().iter().copied());
     self.append_rebased(flow, 0);
   }
 
-  /// Like `append`, with every local slot the code addresses moved up by
-  /// `slots`: an inlined callee's frame lives at that offset in the
-  /// caller's.
+  /// Appends an inlined callee's body: like `append`, with every local slot
+  /// the code addresses moved up by `slots` (the callee's frame lives at
+  /// that offset in the caller's); all its nodes count as one inlined call.
+  fn inline(&mut self, flow: &CompiledFlow, slots: usize) {
+    let len = u32::try_from(flow.nodes.len()).expect("node count fits u32");
+    self.inlined.push((self.node_base(), len));
+    self.append_rebased(flow, slots);
+  }
+
+  /// Ends the value of a hidden slot holding a value of type `ty` here
+  /// (`Op::Clear`; the accumulator keeps it if it reads the slot), unless
+  /// the value owns no heap storage.
+  fn release(&mut self, slot: Binding, ty: Type) {
+    if ty.is_scalar() {
+      return;
+    }
+    let Binding::Local(index) = slot else {
+      unreachable!("hidden slots are locals")
+    };
+    // The accumulator is not this slot's value in general: no output check.
+    self.op(crate::inline::Op::Clear(slot), Type::any());
+    self
+      .released_slots
+      .push(u32::try_from(index).expect("slot fits u32"));
+  }
+
+  fn node_base(&self) -> u32 {
+    u32::try_from(self.nodes.len()).expect("node count fits u32")
+  }
+
   fn append_rebased(&mut self, flow: &CompiledFlow, slots: usize) {
     let base = self.here();
-    let node_base = u32::try_from(self.nodes.len()).expect("node count fits u32");
+    let node_base = self.node_base();
     for (instruction, node) in flow.code.iter().zip(&flow.pc_nodes) {
       let mut instruction = instruction.clone();
       if slots != 0 {
@@ -606,6 +652,7 @@ impl ComposeCtx<'_> {
         }
         flat.target(exit);
         flat.op(Op::get(saved), input);
+        flat.release(saved, input);
       }
       Control::Repeat(r) => {
         let saved = Binding::Local(self.declare_hidden(input));
@@ -636,6 +683,7 @@ impl ComposeCtx<'_> {
           flat.target(exit);
         }
         flat.op(Op::get(saved), input);
+        flat.release(saved, input);
       }
       Control::Call(c) => {
         let CallTarget::Direct(body) = &c.target else {
@@ -680,7 +728,34 @@ impl ComposeCtx<'_> {
         } else if !c.args.is_empty() {
           flat.op(Op::get(input_slot), input);
         }
-        flat.append_rebased(&body.flow, base);
+        flat.inline(&body.flow, base);
+        // The call's values end with it: every slot it used that may hold
+        // a heap value is cleared, unless the callee's own code already
+        // ended it last (a call inlined into the callee, whose slots then
+        // count here for a failure in the middle of it).
+        let mut last_use: Vec<Option<bool>> = vec![None; body.locals.len()];
+        if !fdef.ignores_input() && (reads_input || !c.args.is_empty()) {
+          last_use[body.input_slot] = Some(false);
+        }
+        for slot in body.param_slots.iter().take(c.args.len()) {
+          last_use[*slot] = Some(false);
+        }
+        for instruction in &body.flow.code {
+          let clears = matches!(instruction.op, Op::Clear(_));
+          instruction.visit_locals(&mut |slot| last_use[slot] = Some(clears));
+        }
+        for (slot, used) in last_use.iter().enumerate() {
+          if *used == Some(false) {
+            flat.release(Binding::Local(base + slot), body.locals.slot_type(slot));
+          }
+        }
+        flat.released_slots.extend(
+          body
+            .flow
+            .released_slots()
+            .iter()
+            .map(|slot| slot + u32::try_from(base).expect("slot fits u32")),
+        );
         let dep = Dep::Inlined {
           name: fdef.name.clone(),
           def: Some(fdef),
@@ -719,6 +794,7 @@ impl ComposeCtx<'_> {
           }
         }
         flat.target(to_end);
+        flat.release(saved, input);
       }
       _ => return false,
     }
@@ -863,6 +939,8 @@ impl ComposeCtx<'_> {
       nodes: Vec::with_capacity(flow.len()),
       code: Vec::with_capacity(flow.len()),
       pc_nodes: Vec::with_capacity(flow.len()),
+      inlined: Vec::new(),
+      released_slots: Vec::new(),
     };
     let mut ty = input;
     // Once a shard never produces a value (`Stop`), the rest of the flow is
@@ -962,7 +1040,11 @@ impl ComposeCtx<'_> {
       nodes,
       mut code,
       pc_nodes,
+      inlined,
+      mut released_slots,
     } = flat;
+    released_slots.sort_unstable();
+    released_slots.dedup();
     crate::inline::lower_scratch_releases(&mut code);
     let leaf = crate::inline::leaf_code(&code);
     Ok(CompiledFlow {
@@ -972,6 +1054,12 @@ impl ComposeCtx<'_> {
       output,
       leaf,
       pc_nodes,
+      lowered: (!inlined.is_empty() || !released_slots.is_empty()).then(|| {
+        Box::new(crate::flow::Lowered {
+          inlined,
+          released_slots,
+        })
+      }),
     })
   }
 
@@ -1851,16 +1939,12 @@ impl ComposeCache {
         .code
         .iter()
         .any(|i| matches!(i.op, crate::inline::Op::VmCall));
-    let scratch_slots: Vec<usize> = (0..locals.len())
-      .filter(|slot| *slot != input_slot && !param_slots.contains(slot))
-      .collect();
     let compiled = Arc::new(CompiledFunction {
       def: def.clone(),
       input,
       native_state,
       vm_only,
       vm_leaf,
-      scratch_slots,
       lazy_refs,
       inline_depth,
       flow,

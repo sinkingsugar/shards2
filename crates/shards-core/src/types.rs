@@ -198,6 +198,14 @@ fn registry() -> &'static RwLock<Registry> {
 }
 
 impl Type {
+  /// Whether a value of this type never owns heap storage (none, a
+  /// boolean, a number or a float vector): dropping a stale one releases
+  /// nothing.
+  pub(crate) fn is_scalar(self) -> bool {
+    // The primitive handles, in `PRIMITIVES` order: all but Any and String.
+    matches!(self.0, 0 | 1 | 3..=8)
+  }
+
   /// Returns the handle for `desc`, interning it if needed. Callers build
   /// sets and tables through [`Type::set`] and [`Type::table`], which
   /// canonicalize them first.

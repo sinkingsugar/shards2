@@ -90,9 +90,12 @@ pub struct ReloadReport {
   pub retained: Vec<String>,
   pub reset: Vec<String>,
   pub restarted: Vec<String>,
-  /// Wires whose instances got the candidate's body because a function
-  /// inlined into it changed: the instance keeps its `Keep` slots (by name
-  /// and type) and starts its next iteration on the new body.
+  /// Wires whose instances take the candidate's body because a function
+  /// inlined into it changed: an iteration in flight finishes on the old
+  /// body, the next one runs the new body with the instance's state (its
+  /// `Keep` slots by name and type, its nodes' and components' state). A
+  /// started run of a wire that does not loop finishes on the old body and
+  /// is not listed.
   pub swapped: Vec<String>,
 }
 
@@ -110,8 +113,8 @@ impl ReloadReport {
 pub(crate) enum Retention {
   /// The compiled body is still the program the candidate declares.
   Reuse,
-  /// Only functions inlined into the body changed: the instance takes the
-  /// candidate's body, keeping its `Keep` slots.
+  /// Only functions inlined into the body changed: the instance moves onto
+  /// the candidate's body at its next iteration, with its state.
   Swap,
   /// The wire itself, or something it depends on at compose, changed.
   Restart,
@@ -128,7 +131,10 @@ pub(crate) fn retention(wire: &CompiledWire, env: &ComposeEnv<'_>) -> Retention 
       continue;
     }
     match dep {
-      Dep::Inlined { .. } | Dep::Function { .. } => retention = Retention::Swap,
+      Dep::Inlined { .. } => retention = Retention::Swap,
+      // A framed callee (here through a spawned wire's call sites): its
+      // call sites select the new body at entry, the code is unchanged.
+      Dep::Function { .. } => {}
       Dep::MeshVar { .. } | Dep::Wire { .. } => return Retention::Restart,
     }
   }

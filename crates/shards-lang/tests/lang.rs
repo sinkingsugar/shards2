@@ -194,6 +194,151 @@ fn editing_an_inlined_function_swaps_the_callers_body_and_keeps_its_state() {
   assert_eq!(lines, ["1", "2", "12"]);
 }
 
+/// A wire suspended in the middle of an iteration finishes it on the body
+/// it started with (golden path §11): the swap waits for the iteration's
+/// end, and the state of components it calls is carried over.
+#[test]
+fn a_swap_waits_for_the_iteration_in_flight_and_keeps_component_state() {
+  let source = |value| {
+    format!(
+      r#"@fn(Counter stateful: true input: None output: Int params: {{}} {{ Keep(n 0) Inc(n) }})
+@fn(Step input: Int output: Int params: {{}} {{ Math.Add({value}) }})
+@wire(main {{ Counter | Log("c") Pause() 1 | Step | Log("b") }} looped: true)
+@mesh(m) @schedule(m main) @run(m)"#
+    )
+  };
+  let mut session = shards_lang::Session::new();
+  preserve(&mut session, &source(1));
+  let (_, lines) = shards_core::log::capture(|| {
+    session.tick();
+    let ended = preserve(&mut session, &source(10));
+    assert!(ended.is_empty());
+    let report = session.reload_report().unwrap();
+    assert_eq!(report.swapped, ["main"]);
+    assert!(report.reset.is_empty() && report.restarted.is_empty());
+    for _ in 0..3 {
+      session.tick();
+    }
+  });
+  assert_eq!(lines, ["c: 1", "b: 2", "c: 2", "b: 11"]);
+}
+
+/// A run of a wire that does not loop finishes on its body: it is not
+/// swapped, cut or restarted.
+#[test]
+fn a_run_that_does_not_loop_finishes_on_the_body_it_started() {
+  let source = |value| {
+    format!(
+      r#"@fn(Step input: Int output: Int params: {{}} {{ Math.Add({value}) }})
+@wire(main {{ Log("a") Pause() 1 | Step | Log("b") }})
+@mesh(m) @schedule(m main) @run(m)"#
+    )
+  };
+  let mut session = shards_lang::Session::new();
+  preserve(&mut session, &source(1));
+  let (_, lines) = shards_core::log::capture(|| {
+    session.tick();
+    let ended = preserve(&mut session, &source(10));
+    assert!(ended.is_empty());
+    assert!(session.reload_report().unwrap().is_empty());
+    session.tick();
+    session.tick();
+  });
+  assert_eq!(lines, ["a: none", "b: 2"]);
+}
+
+/// Swapping a body keeps the state of the wire's own nodes and of the
+/// components it calls: a `Once` does not run again, a stateful callee
+/// keeps counting, under the default policy that rejects resets.
+#[test]
+fn a_swap_keeps_once_flags_and_component_state_under_reject() {
+  let source = |delta| {
+    format!(
+      r#"@fn(Counter stateful: true input: None output: Int params: {{}} {{ Keep(n 0) Inc(n) }})
+@fn(Bump input: Int output: Int params: {{}} {{ Math.Add({delta}) }})
+@wire(main {{ Once({{ Log("once") }}) Counter Log Bump }} looped: true)
+@mesh(m) @schedule(m main) @run(m)"#
+    )
+  };
+  let mut session = shards_lang::Session::new();
+  preserve(&mut session, &source(1));
+  let (_, lines) = shards_core::log::capture(|| {
+    session.tick();
+    session.tick();
+    preserve(&mut session, &source(10));
+    let report = session.reload_report().unwrap();
+    assert_eq!(report.swapped, ["main"]);
+    assert!(report.reset.is_empty(), "{report:?}");
+    session.tick();
+  });
+  assert_eq!(lines, ["once: none", "1", "2", "3"]);
+}
+
+/// An edit that takes an inlined callee past the inlining limits (here its
+/// length) turns its sites into calls; the running wire moves onto that
+/// body with its state.
+#[test]
+fn a_callee_that_stops_being_inlined_keeps_the_callers_state() {
+  let source = |body: &str| {
+    format!(
+      r#"@fn(Counter stateful: true input: None output: Int params: {{}} {{ Keep(n 0) Inc(n) }})
+@fn(Step input: Int output: Int params: {{}} {{ {body} }})
+@wire(main {{ Counter | Step | Log }} looped: true)
+@mesh(m) @schedule(m main) @run(m)"#
+    )
+  };
+  let mut session = shards_lang::Session::new();
+  preserve(&mut session, &source("Math.Add(100)"));
+  let (_, lines) = shards_core::log::capture(|| {
+    session.tick();
+    preserve(&mut session, &source(&"Math.Add(8) ".repeat(25)));
+    assert_eq!(session.reload_report().unwrap().swapped, ["main"]);
+    session.tick();
+    session.tick();
+  });
+  assert_eq!(lines, ["101", "202", "203"]);
+}
+
+/// A callee that keeps its frame (here it suspends) is selected at its
+/// call sites' next entry; a wire spawning a wire that calls it is not
+/// swapped, cut or restarted by the edit.
+#[test]
+fn editing_a_framed_callee_leaves_the_spawner_alone() {
+  let source = |value| {
+    format!(
+      r#"@fn(F input: None output: Int params: {{}} {{ Pause() {value} }})
+@wire(child {{ F | Log("child") }})
+@wire(main {{ Spawn(child) Log("a") Pause() Log("b") }})
+@mesh(m) @schedule(m main) @run(m)"#
+    )
+  };
+  let mut session = shards_lang::Session::new();
+  preserve(&mut session, &source(1));
+  let (_, lines) = shards_core::log::capture(|| {
+    session.tick();
+    preserve(&mut session, &source(10));
+    assert!(session.reload_report().unwrap().is_empty());
+    for _ in 0..3 {
+      session.tick();
+    }
+  });
+  assert_eq!(
+    lines.iter().filter(|l| *l == "a: none").count(),
+    1,
+    "{lines:?}"
+  );
+  assert_eq!(
+    lines.iter().filter(|l| *l == "b: none").count(),
+    1,
+    "{lines:?}"
+  );
+  assert_eq!(
+    lines.iter().filter(|l| l.starts_with("child")).count(),
+    1,
+    "{lines:?}"
+  );
+}
+
 #[test]
 fn preserving_reload_rejects_incompatible_function_interfaces_atomically() {
   let source = |signature, body| {

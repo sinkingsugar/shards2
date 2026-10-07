@@ -34,6 +34,10 @@ struct Instance {
   waker: Waker,
   /// The loop iteration ([`crate::instance::LeafCtx::iteration`]).
   iteration: u64,
+  /// A body of the same wire accepted by a reload (a function inlined into
+  /// it changed): the instance moves onto it at the end of the iteration
+  /// in flight (`rebase`).
+  next_body: Option<Arc<CompiledWire>>,
 }
 
 pub struct Mesh {
@@ -266,6 +270,25 @@ impl Mesh {
         report.restarted.push(instance.wire.name.clone());
         continue;
       }
+      if instance.started
+        && instance.wire.looped
+        && next.retention(&instance.wire) == crate::reload::Retention::Swap
+      {
+        let candidate = next.compile(&instance.wire.name, instance.wire.input)?;
+        if !super::engine::rebasable(&instance.wire.flow, &candidate.flow) {
+          return Err(crate::Error::Diagnostic(Box::new(
+            crate::diagnostic::Diagnostic::new(
+              crate::diagnostic::Phase::Compose,
+              "reload-incompatible",
+              "reload-incompatible",
+              format!(
+                "cannot move the running {} onto its new body with its state: it changed outside the inlined calls; use a full restart (press r in watch)",
+                instance.wire.name
+              ),
+            ),
+          )));
+        }
+      }
       // Admission is against the bodies the wire's call sites were composed
       // with (their interface) and the bodies its sites actually hold now
       // (a site may have adopted a newer body under an earlier reload); the
@@ -377,13 +400,21 @@ impl Mesh {
     self.functions = std::mem::take(&mut next.functions);
     self.cache = std::mem::take(&mut next.cache);
     // A retained instance whose body inlined a changed function takes the
-    // candidate's body (compiled by `validate_reload`) and keeps its
-    // `Keep` slots; its next iteration starts on the new code.
+    // candidate's body (compiled by `validate_reload`): one not started yet
+    // or between iterations now, a looped one in the middle of an
+    // iteration at its end, with its state (golden path §11: an in-flight run finishes on its body). A
+    // started run of a wire that does not loop finishes on the old body.
     for i in 0..self.instances.len() {
+      let instance = &mut self.instances[i];
+      if instance.outcome.is_some() || removed.contains(&instance.id) {
+        continue;
+      }
+      // A body accepted by an earlier reload and not adopted yet is
+      // superseded by this one (or by the old body, if it is valid again).
+      instance.next_body = None;
       let instance = &self.instances[i];
-      if instance.outcome.is_some()
-        || removed.contains(&instance.id)
-        || self.retention(&instance.wire) != crate::reload::Retention::Swap
+      if self.retention(&instance.wire) != crate::reload::Retention::Swap
+        || (instance.started && !instance.wire.looped)
       {
         continue;
       }
@@ -391,7 +422,21 @@ impl Mesh {
       let wire = self
         .compile(&name, input)
         .expect("swapped body compiled during validation");
-      swap_body(&mut self.instances[i], wire);
+      let instance = &mut self.instances[i];
+      if !instance.started {
+        instance.locals = carry_keeps(instance, &wire);
+        instance.wire = wire;
+      } else if instance
+        .state
+        .as_ref()
+        .is_some_and(Engine::between_iterations)
+      {
+        if let Err(err) = rebase(instance, wire) {
+          finish(instance, Outcome::Failed(err));
+        }
+      } else {
+        instance.next_body = Some(wire);
+      }
       self.report.swapped.push(name);
     }
   }
@@ -459,6 +504,7 @@ impl Mesh {
       started: false,
       memory: InstanceMemory::default(),
       outcome: None,
+      next_body: None,
     });
     id
   }
@@ -697,6 +743,11 @@ fn step(
           *value = Var::None;
         }
       }
+      if let Some(wire) = instance.next_body.take()
+        && let Err(err) = rebase(instance, wire)
+      {
+        finish(instance, Outcome::Failed(err));
+      }
       return;
     }
     Ok(Ok(Step::Stop)) => Outcome::Stopped,
@@ -709,29 +760,26 @@ fn step(
   finish(instance, outcome);
 }
 
-/// Ends an instance: cleans up its state exactly once (if it was
-/// instantiated) and records the outcome.
-/// Gives a live instance a new body of its wire: cleans up its frames (the
-/// iteration in flight ends; its native state is released), lays out fresh
-/// locals with `Keep` slots carried over by name and type, and leaves it to
-/// start on the new body at its next tick.
-fn swap_body(instance: &mut Instance, wire: Arc<CompiledWire>) {
-  if let Some(mut state) = instance.state.take() {
-    let mut ctx = InstanceCtx {
-      instance: instance.id,
-    }
-    .cleanup_ctx();
-    if let Err(payload) = catch_unwind(AssertUnwindSafe(|| state.cleanup(&mut ctx))) {
-      finish(
-        instance,
-        Outcome::Failed(Error::Activation(format!(
-          "panic in cleanup: {}",
-          panic_message(&*payload)
-        ))),
-      );
-      return;
-    }
-  }
+/// Moves a looped instance onto a new body of its wire between two
+/// iterations (`Engine::rebase`): its frames keep their state, its locals
+/// are laid out for the new body with `Keep` slots carried over.
+fn rebase(instance: &mut Instance, wire: Arc<CompiledWire>) -> Result<()> {
+  let mut ictx = InstanceCtx {
+    instance: instance.id,
+  };
+  let state = instance.state.as_mut().expect("started instance");
+  state.rebase(wire.clone(), &mut ictx)?;
+  instance.memory = InstanceMemory {
+    state_bytes: state.state_size() + wire.locals.len() * size_of::<Var>() + size_of::<Vec<Var>>(),
+  };
+  instance.locals = carry_keeps(instance, &wire);
+  instance.wire = wire;
+  Ok(())
+}
+
+/// The locals of `wire`'s body for an instance moving onto it: fresh, with
+/// the instance's `Keep` slots carried over by name and type.
+fn carry_keeps(instance: &Instance, wire: &CompiledWire) -> Vec<Var> {
   let mut locals = wire.fresh_locals();
   for keep in &wire.keeps {
     if let Some(old) = instance
@@ -744,13 +792,11 @@ fn swap_body(instance: &mut Instance, wire: Arc<CompiledWire>) {
       locals[keep.slot] = value.clone();
     }
   }
-  instance.locals = locals;
-  instance.wire = wire;
-  instance.started = false;
-  instance.waiting = false;
-  instance.memory = InstanceMemory::default();
+  locals
 }
 
+/// Ends an instance: cleans up its state exactly once (if it was
+/// instantiated) and records the outcome.
 fn finish(instance: &mut Instance, mut outcome: Outcome) {
   if let Some(mut state) = instance.state.take() {
     let mut ctx = InstanceCtx {
@@ -768,5 +814,6 @@ fn finish(instance: &mut Instance, mut outcome: Outcome) {
   // (until `take_outcome`).
   instance.locals = Vec::new();
   instance.input = Var::None;
+  instance.next_body = None;
   instance.outcome = Some(outcome);
 }

@@ -24,12 +24,41 @@ pub struct CompiledFlow {
   /// `If`) contributes its children's nodes and its own control
   /// instructions, which stand for no node (`NO_NODE`).
   pub(crate) pc_nodes: Vec<u32>,
+  /// What lowering added beyond the flow's own nodes, when it added
+  /// anything (most flows: `None`, one word).
+  pub(crate) lowered: Option<Box<Lowered>>,
+}
+
+/// The parts of a flow's code that compose lowering added (`ComposeCtx::flatten`).
+#[derive(Default)]
+pub(crate) struct Lowered {
+  /// Every call inlined into this code, as the range of `nodes` its body
+  /// brought (`start`, `len`; possibly empty), in order. The nodes outside
+  /// them are the flow's own: a recompiled flow whose inlined bodies
+  /// changed has the same own nodes, which is how a live instance moves
+  /// onto it with its state (`Engine::rebase`).
+  pub inlined: Vec<(u32, u32)>,
+  /// The hidden slots this code writes that may hold a heap value: an
+  /// inlined call's input, arguments and locals, a flattened composite's
+  /// saved input. Each is cleared where its value ends (`Op::Clear`), and
+  /// all of them when the code ends otherwise (a failure, a `Stop`).
+  pub released_slots: Vec<u32>,
 }
 
 /// The `pc_nodes` entry of a control instruction: never activated.
 pub(crate) const NO_NODE: u32 = u32::MAX;
 
 impl CompiledFlow {
+  /// `Lowered::inlined`.
+  pub(crate) fn inlined(&self) -> &[(u32, u32)] {
+    self.lowered.as_ref().map_or(&[], |l| &l.inlined)
+  }
+
+  /// `Lowered::released_slots`.
+  pub(crate) fn released_slots(&self) -> &[u32] {
+    self.lowered.as_ref().map_or(&[], |l| &l.released_slots)
+  }
+
   /// The node instruction `pc` stands for; `nodes.len()` at the end of
   /// the code. A control instruction stands for none and is never asked.
   #[inline]

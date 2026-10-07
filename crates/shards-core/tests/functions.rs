@@ -1159,3 +1159,264 @@ fn a_straight_line_function_runs_inside_the_callers_step() {
   let steps = mesh.composite_dispatches() - before;
   assert!(steps < 60, "{steps} composite steps for ten calls");
 }
+
+/// How a call reaches its callee in `a_completed_call_releases_its_input`.
+#[derive(Clone, Copy, Debug)]
+enum CallPath {
+  /// A small straight-line body, inlined at compose.
+  Inlined,
+  /// An inlined body that fails, caught by `Maybe`.
+  InlinedFailing,
+  /// A body that activates a shard: the call enters a frame.
+  Framed,
+  /// A straight-line body past the inlining budget, called twice: the
+  /// second call runs inside the VM on the site's kept frame.
+  Vm,
+}
+
+/// A completed call's values (its input, arguments and locals) end with
+/// it, returned or failed: a collection the caller passed in is uniquely
+/// owned by the caller again, so pushing to it is not a copy.
+fn a_completed_call_releases_its_input(path: CallPath) {
+  use std::sync::Arc;
+  let mut mesh = Mesh::new();
+  mesh.declare_var("acc", Var::Seq(Arc::new(vec![Var::Int(7)])), true);
+  let Some(Var::Seq(items)) = mesh.get_var("acc") else {
+    unreachable!()
+  };
+  let allocation = Arc::as_ptr(&items);
+  drop(items);
+  let index = if matches!(path, CallPath::InlinedFailing) {
+    5
+  } else {
+    0
+  };
+  let mut body = vec![get("input"), take(val(Var::Int(index)))];
+  match path {
+    CallPath::Framed => body.push(log()),
+    CallPath::Vm => body.extend((0..25).map(|_| add(val(Var::Int(0))))),
+    CallPath::Inlined | CallPath::InlinedFailing => {}
+  }
+  mesh.add_function(FunctionDef::new("Read", Type::seq(Type::int()), Type::int()).body(body));
+  let read = match path {
+    CallPath::InlinedFailing => maybe(
+      vec![get("acc"), call("Read", vec![])],
+      Some(vec![konst(Var::Int(-1))]),
+    ),
+    CallPath::Vm => repeat(vec![get("acc"), call("Read", vec![])], val(Var::Int(2))),
+    CallPath::Inlined | CallPath::Framed => call("Read", vec![]),
+  };
+  // The loop starts from no input, so its saved input holds nothing.
+  let mut flow = match path {
+    CallPath::Vm => vec![read],
+    _ => vec![get("acc"), read],
+  };
+  flow.extend([
+    konst(Var::Int(1)),
+    ShardDef::new(&shards_core::shards::data::PUSH, vec![var("acc")]),
+    pause(),
+  ]);
+  mesh.add_wire(wire("root", false, flow));
+  let compiled = mesh.compile("root", Type::none()).unwrap();
+  let id = mesh.spawn(&compiled, Var::None).unwrap();
+  mesh.tick();
+  assert_eq!(mesh.outcome(id), None, "{path:?}");
+  let Some(Var::Seq(items)) = mesh.get_var("acc") else {
+    unreachable!()
+  };
+  assert_eq!(&**items, &[Var::Int(7), Var::Int(1)]);
+  assert_eq!(
+    Arc::as_ptr(&items),
+    allocation,
+    "{path:?}: the completed call still owned the input"
+  );
+}
+
+#[test]
+fn a_completed_inlined_call_releases_its_input() {
+  a_completed_call_releases_its_input(CallPath::Inlined);
+}
+
+#[test]
+fn a_failed_inlined_call_releases_its_input() {
+  a_completed_call_releases_its_input(CallPath::InlinedFailing);
+}
+
+#[test]
+fn a_completed_framed_call_releases_its_input() {
+  a_completed_call_releases_its_input(CallPath::Framed);
+}
+
+#[test]
+fn a_completed_vm_call_releases_its_input() {
+  a_completed_call_releases_its_input(CallPath::Vm);
+}
+
+/// A cached stateless invocation that fails to start (a leaf's instantiate
+/// fails at its second entry) holds nothing: the leaves instantiated for
+/// that attempt are cleaned up before `Maybe` takes over.
+#[test]
+fn a_failed_stateless_reentry_rolls_back_initialized_siblings() {
+  use shards_core::args::Args;
+  use shards_core::compose::ComposeCtx;
+  use shards_core::describe::{InputDesc, OutputDesc, Params, ShardDesc, Targets};
+  use shards_core::instance::{InstanceCtx, LeafCtx};
+  use shards_core::shards::leaf::{LeafShard, leaf_type};
+  use shards_core::{Composed, Flow, Result};
+  use std::sync::atomic::{AtomicUsize, Ordering};
+  static ATTEMPTS: AtomicUsize = AtomicUsize::new(0);
+  struct Flaky;
+  impl LeafShard for Flaky {
+    type Compiled = ();
+    type State = ();
+    const DESC: ShardDesc = ShardDesc {
+      name: "Host.Flaky",
+      version: 1,
+      summary: "",
+      help: "",
+      params: Params::Declared(&[]),
+      input: InputDesc::Any,
+      output: OutputDesc::Passthrough,
+      targets: Targets::All,
+      aliases: &[],
+      effects: shards_core::signature::Effects::UNKNOWN,
+      lifetime: shards_core::signature::Lifetime::Stateful,
+    };
+    fn compose(_: &Args, ctx: &mut ComposeCtx<'_>) -> Result<Composed<()>> {
+      Ok(Composed {
+        compiled: (),
+        output: ctx.input(),
+      })
+    }
+    fn instantiate(_: &(), _: &mut InstanceCtx) -> Result<()> {
+      if ATTEMPTS.fetch_add(1, Ordering::SeqCst) == 1 {
+        Err(shards_core::Error::Activation("second entry failed".into()))
+      } else {
+        Ok(())
+      }
+    }
+    fn activate(_: &(), _: &mut (), _: &mut impl LeafCtx, input: &Var) -> Result<Flow> {
+      Ok(Flow::Next(input.clone()))
+    }
+  }
+  static FLAKY: shards_core::ShardType = leaf_type::<Flaky>();
+  ATTEMPTS.store(0, Ordering::SeqCst);
+  take_probe_events();
+  let mut mesh = Mesh::new();
+  mesh.add_function(
+    FunctionDef::new("Work", Type::none(), Type::int()).body(vec![
+      probe("resource"),
+      ShardDef::new(&FLAKY, vec![]),
+      konst(Var::Int(1)),
+    ]),
+  );
+  mesh.add_wire(wire(
+    "root",
+    true,
+    vec![
+      maybe(vec![call("Work", vec![])], Some(vec![konst(Var::Int(-1))])),
+      log(),
+    ],
+  ));
+  let root = mesh.compile("root", Type::none()).unwrap();
+  mesh.spawn(&root, Var::None).unwrap();
+  let (_, lines) = shards_core::log::capture(|| {
+    mesh.tick();
+    mesh.tick();
+  });
+  assert_eq!(lines, ["1", "-1"]);
+  let events = take_probe_events();
+  let count = |kind| {
+    events
+      .iter()
+      .filter(|e| e.tag == "resource" && e.kind == kind)
+      .count()
+  };
+  assert_eq!(count(ProbeEventKind::Instantiate), 2);
+  assert_eq!(
+    count(ProbeEventKind::Cleanup),
+    2,
+    "the failed entry kept a sibling it had instantiated"
+  );
+}
+
+/// A body past the inlining budget called from a function inside a loop:
+/// the retained VM call sites run on distinct kept frames.
+#[test]
+fn nested_vm_calls_use_distinct_frames() {
+  let mut mesh = Mesh::new();
+  mesh.add_function(
+    FunctionDef::new("Big", Type::int(), Type::int())
+      .body((0..25).map(|_| add(val(Var::Int(1)))).collect()),
+  );
+  mesh.add_function(
+    FunctionDef::new("Parent", Type::int(), Type::int())
+      .body(vec![call("Big", vec![]), add(val(Var::Int(1)))]),
+  );
+  mesh.add_wire(wire(
+    "root",
+    false,
+    vec![
+      konst(Var::Int(0)),
+      declare("n"),
+      repeat(
+        vec![get("n"), call("Parent", vec![]), update("n")],
+        val(Var::Int(3)),
+      ),
+      get("n"),
+    ],
+  ));
+  let (outcome, _) = run_logging(&mut mesh, 5);
+  assert_eq!(outcome, Outcome::Completed(Var::Int(78)));
+}
+
+/// A flattened composite's saved input (its hidden slot) ends when the
+/// composite exits: the value continues in the accumulator only, and a
+/// collection it shares with a variable is uniquely owned again.
+#[test]
+fn a_flattened_composite_releases_its_saved_input() {
+  use std::sync::Arc;
+  for (name, composite) in [
+    (
+      "when",
+      when(vec![konst(Var::Bool(true))], vec![konst(Var::Int(0))]),
+    ),
+    (
+      "if",
+      if_(vec![konst(Var::Bool(true))], vec![konst(Var::Int(0))], None),
+    ),
+    ("repeat", repeat(vec![konst(Var::Int(0))], val(Var::Int(2)))),
+  ] {
+    let mut mesh = Mesh::new();
+    mesh.declare_var("acc", Var::Seq(Arc::new(vec![Var::Int(7)])), true);
+    let Some(Var::Seq(items)) = mesh.get_var("acc") else {
+      unreachable!()
+    };
+    let allocation = Arc::as_ptr(&items);
+    drop(items);
+    mesh.add_wire(wire(
+      "root",
+      false,
+      vec![
+        get("acc"),
+        composite,
+        konst(Var::Int(1)),
+        ShardDef::new(&shards_core::shards::data::PUSH, vec![var("acc")]),
+        pause(),
+      ],
+    ));
+    let compiled = mesh.compile("root", Type::none()).unwrap();
+    let id = mesh.spawn(&compiled, Var::None).unwrap();
+    mesh.tick();
+    assert_eq!(mesh.outcome(id), None, "{name}");
+    let Some(Var::Seq(items)) = mesh.get_var("acc") else {
+      unreachable!()
+    };
+    assert_eq!(&**items, &[Var::Int(7), Var::Int(1)], "{name}");
+    assert_eq!(
+      Arc::as_ptr(&items),
+      allocation,
+      "{name}: the saved input was kept"
+    );
+  }
+}

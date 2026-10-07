@@ -239,6 +239,103 @@ fn bind_arguments(
   locals[body.input_slot] = input;
 }
 
+/// A unit of a flow for moving an instance between two compilations of
+/// it (`Engine::rebase`): one of its own nodes, or the nodes an inlined
+/// call brought (`start`, `len`).
+#[derive(Clone, Copy)]
+enum Unit {
+  Own(usize),
+  Inlined(usize, usize),
+}
+
+fn units(flow: &CompiledFlow) -> Vec<Unit> {
+  let mut units = Vec::with_capacity(flow.nodes.len());
+  let mut next = 0;
+  for &(start, len) in flow.inlined() {
+    let (start, len) = (start as usize, len as usize);
+    units.extend((next..start).map(Unit::Own));
+    units.push(Unit::Inlined(start, len));
+    next = start + len;
+  }
+  units.extend((next..flow.nodes.len()).map(Unit::Own));
+  units
+}
+
+/// The units of two compilations of a flow, paired in order, when an
+/// instance can move from `old` to `new` keeping the state of every own
+/// node: the same own nodes (by shard, control and call), with inlined
+/// calls anywhere in between. A stateless call site may stand where the
+/// other has an inlined call (an edit took the callee past the inlining
+/// limits, or under them): its frames hold no state that persists.
+fn pair_units(old: &CompiledFlow, new: &CompiledFlow) -> Option<Vec<(Unit, Unit)>> {
+  fn stateless_call(node: &Arc<dyn CompiledNode>) -> bool {
+    matches!(node.control(), Some(Control::Call(c)) if !c.stateful())
+  }
+  fn same_node(a: &Arc<dyn CompiledNode>, b: &Arc<dyn CompiledNode>) -> bool {
+    if a.name() != b.name() {
+      return false;
+    }
+    match (a.control(), b.control()) {
+      (None, None) => true,
+      (Some(Control::Call(x)), Some(Control::Call(y))) => {
+        x.stateful() == y.stateful()
+          && x.def().name == y.def().name
+          && matches!(x.target, CallTarget::Lazy { .. })
+            == matches!(y.target, CallTarget::Lazy { .. })
+      }
+      (Some(x), Some(y)) => {
+        std::mem::discriminant(&x) == std::mem::discriminant(&y) && x.len() == y.len()
+      }
+      _ => false,
+    }
+  }
+  let (a, b) = (units(old), units(new));
+  if a.len() != b.len() {
+    return None;
+  }
+  let pairs: Vec<(Unit, Unit)> = a.into_iter().zip(b).collect();
+  pairs
+    .iter()
+    .all(|pair| match *pair {
+      (Unit::Own(i), Unit::Own(j)) => same_node(&old.nodes[i], &new.nodes[j]),
+      (Unit::Inlined(..), Unit::Inlined(..)) => true,
+      (Unit::Own(i), Unit::Inlined(..)) => stateless_call(&old.nodes[i]),
+      (Unit::Inlined(..), Unit::Own(j)) => stateless_call(&new.nodes[j]),
+    })
+    .then_some(pairs)
+}
+
+/// Whether a live instance of `old` can move onto `new` with its state
+/// (`Engine::rebase`), through every composite's child flows.
+pub(crate) fn rebasable(old: &CompiledFlow, new: &CompiledFlow) -> bool {
+  let mut work = vec![(old, new)];
+  while let Some((old, new)) = work.pop() {
+    let Some(pairs) = pair_units(old, new) else {
+      return false;
+    };
+    for (o, n) in pairs {
+      if let (Unit::Own(i), Unit::Own(j)) = (o, n)
+        && let (Some(x), Some(y)) = (old.nodes[i].control(), new.nodes[j].control())
+        && !matches!(x, Control::Call(_))
+      {
+        for k in 0..x.len() {
+          work.push((child_flow(&x, k), child_flow(&y, k)));
+        }
+      }
+    }
+  }
+  true
+}
+
+/// `flow`'s code ended: the values of its hidden slots end too. At the end
+/// of the code its `Clear`s already did this; a failure, `Stop`, `Return`
+/// or `Restart` skipped the ones after it, and ends the whole flow.
+fn release_slots(flow: &CompiledFlow, locals: &mut [Var]) {
+  for slot in flow.released_slots() {
+    locals[*slot as usize] = Var::None;
+  }
+}
+
 /// What one frame step asks the loop to do next.
 enum Next {
   Continue,
@@ -362,6 +459,164 @@ impl Engine {
       });
     }
     Ok(root)
+  }
+
+  /// No iteration is in flight: the last one ended and the next has not
+  /// started (nothing suspended).
+  pub fn between_iterations(&self) -> bool {
+    self.current.is_none()
+  }
+
+  /// Moves the instance onto `wire`, a recompiled body of the wire it runs
+  /// whose own nodes are those of the current body (`rebasable`: only
+  /// inlined calls changed), between two iterations (no frame is active).
+  /// Every own node keeps its state: leaves their native state, composites
+  /// their progress flags, call sites their kept frames (components with
+  /// their `Keep` slots, cached invocations). Only the nodes of inlined
+  /// calls start fresh. All or nothing: if a fresh node fails to
+  /// instantiate, the engine is left on the old body.
+  pub fn rebase(&mut self, wire: Arc<CompiledWire>, ctx: &mut InstanceCtx) -> Result<()> {
+    debug_assert!(self.current.is_none(), "rebased between iterations");
+    let old_root = self.root.expect("live engine");
+    let new_root = self.frames.insert(Frame::new(Code::Root(wire)));
+    // States to move once every fresh one exists: (new frame, node, old
+    // frame, node). The new slot holds a pending placeholder until then.
+    let mut moves: Vec<(Handle, usize, Handle, usize)> = Vec::new();
+    let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<()> {
+      let mut work = vec![(new_root, old_root)];
+      while let Some((nh, oh)) = work.pop() {
+        let old_flow = self.frames.get(oh).expect("old frame").flow();
+        let new_flow = self.frames.get(nh).expect("new frame").flow();
+        let pairs = pair_units(old_flow, new_flow).ok_or_else(|| {
+          Error::Activation("a swapped body changed outside its inlined calls".into())
+        })?;
+        for (old, new) in pairs {
+          match (old, new) {
+            (Unit::Own(i), Unit::Own(j)) => {
+              let node = new_flow.nodes[j].clone();
+              let state = match node.control() {
+                Some(control) if !matches!(control, Control::Call(_)) => {
+                  let State::Control(old_c) = &self.frames.get(oh).expect("old frame").states[i]
+                  else {
+                    unreachable!("paired composites")
+                  };
+                  let (once_done, old_children) = (old_c.once_done, old_c.children.clone());
+                  let mut c = Continuation {
+                    children: Vec::with_capacity(control.len()),
+                    once_done,
+                    ..Continuation::default()
+                  };
+                  for (k, old_child) in old_children.into_iter().enumerate() {
+                    let child = self
+                      .frames
+                      .insert(Frame::new(Code::Child(node.clone(), k as u32)));
+                    c.children.push(child);
+                    work.push((child, old_child));
+                  }
+                  State::Control(Box::new(c))
+                }
+                _ => {
+                  moves.push((nh, j, oh, i));
+                  State::pending()
+                }
+              };
+              self
+                .frames
+                .get_mut(nh)
+                .expect("new frame")
+                .states
+                .push(state);
+            }
+            (_, Unit::Inlined(start, len)) => {
+              for node in &new_flow.nodes[start..start + len] {
+                let state = State::Leaf(node.instantiate(ctx)?);
+                self
+                  .frames
+                  .get_mut(nh)
+                  .expect("new frame")
+                  .states
+                  .push(state);
+              }
+            }
+            // A stateless call that is no longer inlined: a site never entered.
+            (Unit::Inlined(..), Unit::Own(_)) => {
+              let c = Continuation {
+                is_call: true,
+                ..Continuation::default()
+              };
+              let state = State::Control(Box::new(c));
+              self
+                .frames
+                .get_mut(nh)
+                .expect("new frame")
+                .states
+                .push(state);
+            }
+          }
+        }
+      }
+      Ok(())
+    }))
+    .unwrap_or_else(|p| {
+      Err(Error::Activation(format!(
+        "panic in instantiate: {}",
+        crate::error::panic_message(&*p)
+      )))
+    });
+    if let Err(err) = built {
+      let cleanup = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        self.cleanup_tree(new_root, &mut ctx.cleanup_ctx());
+      }));
+      return Err(match cleanup {
+        Ok(()) => err,
+        Err(p) => Error::Activation(format!(
+          "{err}; and a cleanup panicked during rollback: {}",
+          crate::error::panic_message(&*p)
+        )),
+      });
+    }
+    for (nh, j, oh, i) in moves {
+      let old_flow = self.frames.get(oh).expect("old frame").flow();
+      let new_flow = self.frames.get(nh).expect("new frame").flow();
+      let state = std::mem::replace(
+        &mut self.frames.get_mut(oh).expect("old frame").states[i],
+        State::pending(),
+      );
+      let state = match (
+        state,
+        old_flow.nodes[i].control(),
+        new_flow.nodes[j].control(),
+      ) {
+        (State::Control(mut c), Some(Control::Call(old)), Some(Control::Call(new))) => {
+          // The site keeps the body its frames run: selected at the next
+          // entry against the installed revision, like any call site.
+          if c.function.is_none()
+            && let CallTarget::Direct(body) = &old.target
+          {
+            c.function = Some(body.clone());
+          }
+          // The VM form points at the site, which now lives in the new body.
+          if c.vm.is_some() {
+            c.vm = Some(std::ptr::NonNull::from(new));
+          }
+          State::Control(c)
+        }
+        (state, ..) => state,
+      };
+      self.frames.get_mut(nh).expect("new frame").states[j] = state;
+    }
+    self.root = Some(new_root);
+    // What did not move: the old frames, the nodes of the old inlined
+    // calls, and the frames of sites whose calls are inlined now.
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+      self.cleanup_tree(old_root, &mut ctx.cleanup_ctx());
+    }))
+    .map_err(|p| {
+      Error::Activation(format!(
+        "panic in cleanup: {}",
+        crate::error::panic_message(&*p)
+      ))
+    })
   }
 
   /// Remove ownership first, then attempt every logical cleanup in reverse
@@ -573,10 +828,11 @@ impl Engine {
   }
 
   /// Enters a call site's kept frame (a stateful component, or a stateless
-  /// site's cached invocation): resets its program counter and the locals
-  /// that do not persist, re-pins the current table (a recursive group
-  /// below runs on the revision current now, not at the first call), and
-  /// instantiates the leaves `reset_invocation` cleaned up. No handle is
+  /// site's cached invocation): resets its program counter, re-pins the
+  /// current table (a recursive group below runs on the revision current
+  /// now, not at the first call), binds the arguments and instantiates the
+  /// leaves `reset_invocation` cleaned up. The locals that do not persist
+  /// are already unset (`release_locals` at the last exit). No handle is
   /// cloned unless the table changed.
   fn enter_kept_frame(
     &mut self,
@@ -594,24 +850,39 @@ impl Engine {
     if !Arc::ptr_eq(&invocation.table, ctx.table()) {
       invocation.table = ctx.table().clone();
     }
+    bind_arguments(&mut invocation.locals, body, call, input, ctx);
+    if !call.stateful()
+      && body.native_state
+      && let Err(err) = self.revive_invocation(child, ctx)
+    {
+      // Not entered: the arguments just bound end here too.
+      self.release_locals(child);
+      return Err(err);
+    }
+    Ok(())
+  }
+
+  /// The exit of an invocation on a kept frame, returned or failed: the
+  /// locals that do not persist are unset now, not at the next entry, so
+  /// no input, argument or local value outlives the call (a collection the
+  /// caller passed in is uniquely owned by the caller again).
+  fn release_locals(&mut self, child: Handle) {
+    let frame = self.frames.get_mut(child).expect("kept call frame");
+    let Code::Function(body) = &frame.code else {
+      unreachable!("a call's frame holds its function")
+    };
+    let invocation = frame.invocation.as_mut().expect("function frame");
     if body.keeps.is_empty() {
-      // A stateless body: parameters and the input are bound below, only
-      // the other locals need clearing.
-      for slot in &body.scratch_slots {
-        invocation.locals[*slot] = Var::None;
+      for local in invocation.locals.iter_mut() {
+        *local = Var::None;
       }
     } else {
-      for (slot, value) in invocation.locals.iter_mut().enumerate() {
+      for (slot, local) in invocation.locals.iter_mut().enumerate() {
         if !body.persistent(slot) {
-          *value = Var::None;
+          *local = Var::None;
         }
       }
     }
-    bind_arguments(&mut invocation.locals, body, call, input, ctx);
-    if !call.stateful() && body.native_state {
-      self.revive_invocation(child, ctx)?;
-    }
-    Ok(())
   }
 
   /// A stateful call site adopting a new body (golden path §11): the new
@@ -697,22 +968,58 @@ impl Engine {
   }
 
   /// The entry of a cached stateless invocation: instantiates the leaves
-  /// `reset_invocation` cleaned up. An error leaves the rest pending for
-  /// the next attempt; nothing instantiated is lost, the frames own it.
+  /// `reset_invocation` cleaned up. All or nothing, like a first build: on
+  /// an error (or a panic) the leaves this attempt instantiated are
+  /// cleaned up and pending again, so the invocation that failed to start
+  /// holds nothing and the next entry starts from the same point.
   fn revive_invocation(&mut self, child: Handle, ctx: &ActivationCtx<'_>) -> Result<()> {
     let mut ictx = InstanceCtx {
       instance: ctx.instance(),
     };
-    for h in self.invocation_frames(child) {
-      let frame = self.frames.get_mut(h).expect("invocation frame");
-      let nodes = frame.flow().nodes.clone();
-      for (node, state) in nodes.iter().zip(frame.states.iter_mut()) {
-        if state.is_pending() {
-          *state = State::Leaf(node.instantiate(&mut ictx)?);
+    let mut revived: Vec<(Handle, usize)> = Vec::new();
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+      for h in self.invocation_frames(child) {
+        let frame = self.frames.get_mut(h).expect("invocation frame");
+        let nodes = frame.flow().nodes.clone();
+        for (i, (node, state)) in nodes.iter().zip(frame.states.iter_mut()).enumerate() {
+          if state.is_pending() {
+            *state = State::Leaf(node.instantiate(&mut ictx)?);
+            revived.push((h, i));
+          }
         }
       }
+      Ok(())
+    }))
+    .unwrap_or_else(|p| {
+      Err(Error::Activation(format!(
+        "panic in instantiate: {}",
+        crate::error::panic_message(&*p)
+      )))
+    });
+    if result.is_err() {
+      // In reverse initialization order, every cleanup attempted.
+      let mut leaves = Vec::new();
+      for (h, i) in revived.into_iter().rev() {
+        let frame = self.frames.get_mut(h).expect("invocation frame");
+        let node = frame.flow().nodes[i].clone();
+        if let State::Leaf(s) = std::mem::replace(&mut frame.states[i], State::pending()) {
+          leaves.push((node, s));
+        }
+      }
+      let mut cleanup = ictx.cleanup_ctx();
+      let rollback = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        crate::lifecycle::cleanup_each(leaves, |(node, mut state)| {
+          node.cleanup(state.as_mut(), &mut cleanup)
+        });
+      }));
+      if let (Err(err), Err(p)) = (&result, rollback) {
+        return Err(Error::Activation(format!(
+          "{err}; and a cleanup panicked during rollback: {}",
+          crate::error::panic_message(&*p)
+        )));
+      }
     }
-    Ok(())
+    result
   }
 
   pub fn activate(&mut self, ctx: &mut ActivationCtx<'_>, input: &Var) -> Result<Step> {
@@ -847,9 +1154,11 @@ impl Engine {
     };
     // A completed stateless call: a recursive site releases its frames (a
     // group's depth varies per call); any other site keeps them for the
-    // next call and resets what lives for one invocation.
+    // next call, releases the invocation's values and resets what lives
+    // for one invocation.
     let mut release = Vec::new();
     let mut reset = None;
+    let mut exited = None;
     // For a call being entered: whether the callee ignores its input (so the
     // enter path asks the node nothing).
     let mut call_entry: Option<bool> = None;
@@ -888,7 +1197,12 @@ impl Engine {
         c.reset();
         match stateless_call {
           Some(true) => release = std::mem::take(&mut c.children),
-          Some(false) if c.resets => reset = c.children.first().copied(),
+          _ if c.is_call => {
+            exited = c.children.first().copied();
+            if c.resets {
+              reset = exited;
+            }
+          }
           _ => {}
         }
       }
@@ -965,6 +1279,7 @@ impl Engine {
         Next::Continue
       }
       Request::Complete(result) => {
+        release_slots(flow, ctx.locals);
         f.pc = 0;
         f.value = Var::None;
         let leaving_function = matches!(f.code, Code::Function(_));
@@ -998,6 +1313,9 @@ impl Engine {
     };
     for child in release {
       self.cleanup_tree(child, &mut cleanup);
+    }
+    if let Some(child) = exited {
+      self.release_locals(child);
     }
     if let Some(child) = reset {
       self.reset_invocation(child, &mut cleanup);
@@ -1064,6 +1382,9 @@ fn dispatch(
       ctx.mesh_frame,
       &crate::inline::NoCalls,
     );
+    if result.is_err() {
+      release_slots(flow, ctx.locals);
+    }
     completion = Some(result.map(|(_, value)| Step::Next(value)));
   }
 }
@@ -1257,7 +1578,6 @@ impl crate::inline::VmCalls for EngineCalls {
         .any(crate::inline::Instruction::is_constructor),
       locals,
       param_slots: &body.param_slots,
-      scratch: &body.scratch_slots,
       input_slot: body.input_slot,
       args: &call.args,
       ignores_input: call.def().ignores_input(),

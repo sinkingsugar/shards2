@@ -76,6 +76,11 @@ pub(crate) enum Op {
   /// A loop counter in a hidden slot: at zero jumps to the given end,
   /// otherwise counts down and falls through into the body.
   LoopTest(Binding, u32),
+  /// Ends the value lifetime of a slot an inlined call wrote (its input,
+  /// an argument, a local of the callee): the slot is unset, so the
+  /// caller's next mutation of a collection it shared is not a copy. A
+  /// value the accumulator still reads moves into it.
+  Clear(Binding),
 }
 
 #[cfg(test)]
@@ -129,9 +134,6 @@ pub(crate) struct VmCallee<C> {
   pub constructors: bool,
   pub locals: *mut [Var],
   pub param_slots: &'static [usize],
-  /// The locals that are neither parameters nor the input: cleared at
-  /// entry (the others are bound).
-  pub scratch: &'static [usize],
   pub input_slot: usize,
   pub args: &'static [Operand],
   pub ignores_input: bool,
@@ -245,6 +247,7 @@ impl Op {
       Op::JumpIfNot(_) => "jump-if-not",
       Op::JumpIf(_) => "jump-if",
       Op::LoopTest(..) => "loop-test",
+      Op::Clear(_) => "clear",
     }
   }
 }
@@ -341,7 +344,8 @@ impl Instruction {
       | Op::AddIntBound(b)
       | Op::AddFloatBound(b)
       | Op::AddFloat4Bound(b)
-      | Op::LoopTest(b, _) => binding(b, f),
+      | Op::LoopTest(b, _)
+      | Op::Clear(b) => binding(b, f),
       Op::Take(o) | Op::Arith(_, o) | Op::Compare(_, o) | Op::Equal(_, o) => operand(o, f),
       Op::SeqMake(ops) | Op::TableMake(_, ops) => {
         for o in ops {
@@ -370,10 +374,15 @@ impl Instruction {
     self.for_each_local(&mut |i| *i += base);
   }
 
+  /// Calls `f` with every local slot the instruction addresses.
+  pub(crate) fn visit_locals(&self, f: &mut dyn FnMut(usize)) {
+    self.clone().for_each_local(&mut |i| f(*i));
+  }
+
   /// Whether the instruction addresses local `slot`.
   pub(crate) fn mentions_local(&self, slot: usize) -> bool {
     let mut found = false;
-    self.clone().for_each_local(&mut |i| found |= *i == slot);
+    self.visit_locals(&mut |i| found |= i == slot);
     found
   }
 }
@@ -425,7 +434,8 @@ pub(crate) fn lower_scratch_releases(code: &mut [Instruction]) {
       | Op::Push(_)
       | Op::VmCall
       | Op::AddFloat4Const(_)
-      | Op::AddFloat4Bound(_) => may_own = true,
+      | Op::AddFloat4Bound(_)
+      | Op::Clear(_) => may_own = true,
       Op::Const(_)
       | Op::GetLocal(_)
       | Op::GetMesh(_)
@@ -767,6 +777,15 @@ pub(crate) fn run<C: VmCalls>(
           }
         }
         Op::Pass => {}
+        Op::Clear(b) => {
+          let target = frames.slot(*b);
+          if std::ptr::eq(value, target) {
+            scratch = std::mem::replace(&mut *target, Var::None);
+            value = &scratch;
+          } else {
+            *target = Var::None;
+          }
+        }
         Op::VmCall => match vm_call_op(calls, index, value, &frames)? {
           Some(output) => {
             scratch = output;
@@ -879,9 +898,6 @@ unsafe fn vm_call_op<C: VmCalls>(
     } else {
       (*value).clone()
     };
-    for slot in callee.scratch {
-      callee_locals[*slot] = Var::None;
-    }
     for (slot, op) in callee.param_slots.iter().zip(callee.args) {
       callee_locals[*slot] = match op {
         Operand::Const(v) => v.clone(),
@@ -891,12 +907,18 @@ unsafe fn vm_call_op<C: VmCalls>(
     callee_locals[callee.input_slot] = input.clone();
     // SAFETY: the mesh frame through the same pointer this run uses.
     let mesh = std::slice::from_raw_parts_mut(frames.mesh, frames.mesh_len);
-    let (_, output) = if callee.constructors {
-      run_segment(callee.code, 0, input, callee_locals, mesh, &callee.calls)?
+    let result = if callee.constructors {
+      run_segment(callee.code, 0, input, callee_locals, mesh, &callee.calls)
     } else {
-      run(callee.code, 0, input, callee_locals, mesh, &callee.calls)?
+      run(callee.code, 0, input, callee_locals, mesh, &callee.calls)
     };
-    Ok(Some(output))
+    // The invocation's values end with it, returned or failed: the kept
+    // locals hold nothing between calls (the body is stateless), so a
+    // collection passed in is uniquely owned again by the caller.
+    for local in callee_locals.iter_mut() {
+      *local = Var::None;
+    }
+    Ok(Some(result?.1))
   }
 }
 
@@ -1290,6 +1312,33 @@ mod tests {
     )
     .unwrap_err();
     assert_eq!(error.to_string(), overflow().to_string());
+  }
+
+  #[test]
+  fn clear_unsets_a_slot_and_moves_a_value_the_accumulator_reads() {
+    use std::sync::Arc;
+    let items = Arc::new(vec![Var::Int(7)]);
+    let mut locals = vec![Var::Seq(items.clone()), Var::Seq(items.clone())];
+    // The accumulator reads slot 0 when it is cleared: the value moves into
+    // it (no copy, no dangling read); slot 1 is not read and is dropped.
+    let code = instructions([
+      Op::get(Binding::Local(0)),
+      Op::Clear(Binding::Local(0)),
+      Op::Clear(Binding::Local(1)),
+    ]);
+    let (pc, out) = run(&code, 0, Var::None, &mut locals, &mut [], &NoCalls).unwrap();
+    assert_eq!(pc, 3);
+    assert_eq!(locals, [Var::None, Var::None]);
+    let Var::Seq(out) = out else {
+      panic!("the read value is the output")
+    };
+    assert!(Arc::ptr_eq(&out, &items));
+    drop(out);
+    assert_eq!(
+      Arc::strong_count(&items),
+      1,
+      "nothing else holds the sequence"
+    );
   }
 
   #[test]

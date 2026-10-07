@@ -221,6 +221,8 @@ Shapes join the type registry, which never frees today. Add a reload soak test (
 
 The first run happens **before M2**, on today's syntax, as the baseline. Variants for later runs include `Param(factor)` against bare lowercase parameters. Small samples are evidence, not proof; report them as such.
 
+The post-M5/M7 [Haiku rerun of 2026-10-07](../bench/authoring/results/2026-10-07-haiku-functions/README.md) includes recursive tree folding and two harder tasks shared with the pre-M2 control. It reports identical-prompt comparisons separately from the changed function prompt and the new recursion capability; strict output failures and manual coverage limits remain visible. Broad milestone reviews are a separate requirement.
+
 ## 9. Milestones
 
 | M | Content | Gate (beyond the full check set) |

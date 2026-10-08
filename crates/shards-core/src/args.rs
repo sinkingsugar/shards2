@@ -168,7 +168,7 @@ impl Args {
 impl Args {
   /// The declared parameter that holds this nested flow (by identity) or
   /// references this wire, for diagnostic paths.
-  /// For a flow inside `Cases`, also the case's index.
+  /// For a flow inside `cases`, also the case's index.
   pub(crate) fn param_of(
     &self,
     child: &crate::compose::Child,
@@ -210,7 +210,7 @@ impl Args {
     })
   }
 
-  /// The value-flow pairs of a `Cases` parameter.
+  /// The value-flow pairs of a `cases` parameter.
   pub fn cases(&self, name: &str) -> Option<&[(Var, Vec<ShardDef>)]> {
     match self.get(name)? {
       ParamValue::Cases(cases) => Some(cases),
@@ -397,10 +397,15 @@ pub fn decode(desc: &ShardDesc, args: &[Arg]) -> Result<Args> {
         );
       }
     }
+    // Literal tables enter compose as struct tables (golden path §7.3).
+    let value = match &arg.value {
+      ParamValue::Value(v) => ParamValue::Value(v.clone().into_struct_tables()),
+      other => other.clone(),
+    };
     if Some(index) == variadic {
-      rest.push(arg.value.clone());
+      rest.push(value);
     } else {
-      values[index] = Some(arg.value.clone());
+      values[index] = Some(value);
     }
   }
 
@@ -417,7 +422,9 @@ pub fn decode(desc: &ShardDesc, args: &[Arg]) -> Result<Args> {
             .param(decl.name, Some(index)),
           );
         }
-        Requirement::Default(default) => values[index] = Some(ParamValue::Value(default.to_var())),
+        Requirement::Default(default) => {
+          values[index] = Some(ParamValue::Value(default.to_var().into_struct_tables()));
+        }
         Requirement::Optional | Requirement::Variadic => {}
       }
     }

@@ -1,0 +1,26 @@
+{apple: 3 pear: 5 plum: 2} = prices
+[{item: "apple" quantity: "2"} {item: "pear" quantity: "bad"} {item: "missing" quantity: "4"} {item: "plum" quantity: "-1"} {item: "pear" quantity: "3"} {item: "apple" quantity: "0"}] = orders
+0 >= total
+0 >= rejected
+0 >= i
+Repeat({
+  orders | Take(i) | ExpectTable = order
+  order.item | ExpectString = item
+  false >= accepted
+  Maybe({
+    order.quantity | ExpectString | ParseInt = quantity
+    prices | Take(item) | ExpectInt = price
+    When({quantity | IsMore(0)} {
+      price | Math.Multiply(quantity) = subtotal
+      subtotal | Math.Add(total) > total
+      f"{item}: {subtotal}" | Log
+      true > accepted
+    })
+  } Silent: true)
+  When({accepted | Not} {
+    f"rejected: {item}" | Log
+    Inc(rejected)
+  })
+  Inc(i)
+} Times: 6)
+f"total={total} rejected={rejected}" | Log

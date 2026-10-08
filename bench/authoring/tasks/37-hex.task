@@ -1,0 +1,6 @@
+=== prompt
+Log the integer 255 written in hexadecimal.
+=== expected
+0xff
+=== reference
+255 | ToHex | Log

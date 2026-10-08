@@ -1,0 +1,14 @@
+=== prompt
+Compute the greatest common divisor of 48 and 18 with Euclid's algorithm and log it.
+=== expected
+6
+=== reference
+48 | Var(a)
+18 | Var(b)
+While({b | IsNot(0)} {
+  a | Math.Divide(b) | Math.Multiply(b) = q
+  a | Math.Subtract(q) = r
+  b | Update(a)
+  r | Update(b)
+})
+a | Log

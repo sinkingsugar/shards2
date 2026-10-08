@@ -115,7 +115,7 @@ pub(crate) fn comparable(a: Type, b: Type) -> bool {
 // --- Log ---
 
 pub static LOG_PARAMS: &[ParamDecl] = &[decl(
-  "Prefix",
+  "prefix",
   crate::shard_doc!("Text written before the value, as `prefix: value`."),
   Forms::LITERAL,
   &[TypeName::String],
@@ -127,13 +127,15 @@ pub const LOG_DESC: ShardDesc = ShardDesc {
   version: 1,
   summary: crate::shard_doc!("Writes the input to the log and passes it through."),
   help: crate::shard_doc!(
-    "Values print as text: strings as they are, whole floats without `.0`, other floats exact. With a Prefix the line is `prefix: value`."
+    "Values print as text: strings as they are, whole floats without `.0`, other floats exact. With a `prefix` the line is `prefix: value`."
   ),
   params: Params::Declared(LOG_PARAMS),
   input: InputDesc::Any,
   output: OutputDesc::Passthrough,
   targets: Targets::All,
   aliases: &[],
+  effects: crate::signature::Effects::IO,
+  lifetime: crate::signature::Lifetime::Stateless,
 };
 
 pub struct Log;
@@ -143,12 +145,9 @@ impl LeafShard for Log {
   type State = ();
   const DESC: ShardDesc = LOG_DESC;
 
-  fn compose<B: Backend>(
-    args: &Args,
-    ctx: &mut ComposeCtx<'_, B>,
-  ) -> Result<Composed<Self::Compiled>> {
+  fn compose(args: &Args, ctx: &mut ComposeCtx<'_>) -> Result<Composed<Self::Compiled>> {
     Ok(Composed {
-      compiled: args.string("Prefix").map(Arc::from),
+      compiled: args.string("prefix").map(Arc::from),
       output: ctx.input(),
     })
   }
@@ -188,6 +187,8 @@ pub const STOP_DESC: ShardDesc = ShardDesc {
   )),
   targets: Targets::All,
   aliases: &[],
+  effects: crate::signature::Effects::NONE,
+  lifetime: crate::signature::Lifetime::Stateless,
 };
 
 pub struct Stop;
@@ -197,7 +198,7 @@ impl LeafShard for Stop {
   type State = ();
   const DESC: ShardDesc = STOP_DESC;
 
-  fn compose<B: Backend>(_: &Args, _: &mut ComposeCtx<'_, B>) -> Result<Composed<()>> {
+  fn compose(_: &Args, _: &mut ComposeCtx<'_>) -> Result<Composed<()>> {
     // Never produces a value: a flow ending in Stop fits any expected type.
     Ok(Composed {
       compiled: (),
@@ -217,7 +218,7 @@ impl LeafShard for Stop {
 // --- Is, IsNot ---
 
 pub static EQUALITY_PARAMS: &[ParamDecl] = &[decl(
-  "Operand",
+  "operand",
   crate::shard_doc!("The value to compare with: a literal, or a variable read at activation."),
   OPERAND,
   &[],
@@ -245,6 +246,8 @@ impl EqualitySpec for IsSpec {
     output: OutputDesc::Fixed(TypeName::Bool),
     targets: Targets::All,
     aliases: &[],
+    effects: crate::signature::Effects::NONE,
+    lifetime: crate::signature::Lifetime::Stateless,
   };
   const EQUAL: bool = true;
 }
@@ -260,6 +263,8 @@ impl EqualitySpec for IsNotSpec {
     output: OutputDesc::Fixed(TypeName::Bool),
     targets: Targets::All,
     aliases: &[],
+    effects: crate::signature::Effects::NONE,
+    lifetime: crate::signature::Lifetime::Stateless,
   };
   const EQUAL: bool = false;
 }
@@ -271,8 +276,8 @@ impl<S: EqualitySpec> LeafShard for Equality<S> {
   type State = ();
   const DESC: ShardDesc = S::DESC;
 
-  fn compose<B: Backend>(args: &Args, ctx: &mut ComposeCtx<'_, B>) -> Result<Composed<Operand>> {
-    let (operand, ty) = Operand::compose_arg(args, "Operand", S::DESC.name, ctx)?;
+  fn compose(args: &Args, ctx: &mut ComposeCtx<'_>) -> Result<Composed<Operand>> {
+    let (operand, ty) = Operand::compose_arg(args, "operand", S::DESC.name, ctx)?;
     let input = ctx.input();
     if !comparable(input, ty) {
       return Err(Error::Diagnostic(Box::new(
@@ -283,7 +288,7 @@ impl<S: EqualitySpec> LeafShard for Equality<S> {
           format!("{input} and {ty} can never be equal"),
         )
         .shard(S::DESC.name)
-        .param("Operand", Some(0))
+        .param("operand", Some(0))
         .types(Some(TypeRef::of(input)), vec![TypeRef::of(ty)]),
       )));
     }
@@ -307,7 +312,7 @@ impl<S: EqualitySpec> LeafShard for Equality<S> {
 // --- IsMore, IsLessEqual ---
 
 pub static ORDERED_PARAMS: &[ParamDecl] = &[decl(
-  "Operand",
+  "operand",
   crate::shard_doc!(
     "The value to compare the input with: a literal, or a variable read at activation."
   ),
@@ -337,6 +342,8 @@ const fn ordered_desc(name: &'static str, summary: &'static str) -> ShardDesc {
     output: OutputDesc::Fixed(TypeName::Bool),
     targets: Targets::All,
     aliases: &[],
+    effects: crate::signature::Effects::NONE,
+    lifetime: crate::signature::Lifetime::Stateless,
   }
 }
 
@@ -367,7 +374,7 @@ impl<S: OrderedSpec> LeafShard for Ordered<S> {
   type State = ();
   const DESC: ShardDesc = S::DESC;
 
-  fn compose<B: Backend>(args: &Args, ctx: &mut ComposeCtx<'_, B>) -> Result<Composed<Operand>> {
+  fn compose(args: &Args, ctx: &mut ComposeCtx<'_>) -> Result<Composed<Operand>> {
     compose_compare(args, ctx, S::DESC.name)
   }
 
@@ -386,7 +393,7 @@ impl<S: OrderedSpec> LeafShard for Ordered<S> {
 // --- IsAny ---
 
 pub static IS_ANY_PARAMS: &[ParamDecl] = &[decl(
-  "Values",
+  "values",
   crate::shard_doc!("The sequence to look in: a literal, or a variable read at activation."),
   OPERAND,
   &[TypeName::Seq],
@@ -403,6 +410,8 @@ pub const IS_ANY_DESC: ShardDesc = ShardDesc {
   output: OutputDesc::Fixed(TypeName::Bool),
   targets: Targets::All,
   aliases: &[],
+  effects: crate::signature::Effects::NONE,
+  lifetime: crate::signature::Lifetime::Stateless,
 };
 
 pub struct IsAny;
@@ -412,8 +421,8 @@ impl LeafShard for IsAny {
   type State = ();
   const DESC: ShardDesc = IS_ANY_DESC;
 
-  fn compose<B: Backend>(args: &Args, ctx: &mut ComposeCtx<'_, B>) -> Result<Composed<Operand>> {
-    let (operand, ty) = Operand::compose_arg(args, "Values", "IsAny", ctx)?;
+  fn compose(args: &Args, ctx: &mut ComposeCtx<'_>) -> Result<Composed<Operand>> {
+    let (operand, ty) = Operand::compose_arg(args, "values", "IsAny", ctx)?;
     let input = ctx.input();
     let element = match ty.desc() {
       TypeDesc::Seq(e) => *e,
@@ -421,7 +430,7 @@ impl LeafShard for IsAny {
         return Err(param_error(
           args,
           "IsAny",
-          "Values",
+          "values",
           "compose-error",
           "wrong-variable-type",
           format!("Values must be a sequence, got {ty}"),
@@ -432,7 +441,7 @@ impl LeafShard for IsAny {
       return Err(param_error(
         args,
         "IsAny",
-        "Values",
+        "values",
         "input-type-mismatch",
         "input-type-mismatch",
         format!("{input} can never equal an element of {ty}"),
@@ -461,7 +470,7 @@ impl LeafShard for IsAny {
 // --- ParseInt ---
 
 pub static PARSE_INT_PARAMS: &[ParamDecl] = &[decl(
-  "Base",
+  "base",
   crate::shard_doc!("The base, 2 to 36."),
   Forms::LITERAL,
   &[TypeName::Int],
@@ -473,13 +482,15 @@ pub const PARSE_INT_DESC: ShardDesc = ShardDesc {
   version: 1,
   summary: crate::shard_doc!("Parses a string as an Int."),
   help: crate::shard_doc!(
-    "Surrounding whitespace is ignored. Text that is not a number in Base is an activation error."
+    "Surrounding whitespace is ignored. Text that is not a number in `base` is an activation error."
   ),
   params: Params::Declared(PARSE_INT_PARAMS),
   input: InputDesc::Types(&[TypeName::String]),
   output: OutputDesc::Fixed(TypeName::Int),
   targets: Targets::All,
   aliases: &[],
+  effects: crate::signature::Effects::NONE,
+  lifetime: crate::signature::Lifetime::Stateless,
 };
 
 pub struct ParseInt;
@@ -489,17 +500,17 @@ impl LeafShard for ParseInt {
   type State = ();
   const DESC: ShardDesc = PARSE_INT_DESC;
 
-  fn compose<B: Backend>(args: &Args, ctx: &mut ComposeCtx<'_, B>) -> Result<Composed<u32>> {
+  fn compose(args: &Args, ctx: &mut ComposeCtx<'_>) -> Result<Composed<u32>> {
     let input = ctx.input();
     if input != Type::string() {
       return Err(mismatch("ParseInt", input, &[TypeName::String]));
     }
-    let base = args.int("Base").unwrap_or(10);
+    let base = args.int("base").unwrap_or(10);
     if !(2..=36).contains(&base) {
       return Err(param_error(
         args,
         "ParseInt",
-        "Base",
+        "base",
         "compose-error",
         "invalid-value",
         format!("Base must be between 2 and 36, got {base}"),
@@ -542,7 +553,7 @@ impl<P: PureOp> LeafShard for Pure<P> {
   type State = ();
   const DESC: ShardDesc = P::DESC;
 
-  fn compose<B: Backend>(_: &Args, ctx: &mut ComposeCtx<'_, B>) -> Result<Composed<()>> {
+  fn compose(_: &Args, ctx: &mut ComposeCtx<'_>) -> Result<Composed<()>> {
     let input = ctx.input();
     match P::output(input) {
       Ok(output) => Ok(Composed {
@@ -579,6 +590,8 @@ const fn pure_desc(
     output,
     targets: Targets::All,
     aliases: &[],
+    effects: crate::signature::Effects::NONE,
+    lifetime: crate::signature::Lifetime::Stateless,
   }
 }
 
@@ -683,15 +696,18 @@ impl PureOp for IsNotNoneOp {
 
 pub struct TimeNowOp;
 impl PureOp for TimeNowOp {
-  const DESC: ShardDesc = pure_desc(
-    "Time.Now",
-    crate::shard_doc!("Outputs the time in seconds, from a monotonic clock."),
-    crate::shard_doc!(
-      "Ignores its input. The value counts from an arbitrary start (the first use in the process): use it for differences, not dates."
-    ),
-    InputDesc::Ignored,
-    OutputDesc::Fixed(TypeName::Float),
-  );
+  const DESC: ShardDesc = ShardDesc {
+    effects: crate::signature::Effects::TIME,
+    ..pure_desc(
+      "Time.Now",
+      crate::shard_doc!("Outputs the time in seconds, from a monotonic clock."),
+      crate::shard_doc!(
+        "Ignores its input. The value counts from an arbitrary start (the first use in the process): use it for differences, not dates."
+      ),
+      InputDesc::Ignored,
+      OutputDesc::Fixed(TypeName::Float),
+    )
+  };
   fn output(_: Type) -> std::result::Result<Type, &'static [TypeName]> {
     Ok(Type::float())
   }
@@ -884,7 +900,7 @@ impl<const N: usize> PureOp for ToVector<N> {
   fn apply(input: &Var) -> Result<Var> {
     let mut c = [0.0f64; 4];
     match input {
-      Var::Float2(v) => c[..2].copy_from_slice(v),
+      Var::Float2(v) => v.iter().enumerate().for_each(|(i, x)| c[i] = f64::from(*x)),
       Var::Float3(v) => v.iter().enumerate().for_each(|(i, x)| c[i] = f64::from(*x)),
       Var::Float4(v) => v.iter().enumerate().for_each(|(i, x)| c[i] = f64::from(*x)),
       Var::Seq(items) if items.len() == N => {
@@ -904,10 +920,12 @@ impl<const N: usize> PureOp for ToVector<N> {
       }
       _ => return Err(fail(Self::NAME, "input type mismatch")),
     }
+    // Rounded once to f32; out-of-range values become infinite.
+    let c = c.map(|x| x as f32);
     Ok(match N {
-      2 => Var::Float2([c[0], c[1]]),
-      3 => Var::Float3([c[0] as f32, c[1] as f32, c[2] as f32]),
-      _ => Var::Float4([c[0] as f32, c[1] as f32, c[2] as f32, c[3] as f32]),
+      2 => Var::float2(c[0], c[1]),
+      3 => Var::float3(c[0], c[1], c[2]),
+      _ => Var::float4(c[0], c[1], c[2], c[3]),
     })
   }
 }

@@ -1,0 +1,9 @@
+=== prompt
+Compute 10! (the factorial of 10) as an integer and log it.
+=== expected
+3628800
+=== reference
+1 | Var(acc)
+0 | Var(i)
+Repeat({ Inc(i) acc | Math.Multiply(i) | Update(acc) } times: 10)
+acc | Log

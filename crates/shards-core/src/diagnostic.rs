@@ -23,6 +23,7 @@ pub enum Phase {
   /// Building the wire: name resolution and argument decoding.
   Construct,
   Compose,
+  Activate,
 }
 
 impl Phase {
@@ -31,6 +32,7 @@ impl Phase {
       Phase::Parse => "parse",
       Phase::Construct => "construct",
       Phase::Compose => "compose",
+      Phase::Activate => "activate",
     }
   }
 }
@@ -45,6 +47,8 @@ impl Phase {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum PathStep {
   Wire(String),
+  /// Enters a function body at a call site (the definition, not the site).
+  Function(String),
   Shard {
     index: usize,
     name: String,
@@ -114,6 +118,17 @@ impl TypeRef {
   }
 }
 
+/// A second location that explains a diagnostic, such as where a name was
+/// first declared. Compose sets `path`; the frontend adds line and column.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Related {
+  pub message: String,
+  /// Occurrence path of the related shard, starting at its wire.
+  pub path: Vec<PathStep>,
+  pub line: Option<u32>,
+  pub column: Option<u32>,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Diagnostic {
   pub phase: Phase,
@@ -137,6 +152,7 @@ pub struct Diagnostic {
   pub input_from: Option<InputSource>,
   /// Close names for a misspelled one (1.x field), best first.
   pub did_you_mean: Vec<String>,
+  pub related: Option<Related>,
 }
 
 impl Diagnostic {
@@ -162,16 +178,29 @@ impl Diagnostic {
       path: Vec::new(),
       input_from: None,
       did_you_mean: Vec::new(),
+      related: None,
     }
   }
 
-  /// The path as text, e.g. `main/2:When/Action/0:Add`.
+  /// Adds a related location by occurrence path.
+  pub fn related(mut self, message: impl Into<String>, path: Vec<PathStep>) -> Diagnostic {
+    self.related = Some(Related {
+      message: message.into(),
+      path,
+      line: None,
+      column: None,
+    });
+    self
+  }
+
+  /// The path as text, e.g. `main/2:When/action/0:Add`.
   pub fn path_string(&self) -> String {
     let steps: Vec<String> = self
       .path
       .iter()
       .map(|step| match step {
         PathStep::Wire(name) => name.clone(),
+        PathStep::Function(name) => format!("{name}()"),
         PathStep::Shard { index, name } => format!("{index}:{name}"),
         PathStep::Param(name) => name.clone(),
         PathStep::Item(index) => format!("#{index}"),
@@ -235,6 +264,13 @@ impl Diagnostic {
       let names: Vec<String> = self.did_you_mean.iter().map(|n| json_str(n)).collect();
       fields.push(format!("\"did_you_mean\":[{}]", names.join(",")));
     }
+    if let Some(r) = &self.related {
+      let mut related = vec![format!("\"message\":{}", json_str(&r.message))];
+      if let (Some(line), Some(column)) = (r.line, r.column) {
+        related.push(format!("\"line\":{line},\"column\":{column}"));
+      }
+      fields.push(format!("\"related\":{{{}}}", related.join(",")));
+    }
     if let Some(source) = &self.input_from {
       let step = |(index, name): &(usize, String)| {
         format!("{{\"shard\":{index},\"name\":{}}}", json_str(name))
@@ -250,19 +286,7 @@ impl Diagnostic {
       ));
     }
     if !self.path.is_empty() {
-      let steps: Vec<String> = self
-        .path
-        .iter()
-        .map(|step| match step {
-          PathStep::Wire(name) => format!("{{\"wire\":{}}}", json_str(name)),
-          PathStep::Shard { index, name } => {
-            format!("{{\"shard\":{index},\"name\":{}}}", json_str(name))
-          }
-          PathStep::Param(name) => format!("{{\"param\":{}}}", json_str(name)),
-          PathStep::Item(index) => format!("{{\"item\":{index}}}"),
-        })
-        .collect();
-      fields.push(format!("\"path\":[{}]", steps.join(",")));
+      fields.push(format!("\"path\":{}", path_json(&self.path)));
     }
     format!("{{{}}}", fields.join(","))
   }
@@ -353,4 +377,21 @@ pub fn json_str(s: &str) -> String {
   }
   out.push('"');
   out
+}
+
+/// JSON for a semantic occurrence path, shared by diagnostics and analysis.
+pub fn path_json(path: &[PathStep]) -> String {
+  let steps: Vec<String> = path
+    .iter()
+    .map(|step| match step {
+      PathStep::Wire(name) => format!("{{\"wire\":{}}}", json_str(name)),
+      PathStep::Function(name) => format!("{{\"function\":{}}}", json_str(name)),
+      PathStep::Shard { index, name } => {
+        format!("{{\"shard\":{index},\"name\":{}}}", json_str(name))
+      }
+      PathStep::Param(name) => format!("{{\"param\":{}}}", json_str(name)),
+      PathStep::Item(index) => format!("{{\"item\":{index}}}"),
+    })
+    .collect();
+  format!("[{}]", steps.join(","))
 }

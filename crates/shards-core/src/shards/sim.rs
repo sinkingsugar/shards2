@@ -180,7 +180,7 @@ pub struct Request;
 
 pub static REQUEST_PARAMS: &[ParamDecl] = &[
   ParamDecl {
-    name: "Delay",
+    name: "delay",
     help: crate::shard_doc!(
       "Simulated clock steps until the request completes; must not be negative."
     ),
@@ -190,7 +190,7 @@ pub static REQUEST_PARAMS: &[ParamDecl] = &[
     ty: None,
   },
   ParamDecl {
-    name: "Fail",
+    name: "fail",
     help: crate::shard_doc!("Whether the request fails instead of completing."),
     forms: Forms::LITERAL,
     types: &[TypeName::Bool],
@@ -198,7 +198,7 @@ pub static REQUEST_PARAMS: &[ParamDecl] = &[
     ty: None,
   },
   ParamDecl {
-    name: "Abortable",
+    name: "abortable",
     help: crate::shard_doc!(
       "Whether dropping the pending future aborts the request (true) or detaches it (false)."
     ),
@@ -214,13 +214,15 @@ pub const REQUEST_DESC: ShardDesc = ShardDesc {
   version: 1,
   summary: crate::shard_doc!("Test instrumentation: a request to a simulated async service."),
   help: crate::shard_doc!(
-    "Completes after Delay steps of the simulated clock and outputs the request id, or fails if Fail. Ignores its input."
+    "Completes after `delay` steps of the simulated clock and outputs the request id, or fails if `fail`. Ignores its input."
   ),
   params: Params::Declared(REQUEST_PARAMS),
   input: InputDesc::Ignored,
   output: OutputDesc::Fixed(TypeName::Int),
   targets: Targets::All,
   aliases: &[],
+  effects: crate::signature::Effects::IO_WAIT,
+  lifetime: crate::signature::Lifetime::Stateless,
 };
 
 impl AsyncShard for Request {
@@ -228,11 +230,8 @@ impl AsyncShard for Request {
   type Op = RequestOp;
   const DESC: ShardDesc = REQUEST_DESC;
 
-  fn compose<B: Backend>(
-    args: &Args,
-    ctx: &mut ComposeCtx<'_, B>,
-  ) -> Result<Composed<RequestCompiled>> {
-    let delay = args.int("Delay").expect("decoded Delay");
+  fn compose(args: &Args, ctx: &mut ComposeCtx<'_>) -> Result<Composed<RequestCompiled>> {
+    let delay = args.int("delay").expect("decoded Delay");
     if delay < 0 {
       return Err(Error::Diagnostic(Box::new(
         crate::diagnostic::Diagnostic::new(
@@ -242,15 +241,15 @@ impl AsyncShard for Request {
           format!("Delay must not be negative, got {delay}"),
         )
         .shard("Request")
-        .param("Delay", Some(args.param_index("Delay"))),
+        .param("delay", Some(args.param_index("delay"))),
       )));
     }
     let _ = ctx.input();
     Ok(Composed {
       compiled: RequestCompiled {
         delay: delay as u64,
-        fail: args.bool("Fail").expect("decoded Fail"),
-        abortable: args.bool("Abortable").expect("decoded Abortable"),
+        fail: args.bool("fail").expect("decoded Fail"),
+        abortable: args.bool("abortable").expect("decoded Abortable"),
       },
       output: Type::int(),
     })

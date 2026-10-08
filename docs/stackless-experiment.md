@@ -2,6 +2,8 @@
 
 **Status:** Experiment complete (2026-10-04), including matched comparisons with 1.x (C++).
 
+**Outcome (2026-10-07):** the stackful scheduler was deleted after the golden path M4 gate passed ([golden-path.md §6.4](golden-path.md#64-gate-for-deleting-stackful)); the direct-resume engine described in the M4 follow-up at the end is the only scheduler. The decision paragraph, the shard-API discussion and the measurements below are kept as the historical record of why.
+
 **Latest measurements:** the [2026-10-05 runtime overview](runtime-performance-overview.md)
 refreshes steady-state, resume depth, async and HTTP results after VM optimization.
 The tables below retain the original experiment's evidence.
@@ -180,7 +182,7 @@ Notification-driven resumption matters more than the scheduler choice for waitin
 `crates/shards-io` validates the `AsyncShard` adapter against real sockets. It follows the 1.x HTTP module (`shards/modules/http`):
 
 - **One shared runtime, outside the shards** (`runtime.rs`): a multi-threaded Tokio runtime with 4 workers, like 1.x's `TOKIO_RUNTIME`. A shard spawns its work there and gets an `IoTask`, which the `AsyncShard` adapter polls from the mesh thread with the instance's waker. Shards never touch the reactor directly, and the mesh never blocks.
-- **`Http.Get`** (`http.rs`): the 1.x request path. The `reqwest` client is cached by configuration with a 50 s pool idle timeout. The request races a cancellation token. A non-success status fails with the (truncated) body. TLS is an explicit feature (`rustls-ring` or `native-tls`), as in 1.x. Differences from 1.x: the client cache is process-wide (1.x caches it per mesh), and only `URL` and `Timeout` are supported.
+- **`Http.Get`** (`http.rs`): the 1.x request path. The `reqwest` client is cached by configuration with a 50 s pool idle timeout. The request races a cancellation token. A non-success status fails with the (truncated) body. TLS is an explicit feature (`rustls-ring` or `native-tls`), as in 1.x. Differences from 1.x: the client cache is process-wide (1.x caches it per mesh), and only `url` and `timeout` are supported.
 
 **What cancellation means, verified rather than assumed.** Dropping the pending `IoTask` cancels its token. The task drops its in-flight request future, and the connection closes: a local test server observes the client closing while it is still waiting to respond, both before the headers and midway through the body. Cancellation stops local polling and releases the request's resources. It cannot undo work the server already received (the server records the request as received).
 
@@ -225,9 +227,9 @@ Scope: these are matched prototype benchmarks, not general 2.0-versus-1.x guaran
 To reproduce:
 
 ```sh
-cargo test --workspace                                                 # both schedulers
-cargo run --release --example bench_instances -- 1000 [--stackless]    # creation, memory, steady state
-cargo run --release --example bench_depth -- [--stackless]             # resume cost vs depth
+cargo test --workspace
+cargo run --release --example bench_instances -- 1000                  # creation, memory, steady state
+cargo run --release --example bench_depth                              # resume cost vs depth
 cargo run --release --example bench_async                              # polling vs notification
 cargo test -p shards-io                                                # real HTTP against a local server
 bench/http-concurrency/run.sh path/to/1.x/shards                       # HTTP concurrency, 1.x vs 2.0
@@ -235,3 +237,9 @@ bench/shards-1x/run.sh path/to/1.x/shards                              # the sam
 cargo test -p shards-core --test prototype --target wasm32-wasip1 --no-run
 node scripts/run-wasi.mjs target/wasm32-wasip1/debug/deps/prototype-*.wasm
 ```
+
+## Golden path M4 follow-up
+
+The recursive stackless activation described above is now replaced by the iterative runner in `stackless/engine.rs`; the original M3 source at `c0aaa39` remains the benchmark oracle. Runtime frames are addressed by checked generation handles. Composites describe their immutable children to the runner and never activate children themselves. Pending leaf re-polls visit zero composite handlers, proven at depths 1, 4, 16 and 32. Full completion visits each parent once. Initialization, rollback and cleanup are iterative too. The frame arena contains no unsafe code and has targeted Miri checks for stale handles and generation exhaustion.
+
+The gate (benchmark, native debug/release, docs-off, WASI, ESP-IDF acceptance on three chips, Miri on the arena, review) passed on 2026-10-07, and stackful, `corosensei`, `cfg(stackful)`, `--stackful` and the per-scheduler test macros were deleted in the following commit; `Mesh` is the one scheduler and `Shard` the one contract. The ESP-IDF acceptance build generates a direct runner from the shared core/frontend suites because the device has no libtest harness; panic-unwind tests and host filesystem watching remain target-gated. Very large diagnostic-input cases use a device-sized over-limit input, and named-call depth follows the device's default of 32. This does not change the benchmark workloads.

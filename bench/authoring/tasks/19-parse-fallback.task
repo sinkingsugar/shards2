@@ -1,0 +1,13 @@
+=== prompt
+Parse the strings "12" and "abc" as integers. When parsing fails, use -1 instead. Log the two results, one per line. The program must not fail.
+=== expected
+12
+-1
+=== reference
+["12" "abc"] = xs
+0 | Var(i)
+Repeat({
+  xs | Take(i) = s
+  Maybe({s | ParseInt} {-1} silent: true) | Log
+  Inc(i)
+} times: 2)

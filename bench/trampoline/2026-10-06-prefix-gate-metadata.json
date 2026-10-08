@@ -1,0 +1,36 @@
+{
+  "candidate": "c88c59ded12184fb9d0b56eb7add81bf00b104cf",
+  "baseline": "c0aaa3961b1d2de4e9b7f9512b49c668c064d727",
+  "platform": "Linux x86-64 Intel Core i9-14900KF",
+  "rustc": "1.98.1",
+  "trials": 5,
+  "instances": 1000,
+  "mixed_iterations": 500000,
+  "sampling": "Verification and review test processes completed before sampling. No affinity pinning. Identical workloads; no threshold-driven changes.",
+  "medians": {
+    "pending": {
+      "old-stackless": 438.92,
+      "stackful": 51.37,
+      "trampoline": 14.66
+    },
+    "completion": {
+      "old-stackless": 662.41,
+      "stackful": 670.61,
+      "trampoline": 620.61
+    },
+    "progress": {
+      "old-stackless": 531.97,
+      "stackful": 121.96,
+      "trampoline": 97.58
+    },
+    "mixed": {
+      "old-stackless": 105.5,
+      "stackful": 133.5,
+      "trampoline": 105.0
+    }
+  },
+  "sha256": {
+    "csv": "31f6d4802afeebbea024d8b108d63ae9c253b8e7625ab3273ff69ccb53c8945c",
+    "log": "54490d7ff5e6fe67ca2226cb96a9b6a9ea695b0911900be2e5de3fc59066e62c"
+  }
+}

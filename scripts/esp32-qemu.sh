@@ -32,12 +32,13 @@ pid=$!
 # Keep the marker in step with examples/esp32/src/main.rs.
 status=1
 for _ in $(seq $((timeout * 4))); do
-  if grep -q '^Shards ESP32 smoke test passed' "$log"; then
-    status=0
+  # Reject any earlier crash even if a reboot later reaches the marker.
+  if grep -qE 'Guru Meditation|panicked at|abort\(\) was called|Stack protection fault|stack overflow|assert failed:|memory allocation of .* failed' "$log" ||
+    ! kill -0 "$pid" 2>/dev/null; then
     break
   fi
-  if grep -qE 'Guru Meditation|panicked at|abort\(\) was called|Stack protection fault|stack overflow' "$log" ||
-    ! kill -0 "$pid" 2>/dev/null; then
+  if grep -q '^Shards ESP32 smoke test passed' "$log"; then
+    status=0
     break
   fi
   sleep 0.25

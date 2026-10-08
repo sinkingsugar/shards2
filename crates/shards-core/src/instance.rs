@@ -1,4 +1,4 @@
-//! Types shared by both schedulers.
+//! Types shared by the scheduler, the shard contract and the shard adapters.
 
 use crate::compose::Binding;
 use crate::error::Error;
@@ -38,24 +38,19 @@ pub struct CleanupCtx {
 pub struct InstanceMemory {
   /// Local frame plus shard states (inline sizes and boxes).
   pub state_bytes: usize,
-  /// Coroutine stack reserved for the instance (only touched pages are
-  /// resident). Zero for the stackless scheduler.
-  pub stack_reserved: usize,
 }
 
-/// Read and write access to the frames during activation. Lets shard code be
-/// shared by both schedulers' activation contexts.
+/// Read and write access to the frames during activation.
 pub trait Frames {
   fn get(&self, binding: Binding) -> Var;
   fn set(&mut self, binding: Binding, value: Var);
 }
 
-/// Operations available to a shard that cannot suspend ([`crate::shards::leaf`]),
-/// on either scheduler.
+/// Operations available to a shard that cannot suspend ([`crate::shards::leaf`]).
 pub trait LeafCtx: Frames {
   fn instance(&self) -> InstanceId;
   /// The instance's loop iteration: 0, then one more each time a looped
-  /// wire starts again (or a Restart). `Push` with `Clear` uses it.
+  /// wire starts again (or a Restart).
   fn iteration(&self) -> u64;
 }
 
@@ -71,9 +66,9 @@ pub enum WakeMode {
   OnNotify,
 }
 
-/// Per-instance wake flag behind the instance's [`std::task::Waker`]. Both
-/// schedulers use it the same way. A wake after the instance has finished
-/// is harmless: the scheduler never resumes a finished instance.
+/// Per-instance wake flag behind the instance's [`std::task::Waker`]. A wake
+/// after the instance has finished is harmless: the scheduler never resumes
+/// a finished instance.
 #[derive(Default)]
 pub(crate) struct WakeFlag(std::sync::atomic::AtomicBool);
 

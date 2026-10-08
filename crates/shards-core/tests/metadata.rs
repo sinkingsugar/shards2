@@ -1,549 +1,572 @@
 //! Shard metadata, argument decoding and the catalog
-//! (docs/shard-metadata-and-compose.md §7). Runs on both schedulers.
+//! (docs/shard-metadata-and-compose.md §7).
 
 use shards_core::args::decode;
 use shards_core::describe::{Params, TypeName};
 use shards_core::shards::defs::*;
 use shards_core::shards::{ADD, ADD_DESC, CATALOG, WHEN, WHEN_PARAMS};
-use shards_core::{Arg, Catalog, ParamValue, ShardDef, Var};
+use shards_core::{Arg, Catalog, Float2, Float3, Float4, ParamValue, ShardDef, Var};
 
 fn add_with(args: Vec<Arg>) -> ShardDef {
   ShardDef::with_args(&ADD, args)
 }
 
-macro_rules! metadata_tests {
-  ($mesh:ty) => {
-    use super::*;
-    use shards_core::{Diagnostic, Error, Outcome, Type, WireDef};
+use shards_core::{Diagnostic, Error, Outcome, Type, WireDef};
 
-    type Mesh = $mesh;
+use shards_core::Mesh;
 
-    fn wire(flow: Vec<ShardDef>) -> WireDef {
-      WireDef {
-        name: "test".into(),
-        looped: false,
-        flow,
-      }
-    }
-
-    fn compile_error(flow: Vec<ShardDef>, input: Type) -> Diagnostic {
-      let mut mesh = Mesh::new();
-      mesh.add_wire(wire(flow));
-      match mesh.compile("test", input) {
-        Err(Error::Diagnostic(d)) => *d,
-        Err(other) => panic!("expected a structured diagnostic, got {other:?}"),
-        Ok(_) => panic!("expected a compose failure"),
-      }
-    }
-
-    fn run(flow: Vec<ShardDef>, input: Var) -> Outcome {
-      let mut mesh = Mesh::new();
-      mesh.add_wire(wire(flow));
-      let compiled = mesh.compile("test", input.type_of()).unwrap();
-      let id = mesh.spawn(&compiled, input).unwrap();
-      mesh.run(10);
-      mesh.outcome(id).cloned().unwrap()
-    }
-
-    #[test]
-    fn argument_decoding_diagnostics() {
-      let cases: Vec<(Vec<Arg>, &str, Option<&str>, Option<i32>)> = vec![
-        (vec![], "missing-argument", Some("Operand"), Some(0)),
-        (
-          vec![Arg::named("Value", val(Var::Int(1)))],
-          "unknown-argument",
-          Some("Value"),
-          None,
-        ),
-        (
-          vec![
-            Arg::pos(val(Var::Int(1))),
-            Arg::named("Operand", val(Var::Int(2))),
-          ],
-          "duplicate-argument",
-          Some("Operand"),
-          Some(0),
-        ),
-        (
-          vec![Arg::pos(ParamValue::Wire("w".into()))],
-          "wrong-argument-form",
-          Some("Operand"),
-          Some(0),
-        ),
-        (
-          vec![Arg::pos(val(Var::string("one")))],
-          "wrong-argument-type",
-          Some("Operand"),
-          Some(0),
-        ),
-        (
-          vec![
-            Arg::named("Operand", val(Var::Int(1))),
-            Arg::pos(val(Var::Int(2))),
-          ],
-          "positional-after-named",
-          None,
-          None,
-        ),
-        (
-          vec![Arg::pos(val(Var::Int(1))), Arg::pos(val(Var::Int(2)))],
-          "too-many-arguments",
-          None,
-          None,
-        ),
-      ];
-      for (args, code, param, index) in cases {
-        let d = compile_error(vec![konst(Var::Int(1)), add_with(args)], Type::none());
-        assert_eq!(d.code, code, "{d:?}");
-        assert_eq!(d.phase.name(), "construct");
-        assert_eq!(d.shard.as_deref(), Some("Math.Add"));
-        assert_eq!(d.param.as_deref(), param, "{code}");
-        assert_eq!(d.param_index, index, "{code}");
-      }
-
-      // The wrong-type case carries structured types with 1.x basic types.
-      let d = compile_error(
-        vec![
-          konst(Var::Int(1)),
-          add_with(vec![Arg::pos(val(Var::string("one")))]),
-        ],
-        Type::none(),
-      );
-      assert_eq!(d.actual.as_ref().unwrap().name, "String");
-      assert_eq!(d.actual.as_ref().unwrap().basic_type, 52);
-      let expected: Vec<&str> = d.expected.iter().map(|t| t.name.as_str()).collect();
-      assert_eq!(expected, ["Int", "Float", "Float2", "Float3", "Float4"]);
-
-      // A shard that does not describe its parameters rejects named arguments.
-      let err = decode(
-        &shards_core::ShardDesc::undocumented("Undescribed", 1),
-        &[Arg::named("Variable", var("x"))],
-      )
-      .err()
-      .unwrap();
-      assert_eq!(
-        err.diagnostic().unwrap().code,
-        "named-arguments-unsupported"
-      );
-    }
-
-    #[test]
-    fn compose_checks_context_dependent_rules() {
-      // Add publishes its numeric types; compose decides whether the pair
-      // mixes (vectors of different sizes do not).
-      let d = compile_error(
-        vec![
-          konst(Var::Float3([0.0; 3])),
-          add(val(Var::Float2([0.0; 2]))),
-        ],
-        Type::none(),
-      );
-      assert_eq!(
-        (d.phase.name(), d.kind, d.code),
-        ("compose", "input-type-mismatch", "input-type-mismatch")
-      );
-      assert_eq!(d.actual.as_ref().unwrap().name, "Float3");
-      assert_eq!(d.expected[0].name, "Int");
-
-      // When's predicate must output Bool.
-      let d = compile_error(vec![when(vec![konst(Var::Int(1))], vec![])], Type::none());
-      assert_eq!(
-        (d.code, d.shard.as_deref(), d.param.as_deref()),
-        ("predicate-not-bool", Some("When"), Some("Predicate"))
-      );
-    }
-
-    #[test]
-    fn named_and_positional_arguments_are_equivalent() {
-      let positional = run(vec![add(val(Var::Int(2)))], Var::Int(40));
-      let named = run(
-        vec![add_with(vec![Arg::named("Operand", val(Var::Int(2)))])],
-        Var::Int(40),
-      );
-      assert_eq!(positional, Outcome::Completed(Var::Int(42)));
-      assert_eq!(named, positional);
-
-      // When with named arguments in reverse order.
-      let named_when = ShardDef::with_args(
-        &WHEN,
-        vec![
-          Arg::named(
-            "Action",
-            ParamValue::Flow(vec![konst(Var::Int(0)), update("x")]),
-          ),
-          Arg::named("Predicate", ParamValue::Flow(vec![konst(Var::Bool(true))])),
-        ],
-      );
-      let flow = vec![konst(Var::Int(7)), set("x"), named_when, get("x")];
-      assert_eq!(run(flow, Var::None), Outcome::Completed(Var::Int(0)));
-
-      // A variable operand is a binding read at activation.
-      let flow = vec![
-        konst(Var::Int(5)),
-        set("k"),
-        konst(Var::Int(1)),
-        add_with(vec![Arg::named("Operand", var("k"))]),
-      ];
-      assert_eq!(run(flow, Var::None), Outcome::Completed(Var::Int(6)));
-    }
-
-    #[test]
-    fn variable_resolution_errors_are_structured() {
-      // Unknown variable for a declared parameter: code, shard and parameter.
-      let d = compile_error(
-        vec![
-          konst(Var::Int(1)),
-          add_with(vec![Arg::named("Operand", var("missing"))]),
-        ],
-        Type::none(),
-      );
-      assert_eq!(
-        (
-          d.code,
-          d.shard.as_deref(),
-          d.param.as_deref(),
-          d.param_index
-        ),
-        (
-          "unknown-variable",
-          Some("Math.Add"),
-          Some("Operand"),
-          Some(0)
-        )
-      );
-      // A possibly-uninitialized variable, through an undescribed shard
-      // (Get): structured too, without a parameter.
-      let d = compile_error(
-        vec![
-          when(
-            vec![konst(Var::Bool(false))],
-            vec![konst(Var::Int(1)), set("x")],
-          ),
-          get("x"),
-        ],
-        Type::none(),
-      );
-      assert_eq!(
-        (d.code, d.shard.as_deref()),
-        ("possibly-uninitialized", Some("Get"))
-      );
-    }
-
-    /// Context-dependent checks stay in compose, as structured diagnostics.
-    #[test]
-    fn compose_checks_of_every_shard() {
-      use shards_core::shards::{DO, PROBE, REPEAT, SPAWN};
-      let named =
-        |ty: &'static shards_core::ShardType, args: Vec<Arg>| ShardDef::with_args(ty, args);
-      let cases: Vec<(&str, Vec<ShardDef>, &str, &str, Option<&str>)> = vec![
-        (
-          "set-type",
-          vec![
-            konst(Var::Int(1)),
-            set("x"),
-            konst(Var::Float(1.0)),
-            set("x"),
-          ],
-          "variable-type-mismatch",
-          "Set",
-          Some("Variable"),
-        ),
-        (
-          "update-unknown",
-          vec![konst(Var::Int(1)), update("nope")],
-          "unknown-variable",
-          "Update",
-          Some("Variable"),
-        ),
-        (
-          "update-type",
-          vec![
-            konst(Var::Int(1)),
-            set("x"),
-            konst(Var::Float(1.0)),
-            update("x"),
-          ],
-          "variable-type-mismatch",
-          "Update",
-          Some("Variable"),
-        ),
-        (
-          "inc-type",
-          vec![konst(Var::Float(1.0)), set("f"), inc("f")],
-          "wrong-variable-type",
-          "Math.Inc",
-          Some("Variable"),
-        ),
-        (
-          "get-unknown",
-          vec![get("nope")],
-          "unknown-variable",
-          "Get",
-          Some("Variable"),
-        ),
-        (
-          "repeat-times-var",
-          vec![
-            konst(Var::Float(2.0)),
-            set("t"),
-            named(
-              &REPEAT,
-              vec![
-                Arg::pos(ParamValue::Flow(vec![])),
-                Arg::named("Times", var("t")),
-              ],
-            ),
-          ],
-          "wrong-variable-type",
-          "Repeat",
-          Some("Times"),
-        ),
-        (
-          "pause-negative",
-          vec![pause_secs(-1.0)],
-          "invalid-argument-value",
-          "Pause",
-          Some("Seconds"),
-        ),
-        (
-          "pause-nan",
-          vec![pause_secs(f64::NAN)],
-          "invalid-argument-value",
-          "Pause",
-          Some("Seconds"),
-        ),
-        (
-          "pause-infinite",
-          vec![pause_secs(f64::INFINITY)],
-          "invalid-argument-value",
-          "Pause",
-          Some("Seconds"),
-        ),
-        (
-          "pause-too-large",
-          vec![pause_secs(1e100)],
-          "invalid-argument-value",
-          "Pause",
-          Some("Seconds"),
-        ),
-        (
-          "do-unknown",
-          vec![named(
-            &DO,
-            vec![Arg::pos(ParamValue::Wire("nowhere".into()))],
-          )],
-          "unknown-wire",
-          "Do",
-          Some("Wire"),
-        ),
-        (
-          "spawn-unknown",
-          vec![named(
-            &SPAWN,
-            vec![Arg::pos(ParamValue::Wire("nowhere".into()))],
-          )],
-          "unknown-wire",
-          "Spawn",
-          Some("Wire"),
-        ),
-        (
-          "probe-mode",
-          vec![named(
-            &PROBE,
-            vec![
-              Arg::pos(val(Var::string("p"))),
-              Arg::named("Mode", val(Var::string("explode"))),
-            ],
-          )],
-          "invalid-argument-value",
-          "Probe",
-          Some("Mode"),
-        ),
-        (
-          "request-delay",
-          vec![request(-1, false, true)],
-          "invalid-argument-value",
-          "Request",
-          Some("Delay"),
-        ),
-      ];
-      for (label, flow, code, shard, param) in cases {
-        let d = compile_error(flow, Type::none());
-        assert_eq!(
-          (d.code, d.shard.as_deref(), d.param.as_deref()),
-          (code, Some(shard), param),
-          "{label}: {d:?}"
-        );
-        assert_eq!(d.phase.name(), "compose", "{label}");
-      }
-
-      // A wire that runs itself through Do: recursive.
-      let mut mesh = Mesh::new();
-      mesh.add_wire(WireDef {
-        name: "loop".into(),
-        looped: false,
-        flow: vec![named(&DO, vec![Arg::pos(ParamValue::Wire("loop".into()))])],
-      });
-      let d = match mesh.compile("loop", Type::none()) {
-        Err(Error::Diagnostic(d)) => *d,
-        other => panic!("{:?}", other.map(|_| ())),
-      };
-      assert_eq!((d.code, d.shard.as_deref()), ("recursive-wire", Some("Do")));
-    }
-
-    #[test]
-    fn a_called_wire_keeps_its_own_diagnostics() {
-      use shards_core::shards::{DO, SPAWN};
-      // An error inside the called wire belongs to the shard that raised it,
-      // not to Do's or Spawn's Wire parameter.
-      for caller in [&DO, &SPAWN] {
-        let mut mesh = Mesh::new();
-        mesh.add_wire(WireDef {
-          name: "child".into(),
-          looped: false,
-          flow: vec![ShardDef::new(
-            &ADD,
-            vec![
-              ParamValue::Value(Var::Int(1)),
-              ParamValue::Value(Var::Int(2)),
-            ],
-          )],
-        });
-        mesh.add_wire(wire(vec![ShardDef::with_args(
-          caller,
-          vec![Arg::pos(ParamValue::Wire("child".into()))],
-        )]));
-        let d = match mesh.compile("test", Type::int()) {
-          Err(Error::Diagnostic(d)) => *d,
-          other => panic!("{:?}", other.map(|_| ())),
-        };
-        let name = caller.desc.name;
-        assert_eq!(d.code, "too-many-arguments", "{name}: {d:?}");
-        assert_eq!(d.shard.as_deref(), Some("Math.Add"), "{name}: {d:?}");
-        assert_eq!(
-          (d.param.as_deref(), d.param_index),
-          (None, None),
-          "{name}: {d:?}"
-        );
-      }
-    }
-
-    #[test]
-    fn defaults_behave_like_the_documented_behavior() {
-      // Pause's default (0 seconds) suspends exactly once: completes on the
-      // second tick, like an explicit Pause(Seconds: 0.0).
-      for flow in [
-        vec![pause(), konst(Var::Int(1))],
-        vec![pause_secs(0.0), konst(Var::Int(1))],
-      ] {
-        let mut mesh = Mesh::new();
-        mesh.add_wire(wire(flow));
-        let compiled = mesh.compile("test", Type::none()).unwrap();
-        let id = mesh.spawn(&compiled, Var::None).unwrap();
-        assert_eq!(mesh.tick(), 1);
-        assert_eq!(mesh.tick(), 0);
-        assert_eq!(mesh.outcome(id), Some(&Outcome::Completed(Var::Int(1))));
-      }
-      // Repeat with a negative count runs its body zero times, as documented.
-      let flow = vec![
-        konst(Var::Int(0)),
-        set("n"),
-        repeat(vec![inc("n")], val(Var::Int(-3))),
-        get("n"),
-      ];
-      assert_eq!(run(flow, Var::None), Outcome::Completed(Var::Int(0)));
-    }
-
-    #[test]
-    fn wrong_form_for_a_composite_parameter_cites_its_declaration() {
-      let d = compile_error(
-        vec![ShardDef::with_args(
-          &WHEN,
-          vec![
-            Arg::pos(ParamValue::Flow(vec![konst(Var::Bool(true))])),
-            Arg::pos(val(Var::Int(1))),
-          ],
-        )],
-        Type::none(),
-      );
-      assert_eq!(
-        (d.code, d.param.as_deref(), d.param_index),
-        ("wrong-argument-form", Some("Action"), Some(1))
-      );
-    }
-  };
-}
-
-#[cfg(stackful)]
-mod stackful {
-  metadata_tests!(shards_core::StackfulMesh);
-
-  #[test]
-  fn a_shard_without_a_backend_implementation_reports_it() {
-    // Probe-like shard with only a stackful implementation.
-    struct OnlyStackful;
-    impl shards_core::Shard for OnlyStackful {
-      type Compiled = ();
-      type State = ();
-      const NAME: &'static str = "OnlyStackful";
-      fn compose(
-        _: &shards_core::Args,
-        ctx: &mut shards_core::ComposeCtx<'_, shards_core::Stackful>,
-      ) -> shards_core::Result<shards_core::Composed<()>> {
-        Ok(shards_core::Composed {
-          compiled: (),
-          output: ctx.input(),
-        })
-      }
-      fn instantiate(
-        _: &(),
-        _: &mut shards_core::instance::InstanceCtx,
-      ) -> shards_core::Result<()> {
-        Ok(())
-      }
-      fn activate(
-        _: &(),
-        _: &mut (),
-        _: &mut shards_core::runtime::ActivationCtx<'_>,
-        input: &Var,
-      ) -> shards_core::Result<shards_core::Flow> {
-        Ok(shards_core::Flow::Next(input.clone()))
-      }
-    }
-    static ONLY_STACKFUL: shards_core::ShardType = shards_core::shard_type::<OnlyStackful>();
-
-    assert_eq!(ONLY_STACKFUL.backends(), ["stackful"]);
-    let catalog = Catalog::new(&[&[&ONLY_STACKFUL]]).unwrap();
-    assert!(
-      catalog
-        .describe_json("OnlyStackful")
-        .unwrap()
-        .contains("\"backends\":[\"stackful\"]")
-    );
-
-    let mut stackless = shards_core::stackless::Mesh::new();
-    stackless.add_wire(WireDef {
-      name: "w".into(),
-      looped: false,
-      flow: vec![ShardDef::new(&ONLY_STACKFUL, vec![])],
-    });
-    let err = stackless.compile("w", Type::none()).err().unwrap();
-    let d = err.diagnostic().unwrap();
-    assert_eq!(d.code, "backend-unavailable");
-    assert!(d.message.contains("available: stackful"), "{}", d.message);
-
-    let mut stackful = shards_core::StackfulMesh::new();
-    stackful.add_wire(WireDef {
-      name: "w".into(),
-      looped: false,
-      flow: vec![ShardDef::new(&ONLY_STACKFUL, vec![])],
-    });
-    assert!(stackful.compile("w", Type::none()).is_ok());
+fn wire(flow: Vec<ShardDef>) -> WireDef {
+  WireDef {
+    name: "test".into(),
+    looped: false,
+    flow,
   }
 }
 
-mod stackless {
-  metadata_tests!(shards_core::stackless::Mesh);
+#[test]
+fn analysis_tracks_mesh_access_effects_and_cached_spawn_occurrences() {
+  use shards_core::diagnostic::PathStep;
+  use shards_core::signature::{Effects, Lifetime};
+  let mut mesh = Mesh::new();
+  mesh.declare_var("read", Var::Int(1), false);
+  mesh.declare_var("write", Var::Int(0), true);
+  mesh.declare_var("counter", Var::Int(0), true);
+  mesh.add_wire(WireDef {
+    name: "child".into(),
+    looped: false,
+    flow: vec![get("read"), update("write"), inc("counter"), pause()],
+  });
+  let child = mesh.compile("child", Type::none()).unwrap();
+  let a = &child.flow.analysis;
+  assert_eq!(a.effects, Effects::WAIT);
+  assert_eq!(
+    a.uses.iter().map(|a| a.name.as_str()).collect::<Vec<_>>(),
+    ["counter", "read"]
+  );
+  assert_eq!(
+    a.mutates
+      .iter()
+      .map(|a| a.name.as_str())
+      .collect::<Vec<_>>(),
+    ["counter", "write"]
+  );
+  mesh.add_wire(wire(vec![spawn("child"), spawn("child")]));
+  let root = mesh.compile("test", Type::none()).unwrap();
+  let a = &root.flow.analysis;
+  assert!(a.effects.suspends && a.effects.time && a.effects.io && !a.effects.unknown);
+  assert_eq!(a.lifetime, Lifetime::Stateless);
+  assert_eq!(root.signature().lifetime, Lifetime::Stateful);
+  let pauses: Vec<_> = a
+    .occurrences
+    .iter()
+    .filter(|o| matches!(o.path.last(), Some(PathStep::Shard { name, .. }) if name == "Pause"))
+    .collect();
+  assert_eq!(pauses.len(), 2);
+  assert_ne!(pauses[0].path, pauses[1].path);
+  assert_eq!(a.uses, child.flow.analysis.uses);
+  assert_eq!(a.mutates, child.flow.analysis.mutates);
+  assert_eq!(root.signature().effects, a.effects);
+  // Compiling again reuses all inferred metadata without running compose.
+  let hits = mesh.cache_stats().hits;
+  let again = mesh.compile("test", Type::none()).unwrap();
+  assert!(mesh.cache_stats().hits > hits);
+  assert_eq!(again.flow.analysis, *a);
+}
+
+fn compile_error(flow: Vec<ShardDef>, input: Type) -> Diagnostic {
+  let mut mesh = Mesh::new();
+  mesh.add_wire(wire(flow));
+  match mesh.compile("test", input) {
+    Err(Error::Diagnostic(d)) => *d,
+    Err(other) => panic!("expected a structured diagnostic, got {other:?}"),
+    Ok(_) => panic!("expected a compose failure"),
+  }
+}
+
+fn run(flow: Vec<ShardDef>, input: Var) -> Outcome {
+  let mut mesh = Mesh::new();
+  mesh.add_wire(wire(flow));
+  let compiled = mesh.compile("test", input.type_of()).unwrap();
+  let id = mesh.spawn(&compiled, input).unwrap();
+  mesh.run(10);
+  mesh.outcome(id).cloned().unwrap()
+}
+
+#[test]
+fn argument_decoding_diagnostics() {
+  #[allow(clippy::type_complexity)]
+  let cases: Vec<(Vec<Arg>, &str, Option<&str>, Option<i32>)> = vec![
+    (vec![], "missing-argument", Some("operand"), Some(0)),
+    (
+      vec![Arg::named("value", val(Var::Int(1)))],
+      "unknown-argument",
+      Some("value"),
+      None,
+    ),
+    (
+      vec![
+        Arg::pos(val(Var::Int(1))),
+        Arg::named("operand", val(Var::Int(2))),
+      ],
+      "duplicate-argument",
+      Some("operand"),
+      Some(0),
+    ),
+    (
+      vec![Arg::pos(ParamValue::Wire("w".into()))],
+      "wrong-argument-form",
+      Some("operand"),
+      Some(0),
+    ),
+    (
+      vec![Arg::pos(val(Var::string("one")))],
+      "wrong-argument-type",
+      Some("operand"),
+      Some(0),
+    ),
+    (
+      vec![
+        Arg::named("operand", val(Var::Int(1))),
+        Arg::pos(val(Var::Int(2))),
+      ],
+      "positional-after-named",
+      None,
+      None,
+    ),
+    (
+      vec![Arg::pos(val(Var::Int(1))), Arg::pos(val(Var::Int(2)))],
+      "too-many-arguments",
+      None,
+      None,
+    ),
+  ];
+  for (args, code, param, index) in cases {
+    let d = compile_error(vec![konst(Var::Int(1)), add_with(args)], Type::none());
+    assert_eq!(d.code, code, "{d:?}");
+    assert_eq!(d.phase.name(), "construct");
+    assert_eq!(d.shard.as_deref(), Some("Math.Add"));
+    assert_eq!(d.param.as_deref(), param, "{code}");
+    assert_eq!(d.param_index, index, "{code}");
+  }
+
+  // The wrong-type case carries structured types with 1.x basic types.
+  let d = compile_error(
+    vec![
+      konst(Var::Int(1)),
+      add_with(vec![Arg::pos(val(Var::string("one")))]),
+    ],
+    Type::none(),
+  );
+  assert_eq!(d.actual.as_ref().unwrap().name, "String");
+  assert_eq!(d.actual.as_ref().unwrap().basic_type, 52);
+  let expected: Vec<&str> = d.expected.iter().map(|t| t.name.as_str()).collect();
+  assert_eq!(expected, ["Int", "Float", "Float2", "Float3", "Float4"]);
+
+  // A shard that does not describe its parameters rejects named arguments.
+  let err = decode(
+    &shards_core::ShardDesc::undocumented("Undescribed", 1),
+    &[Arg::named("variable", var("x"))],
+  )
+  .err()
+  .unwrap();
+  assert_eq!(
+    err.diagnostic().unwrap().code,
+    "named-arguments-unsupported"
+  );
+}
+
+#[test]
+fn compose_checks_context_dependent_rules() {
+  // Add publishes its numeric types; compose decides whether the pair
+  // mixes (vectors of different sizes do not).
+  let d = compile_error(
+    vec![
+      konst(Var::Float3(Float3([0.0; 3]))),
+      add(val(Var::Float2(Float2([0.0; 2])))),
+    ],
+    Type::none(),
+  );
+  assert_eq!(
+    (d.phase.name(), d.kind, d.code),
+    ("compose", "input-type-mismatch", "input-type-mismatch")
+  );
+  assert_eq!(d.actual.as_ref().unwrap().name, "Float3");
+  assert_eq!(d.expected[0].name, "Int");
+
+  // When's predicate must output Bool.
+  let d = compile_error(vec![when(vec![konst(Var::Int(1))], vec![])], Type::none());
+  assert_eq!(
+    (d.code, d.shard.as_deref(), d.param.as_deref()),
+    ("predicate-not-bool", Some("When"), Some("predicate"))
+  );
+}
+
+#[test]
+fn named_and_positional_arguments_are_equivalent() {
+  let positional = run(vec![add(val(Var::Int(2)))], Var::Int(40));
+  let named = run(
+    vec![add_with(vec![Arg::named("operand", val(Var::Int(2)))])],
+    Var::Int(40),
+  );
+  assert_eq!(positional, Outcome::Completed(Var::Int(42)));
+  assert_eq!(named, positional);
+
+  // When with named arguments in reverse order.
+  let named_when = ShardDef::with_args(
+    &WHEN,
+    vec![
+      Arg::named(
+        "action",
+        ParamValue::Flow(vec![konst(Var::Int(0)), update("x")]),
+      ),
+      Arg::named("predicate", ParamValue::Flow(vec![konst(Var::Bool(true))])),
+    ],
+  );
+  let flow = vec![konst(Var::Int(7)), declare("x"), named_when, get("x")];
+  assert_eq!(run(flow, Var::None), Outcome::Completed(Var::Int(0)));
+
+  // A variable operand is a binding read at activation.
+  let flow = vec![
+    konst(Var::Int(5)),
+    declare("k"),
+    konst(Var::Int(1)),
+    add_with(vec![Arg::named("operand", var("k"))]),
+  ];
+  assert_eq!(run(flow, Var::None), Outcome::Completed(Var::Int(6)));
+}
+
+#[test]
+fn variable_resolution_errors_are_structured() {
+  // Unknown variable for a declared parameter: code, shard and parameter.
+  let d = compile_error(
+    vec![
+      konst(Var::Int(1)),
+      add_with(vec![Arg::named("operand", var("missing"))]),
+    ],
+    Type::none(),
+  );
+  assert_eq!(
+    (
+      d.code,
+      d.shard.as_deref(),
+      d.param.as_deref(),
+      d.param_index
+    ),
+    (
+      "unknown-variable",
+      Some("Math.Add"),
+      Some("operand"),
+      Some(0)
+    )
+  );
+  // A name declared in a block is not visible after it (golden-path.md
+  // §3.2): reading it is an unknown variable.
+  let d = compile_error(
+    vec![
+      when(
+        vec![konst(Var::Bool(false))],
+        vec![konst(Var::Int(1)), declare("x")],
+      ),
+      get("x"),
+    ],
+    Type::none(),
+  );
+  assert_eq!(
+    (d.code, d.shard.as_deref()),
+    ("unknown-variable", Some("Get"))
+  );
+}
+
+/// Context-dependent checks stay in compose, as structured diagnostics.
+#[test]
+fn compose_checks_of_every_shard() {
+  use shards_core::shards::{PROBE, REPEAT, SPAWN};
+  let named = |ty: &'static shards_core::ShardType, args: Vec<Arg>| ShardDef::with_args(ty, args);
+  #[allow(clippy::type_complexity)]
+  let cases: Vec<(&str, Vec<ShardDef>, &str, &str, Option<&str>)> = vec![
+    (
+      "var-duplicate",
+      vec![
+        konst(Var::Int(1)),
+        declare("x"),
+        konst(Var::Float(1.0)),
+        declare("x"),
+      ],
+      "duplicate-binding",
+      "Var",
+      Some("variable"),
+    ),
+    (
+      "var-input",
+      vec![konst(Var::Int(1)), declare("input")],
+      "reserved-name",
+      "Var",
+      Some("variable"),
+    ),
+    (
+      "keep-nested",
+      vec![when(
+        vec![konst(Var::Bool(true))],
+        vec![keep("n", Var::Int(0))],
+      )],
+      "keep-not-top-level",
+      "Keep",
+      None,
+    ),
+    (
+      "push-unknown",
+      vec![konst(Var::Int(1)), push("nope")],
+      "unknown-variable",
+      "Push",
+      Some("variable"),
+    ),
+    (
+      "update-immutable",
+      vec![konst(Var::Int(1)), bind("x"), update("x")],
+      "immutable-binding",
+      "Update",
+      Some("variable"),
+    ),
+    (
+      "update-unknown",
+      vec![konst(Var::Int(1)), update("nope")],
+      "unknown-variable",
+      "Update",
+      Some("variable"),
+    ),
+    (
+      "update-type",
+      vec![
+        konst(Var::Int(1)),
+        declare("x"),
+        konst(Var::Float(1.0)),
+        update("x"),
+      ],
+      "variable-type-mismatch",
+      "Update",
+      Some("variable"),
+    ),
+    (
+      "inc-type",
+      vec![konst(Var::Float(1.0)), declare("f"), inc("f")],
+      "wrong-variable-type",
+      "Math.Inc",
+      Some("variable"),
+    ),
+    (
+      "get-unknown",
+      vec![get("nope")],
+      "unknown-variable",
+      "Get",
+      Some("variable"),
+    ),
+    (
+      "repeat-times-var",
+      vec![
+        konst(Var::Float(2.0)),
+        declare("t"),
+        named(
+          &REPEAT,
+          vec![
+            Arg::pos(ParamValue::Flow(vec![])),
+            Arg::named("times", var("t")),
+          ],
+        ),
+      ],
+      "wrong-variable-type",
+      "Repeat",
+      Some("times"),
+    ),
+    (
+      "pause-negative",
+      vec![pause_secs(-1.0)],
+      "invalid-argument-value",
+      "Pause",
+      Some("seconds"),
+    ),
+    (
+      "pause-nan",
+      vec![pause_secs(f64::NAN)],
+      "invalid-argument-value",
+      "Pause",
+      Some("seconds"),
+    ),
+    (
+      "pause-infinite",
+      vec![pause_secs(f64::INFINITY)],
+      "invalid-argument-value",
+      "Pause",
+      Some("seconds"),
+    ),
+    (
+      "pause-too-large",
+      vec![pause_secs(1e100)],
+      "invalid-argument-value",
+      "Pause",
+      Some("seconds"),
+    ),
+    (
+      "spawn-unknown",
+      vec![named(
+        &SPAWN,
+        vec![Arg::pos(ParamValue::Wire("nowhere".into()))],
+      )],
+      "unknown-wire",
+      "Spawn",
+      Some("wire"),
+    ),
+    (
+      "probe-mode",
+      vec![named(
+        &PROBE,
+        vec![
+          Arg::pos(val(Var::string("p"))),
+          Arg::named("mode", val(Var::string("explode"))),
+        ],
+      )],
+      "invalid-argument-value",
+      "Probe",
+      Some("mode"),
+    ),
+    (
+      "request-delay",
+      vec![request(-1, false, true)],
+      "invalid-argument-value",
+      "Request",
+      Some("delay"),
+    ),
+  ];
+  for (label, flow, code, shard, param) in cases {
+    let d = compile_error(flow, Type::none());
+    assert_eq!(
+      (d.code, d.shard.as_deref(), d.param.as_deref()),
+      (code, Some(shard), param),
+      "{label}: {d:?}"
+    );
+    assert_eq!(d.phase.name(), "compose", "{label}");
+  }
+
+  // A wire that spawns itself: recursive.
+  let mut mesh = Mesh::new();
+  mesh.add_wire(WireDef {
+    name: "loop".into(),
+    looped: false,
+    flow: vec![named(
+      &SPAWN,
+      vec![Arg::pos(ParamValue::Wire("loop".into()))],
+    )],
+  });
+  let d = match mesh.compile("loop", Type::none()) {
+    Err(Error::Diagnostic(d)) => *d,
+    other => panic!("{:?}", other.map(|_| ())),
+  };
+  assert_eq!(
+    (d.code, d.shard.as_deref()),
+    ("recursive-wire", Some("Spawn"))
+  );
+}
+
+#[test]
+fn a_called_wire_keeps_its_own_diagnostics() {
+  use shards_core::shards::SPAWN;
+  // An error inside the spawned wire belongs to the shard that raised it,
+  // not to Spawn's Wire parameter.
+  {
+    let caller = &SPAWN;
+    let mut mesh = Mesh::new();
+    mesh.add_wire(WireDef {
+      name: "child".into(),
+      looped: false,
+      flow: vec![ShardDef::new(
+        &ADD,
+        vec![
+          ParamValue::Value(Var::Int(1)),
+          ParamValue::Value(Var::Int(2)),
+        ],
+      )],
+    });
+    mesh.add_wire(wire(vec![ShardDef::with_args(
+      caller,
+      vec![Arg::pos(ParamValue::Wire("child".into()))],
+    )]));
+    let d = match mesh.compile("test", Type::int()) {
+      Err(Error::Diagnostic(d)) => *d,
+      other => panic!("{:?}", other.map(|_| ())),
+    };
+    let name = caller.desc.name;
+    assert_eq!(d.code, "too-many-arguments", "{name}: {d:?}");
+    assert_eq!(d.shard.as_deref(), Some("Math.Add"), "{name}: {d:?}");
+    assert_eq!(
+      (d.param.as_deref(), d.param_index),
+      (None, None),
+      "{name}: {d:?}"
+    );
+  }
+}
+
+#[test]
+fn defaults_behave_like_the_documented_behavior() {
+  // Pause's default (0 seconds) suspends exactly once: completes on the
+  // second tick, like an explicit Pause(seconds: 0.0).
+  for flow in [
+    vec![pause(), konst(Var::Int(1))],
+    vec![pause_secs(0.0), konst(Var::Int(1))],
+  ] {
+    let mut mesh = Mesh::new();
+    mesh.add_wire(wire(flow));
+    let compiled = mesh.compile("test", Type::none()).unwrap();
+    let id = mesh.spawn(&compiled, Var::None).unwrap();
+    assert_eq!(mesh.tick(), 1);
+    assert_eq!(mesh.tick(), 0);
+    assert_eq!(mesh.outcome(id), Some(&Outcome::Completed(Var::Int(1))));
+  }
+  // Repeat with a negative count runs its body zero times, as documented.
+  let flow = vec![
+    konst(Var::Int(0)),
+    declare("n"),
+    repeat(vec![inc("n")], val(Var::Int(-3))),
+    get("n"),
+  ];
+  assert_eq!(run(flow, Var::None), Outcome::Completed(Var::Int(0)));
+}
+
+#[test]
+fn wrong_form_for_a_composite_parameter_cites_its_declaration() {
+  let d = compile_error(
+    vec![ShardDef::with_args(
+      &WHEN,
+      vec![
+        Arg::pos(ParamValue::Flow(vec![konst(Var::Bool(true))])),
+        Arg::pos(val(Var::Int(1))),
+      ],
+    )],
+    Type::none(),
+  );
+  assert_eq!(
+    (d.code, d.param.as_deref(), d.param_index),
+    ("wrong-argument-form", Some("action"), Some(1))
+  );
+}
+
+/// A shard can be described without an implementation (for discovery or
+/// a host's catalog listing); composing it is a located error.
+#[test]
+fn a_described_shard_without_an_implementation_is_a_compose_error() {
+  static DESCRIBED: shards_core::ShardType =
+    shards_core::ShardType::new(shards_core::ShardDesc::undocumented("Host.Described", 1));
+  let mut mesh = Mesh::new();
+  mesh.add_wire(WireDef {
+    name: "w".into(),
+    looped: false,
+    flow: vec![ShardDef::new(&DESCRIBED, vec![])],
+  });
+  let err = mesh.compile("w", Type::none()).err().unwrap();
+  let d = err.diagnostic().unwrap();
+  assert_eq!(
+    (d.code, d.shard.as_deref()),
+    ("not-implemented", Some("Host.Described"))
+  );
+  assert!(Catalog::new(&[&[&DESCRIBED]]).is_ok());
 }
 
 #[test]
@@ -558,12 +581,12 @@ fn when_description_and_decoder_use_the_same_declarations() {
   let decoded = decode(
     &WHEN.desc,
     &[
-      Arg::named("Predicate", ParamValue::Flow(vec![])),
-      Arg::named("Action", ParamValue::Flow(vec![])),
+      Arg::named("predicate", ParamValue::Flow(vec![])),
+      Arg::named("action", ParamValue::Flow(vec![])),
     ],
   )
   .unwrap();
-  assert!(decoded.flow("Predicate").is_some() && decoded.flow("Action").is_some());
+  assert!(decoded.flow("predicate").is_some() && decoded.flow("action").is_some());
 
   let catalog = Catalog::new(&[CATALOG]).unwrap();
   let json = catalog.describe_json("When").unwrap();
@@ -575,7 +598,6 @@ fn when_description_and_decoder_use_the_same_declarations() {
   }
   assert!(json.contains("\"forms\":[\"flow\"]"));
   assert!(json.contains("\"output\":{\"kind\":\"passthrough\"}"));
-  assert!(json.contains("\"backends\":[\"stackful\",\"stackless\"]"));
 }
 
 #[test]
@@ -594,11 +616,10 @@ fn catalog_index_detail_and_search() {
   assert!(!index.contains("\"documented\":false"), "{index}");
   for ty in CATALOG {
     assert!(ty.desc.is_documented(), "{} is not described", ty.name());
-    assert_eq!(ty.backends(), ["stackful", "stackless"], "{}", ty.name());
   }
 
   let add = catalog.describe_json("Add").unwrap();
-  assert!(add.contains("\"name\":\"Operand\",\"index\":0"));
+  assert!(add.contains("\"name\":\"operand\",\"index\":0"));
   assert!(add.contains("\"forms\":[\"literal\",\"variable\"]"));
   assert!(add.contains("{\"name\":\"Int\",\"basic_type\":4}"));
   assert!(add.contains("\"required\":true"));
@@ -622,7 +643,7 @@ fn diagnostic_json_keeps_1x_field_names() {
     "\"code\":\"missing-argument\"",
     "\"shard\":\"Math.Add\"",
     "\"param_index\":0",
-    "\"param\":\"Operand\"",
+    "\"param\":\"operand\"",
   ] {
     assert!(json.contains(field), "{field} missing in {json}");
   }
@@ -662,7 +683,7 @@ fn defaults_follow_the_declared_contract() {
   // An Int-only parameter with a String default: rejected by the shared
   // check (which ShardType::new runs at compile time) and by the decoder.
   static INVALID: &[ParamDecl] = &[ParamDecl {
-    name: "Operand",
+    name: "operand",
     help: "",
     forms: Forms::LITERAL,
     types: &[TypeName::Int],
@@ -728,9 +749,9 @@ fn every_declared_parameter_accepts_exactly_its_documented_forms() {
         Some(TypeName::Bool) => Var::Bool(true),
         Some(TypeName::Int) | None => Var::Int(1),
         Some(TypeName::Float) => Var::Float(1.0),
-        Some(TypeName::Float2) => Var::Float2([1.0, 1.0]),
-        Some(TypeName::Float3) => Var::Float3([1.0, 1.0, 1.0]),
-        Some(TypeName::Float4) => Var::Float4([1.0, 1.0, 1.0, 1.0]),
+        Some(TypeName::Float2) => Var::Float2(Float2([1.0, 1.0])),
+        Some(TypeName::Float3) => Var::Float3(Float3([1.0, 1.0, 1.0])),
+        Some(TypeName::Float4) => Var::Float4(Float4([1.0, 1.0, 1.0, 1.0])),
         Some(TypeName::String) => Var::string("s"),
         Some(TypeName::Seq) => Var::Seq(Default::default()),
         Some(TypeName::Table) => Var::table(Vec::<(&str, Var)>::new()),
@@ -825,7 +846,7 @@ fn table_seq_and_vector_parameters_decode_by_acceptance() {
       ty: None,
     },
     ParamDecl {
-      name: "Items",
+      name: "items",
       help: "",
       forms: Forms::LITERAL,
       types: &[TypeName::Seq],
@@ -851,8 +872,8 @@ fn table_seq_and_vector_parameters_decode_by_acceptance() {
     &desc,
     &[
       Arg::named("Shape", ParamValue::Value(table.clone())),
-      Arg::named("Items", ParamValue::Value(mixed)),
-      Arg::named("At", ParamValue::Value(Var::Float2([1.0, 2.0]))),
+      Arg::named("items", ParamValue::Value(mixed)),
+      Arg::named("At", ParamValue::Value(Var::Float2(Float2([1.0, 2.0])))),
     ],
   )
   .unwrap();
@@ -877,7 +898,10 @@ fn table_seq_and_vector_parameters_decode_by_acceptance() {
 
   let err = decode(
     &desc,
-    &[Arg::named("At", ParamValue::Value(Var::Float3([0.0; 3])))],
+    &[Arg::named(
+      "At",
+      ParamValue::Value(Var::Float3(Float3([0.0; 3]))),
+    )],
   )
   .err()
   .unwrap();
@@ -916,19 +940,19 @@ fn variadic_parameters_take_the_remaining_positional_arguments() {
   )
   .unwrap();
   assert_eq!(
-    decoded.variadic("Items"),
+    decoded.variadic("items"),
     [ParamValue::Value(Var::Int(1)), ParamValue::Var("x".into())]
   );
   assert!(
     decode(&SEQ_MAKE.desc, &[])
       .unwrap()
-      .variadic("Items")
+      .variadic("items")
       .is_empty()
   );
 
   let err = decode(
     &SEQ_MAKE.desc,
-    &[Arg::named("Items", ParamValue::Value(Var::Int(1)))],
+    &[Arg::named("items", ParamValue::Value(Var::Int(1)))],
   )
   .err()
   .unwrap();
@@ -964,14 +988,14 @@ fn full_parameter_types_check_literals_and_are_documented() {
   static PARAMS: &[ParamDecl] = &[
     // No TypeName list: the full type is enough.
     ParamDecl::new_typed(
-      "Offsets",
+      "offsets",
       "",
       Forms::LITERAL.or(Forms::VARIABLE),
       Requirement::Optional,
       || Type::seq(Type::int()),
     ),
     ParamDecl::new(
-      "Ref",
+      "record",
       "",
       Forms::LITERAL,
       &[TypeName::Table],
@@ -987,7 +1011,7 @@ fn full_parameter_types_check_literals_and_are_documented() {
   assert!(
     decode(
       &TYPED.desc,
-      &[Arg::named("Offsets", ParamValue::Value(ints))]
+      &[Arg::named("offsets", ParamValue::Value(ints))]
     )
     .is_ok()
   );
@@ -995,14 +1019,14 @@ fn full_parameter_types_check_literals_and_are_documented() {
   let strings = Var::Seq(std::sync::Arc::new(vec![Var::string("a")]));
   let err = decode(
     &TYPED.desc,
-    &[Arg::named("Offsets", ParamValue::Value(strings))],
+    &[Arg::named("offsets", ParamValue::Value(strings))],
   )
   .err()
   .unwrap();
   let d = err.diagnostic().unwrap();
   assert_eq!(d.code, "wrong-argument-type");
   assert!(
-    d.message.contains("Offsets must be [Int], got [String]"),
+    d.message.contains("offsets must be [Int], got [String]"),
     "{}",
     d.message
   );
@@ -1012,12 +1036,18 @@ fn full_parameter_types_check_literals_and_are_documented() {
     ("addr", Var::Int(1)),
     ("guid", Var::Seq(std::sync::Arc::new(vec![Var::Int(2)]))),
   ]);
-  assert!(decode(&TYPED.desc, &[Arg::named("Ref", ParamValue::Value(record))]).is_ok());
+  assert!(
+    decode(
+      &TYPED.desc,
+      &[Arg::named("record", ParamValue::Value(record))]
+    )
+    .is_ok()
+  );
   let missing = Var::table([("addr", Var::Int(1))]);
   assert!(
     decode(
       &TYPED.desc,
-      &[Arg::named("Ref", ParamValue::Value(missing))]
+      &[Arg::named("record", ParamValue::Value(missing))]
     )
     .is_err()
   );
@@ -1033,5 +1063,75 @@ fn full_parameter_types_check_literals_and_are_documented() {
   assert!(
     json.contains("\"type\":\"{addr: Int guid: [Int]}\""),
     "{json}"
+  );
+}
+
+/// Parameter names are lowercase labels; a host shard declaring an
+/// uppercase one is rejected when the catalog is built.
+#[test]
+fn the_catalog_rejects_uppercase_parameter_names() {
+  use shards_core::describe::{Forms, ParamDecl, Requirement, ShardDesc};
+  use shards_core::{Catalog, ShardType};
+  static PARAMS: &[ParamDecl] = &[ParamDecl::new(
+    "Target",
+    "",
+    Forms::LITERAL,
+    &[TypeName::Int],
+    Requirement::Optional,
+  )];
+  static UPPER: ShardType = ShardType::new(ShardDesc {
+    params: Params::Declared(PARAMS),
+    ..ShardDesc::undocumented("Host.Upper", 1)
+  });
+  let err = Catalog::new(&[&[&UPPER]]).err().unwrap();
+  assert_eq!(
+    err,
+    "Host.Upper: parameter `Target` must be a lowercase label (`target`)"
+  );
+}
+
+#[test]
+fn signatures_classify_every_core_shard_and_support_owned_metadata() {
+  use shards_core::signature::{Effects, Lifetime, Signature, SignatureInput, SignatureOutput};
+  for shard in CATALOG {
+    assert!(!shard.desc.effects.unknown, "{}", shard.name());
+    assert_ne!(shard.desc.lifetime, Lifetime::Unknown, "{}", shard.name());
+  }
+  assert_eq!(
+    shards_core::ShardDesc::undocumented("Host.Unknown", 1).effects,
+    Effects::UNKNOWN
+  );
+  assert!(shards_core::shards::values::TIME_NOW.desc.effects.time);
+  assert_eq!(shards_core::shards::ADD.desc.effects, Effects::NONE);
+  assert_eq!(
+    shards_core::shards::SPAWN.desc.lifetime,
+    Lifetime::Stateless
+  );
+  // The probe's lifecycle is what tests observe, so it is stateful.
+  assert_eq!(shards_core::shards::PROBE.desc.lifetime, Lifetime::Stateful);
+  assert_eq!(shards_core::shards::KEEP.desc.lifetime, Lifetime::Stateful);
+  assert_eq!(shards_core::shards::ONCE.desc.lifetime, Lifetime::Stateful);
+  // Owned dynamic names require no leaked allocations or static descriptions.
+  let sig: Signature<'static> = Signature {
+    name: String::from("Script.Scale").into(),
+    revision: 2,
+    input: SignatureInput::Type(shards_core::Type::float()),
+    output: SignatureOutput::Type(shards_core::Type::float()),
+    params: Some(vec![]),
+    lifetime: Lifetime::Stateless,
+    effects: Effects::NONE,
+    uses: vec![],
+    mutates: vec![],
+    source: None,
+    summary: String::from("Scale a value").into(),
+    help: String::new().into(),
+  };
+  assert!(sig.to_json().contains("Script.Scale"));
+  assert!(
+    Catalog::new(&[CATALOG])
+      .unwrap()
+      .describe_json("Pause")
+      .unwrap()
+      .contains("\"suspends\":true")
   );
 }

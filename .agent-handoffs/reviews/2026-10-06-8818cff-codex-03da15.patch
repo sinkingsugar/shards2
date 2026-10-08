@@ -1,0 +1,203 @@
+diff --git a/crates/shards-io/tests/blocking.rs b/crates/shards-io/tests/blocking.rs
+index fe23ece..67d9c07 100644
+--- a/crates/shards-io/tests/blocking.rs
++++ b/crates/shards-io/tests/blocking.rs
+@@ -19,9 +19,10 @@ use shards_io::runtime::spawn_blocking;
+ /// its cancellation token fire.
+ static STARTED: [AtomicBool; 3] = [const { AtomicBool::new(false) }; 3];
+ static SAW_CANCEL: [AtomicBool; 3] = [const { AtomicBool::new(false) }; 3];
++static RELEASE: [AtomicBool; 3] = [const { AtomicBool::new(false) }; 3];
+ 
+-/// Input 0: returns 42 after a short sleep. Input 1 or 2 (a test slot):
+-/// blocks until cancelled, checking its token as blocking host code must.
++/// Positive slots block until cancelled; negative slots wait for the test
++/// to release them after tick returns. No wall-clock scheduling assumption.
+ struct Block;
+ 
+ const BLOCK_DESC: ShardDesc = ShardDesc {
+@@ -51,21 +52,27 @@ impl AsyncShard for Block {
+   }
+ 
+   fn start(_: &(), _: &mut impl LeafCtx, input: &Var) -> Result<IoTask> {
+-    let slot = match input {
+-      Var::Int(s @ 1..=2) => Some(*s as usize),
+-      _ => None,
++    let Var::Int(input) = input else {
++      unreachable!()
+     };
+-    Ok(spawn_blocking(move |token| match slot {
+-      Some(slot) => {
++    let slot = input.unsigned_abs() as usize;
++    let cancel = *input > 0;
++    Ok(spawn_blocking(move |token| {
++      if cancel {
+         STARTED[slot].store(true, Ordering::SeqCst);
+         while !token.is_cancelled() {
+           std::thread::sleep(Duration::from_millis(1));
+         }
+         SAW_CANCEL[slot].store(true, Ordering::SeqCst);
+         Err("cancelled".into())
+-      }
+-      None => {
+-        std::thread::sleep(Duration::from_millis(20));
++      } else {
++        let deadline = Instant::now() + Duration::from_secs(5);
++        while !RELEASE[slot].load(Ordering::SeqCst) {
++          if token.is_cancelled() || Instant::now() >= deadline {
++            return Err("test did not release blocking operation".into());
++          }
++          std::thread::sleep(Duration::from_millis(1));
++        }
+         // Logged on a blocking-pool thread.
+         shards_core::log::emit("scanned".into());
+         Ok(Var::Int(42))
+@@ -95,14 +102,16 @@ macro_rules! blocking_tests {
+     #[test]
+     fn blocking_work_completes_without_blocking_the_mesh() {
+       let mut mesh = <$mesh>::new();
+-      mesh.add_wire(wire(0));
++      mesh.add_wire(wire(-($slot as i64)));
+       let w = mesh.compile("w", Type::none()).unwrap();
+       let id = mesh.spawn(&w, Var::None).unwrap();
+       let ((), lines) = shards_core::log::capture(|| {
+         let start = Instant::now();
+         mesh.tick();
+-        // The 20 ms sleep runs on the blocking pool, not in the tick.
+-        assert!(start.elapsed() < Duration::from_millis(15), "tick blocked");
++        // Completion cannot happen until the ticking thread releases the
++        // worker. A busy CI host may deschedule this thread for any duration.
++        assert!(mesh.outcome(id).is_none(), "tick waited for blocking work");
++        RELEASE[$slot].store(true, Ordering::SeqCst);
+         while mesh.outcome(id).is_none() {
+           assert!(start.elapsed() < Duration::from_secs(5), "timed out");
+           mesh.tick();
+diff --git a/crates/shards-lang/src/program.rs b/crates/shards-lang/src/program.rs
+index eb635ef..72763f3 100644
+--- a/crates/shards-lang/src/program.rs
++++ b/crates/shards-lang/src/program.rs
+@@ -307,11 +307,17 @@ impl Program {
+ 
+   /// Composes every wire: the entries (wires they reach through `Do` and
+   /// `Spawn` compose with them), then one root per unreachable group.
++  /// Returns diagnostics without materializing tooling occurrence reports;
++  /// use `analyze` when those source-located reports are needed.
+   pub fn compose<H: Host>(&self) -> Vec<Diagnostic> {
+-    self.analyze::<H>().diagnostics
++    self.compose_report::<H>(false).diagnostics
+   }
+ 
+   pub fn analyze<H: Host>(&self) -> CheckReport {
++    self.compose_report::<H>(true)
++  }
++
++  fn compose_report<H: Host>(&self, include_analysis: bool) -> CheckReport {
+     let mut mesh = H::create();
+     for def in &self.lowered.wires {
+       mesh.add_wire(def.clone());
+@@ -326,7 +332,7 @@ impl Program {
+             out.push(d);
+           }
+         }
+-        Ok(compiled) => {
++        Ok(compiled) if include_analysis => {
+           let analysis = H::analysis(&compiled).clone();
+           let occurrences = analysis
+             .occurrences
+@@ -351,6 +357,7 @@ impl Program {
+             occurrences,
+           });
+         }
++        Ok(_) => {}
+       }
+     }
+     CheckReport {
+diff --git a/crates/shards-lang/tests/lang.rs b/crates/shards-lang/tests/lang.rs
+index 498d074..28e0847 100644
+--- a/crates/shards-lang/tests/lang.rs
++++ b/crates/shards-lang/tests/lang.rs
+@@ -1146,7 +1146,12 @@ If(Any(b {a}) {4} {5}) = z
+       ] {
+         let n = (shards_core::compose::MAX_FLOW_DEPTH - 2) / levels;
+         let src = wrapped_chain(n, wrapper);
+-        assert!(check(&src).ok(), "{wrapper}: {}", check(&src).to_json());
++        // This test needs diagnostics, not the full tooling report of every
++        // occurrence and its expanded source path.
++        let program = Program::load(Source::new("t.shs", &src), &catalog(), &no_defines()).unwrap_or_else(|(_, d)| panic!("{d:?}"));
++        let diagnostics = program.compose::<Mesh>();
++        assert!(diagnostics.is_empty(), "{wrapper}: {diagnostics:?}");
++        drop(program);
+         assert!(run(&src, &no_defines()).succeeded(), "{wrapper}");
+         // The chain is at the limit: one more wire is too deep. If compose's
+         // level counting drifts, this fails instead of the test silently
+diff --git a/examples/esp32/sdkconfig.defaults b/examples/esp32/sdkconfig.defaults
+index 13ed341..c771960 100644
+--- a/examples/esp32/sdkconfig.defaults
++++ b/examples/esp32/sdkconfig.defaults
+@@ -1,6 +1,7 @@
+ # Parsing and composing use the task stack even with the stackless scheduler.
+-# The shared acceptance suite exercises the full recursive compose limit.
+-CONFIG_ESP_MAIN_TASK_STACK_SIZE=98304
++# The smoke driver is shallow. Acceptance suites allocate their own measured
++# task stack, freeing it between suites to leave room for instance state.
++CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384
+ CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=4096
+ CONFIG_FREERTOS_IDLE_TASK_STACKSIZE=4096
+ CONFIG_PTHREAD_TASK_STACK_SIZE_DEFAULT=8192
+diff --git a/examples/esp32/src/main.rs b/examples/esp32/src/main.rs
+index 8eae8a3..7098472 100644
+--- a/examples/esp32/src/main.rs
++++ b/examples/esp32/src/main.rs
+@@ -20,10 +20,29 @@ mod acceptance {
+     include!(concat!(env!("OUT_DIR"), "/trampoline.rs"));
+   }
+   pub fn run() {
+-    prototype::run_suite();
+-    metadata::run_suite();
+-    lang::run_suite();
+-    trampoline::run_suite();
++    // Free each suite's native stack before the next suite starts. The
++    // instance-heavy core cases need heap; recursive frontend composition
++    // needs a larger stack. All test depths and instance counts are retained.
++    for (name, stack, run) in [
++      ("prototype", 48 * 1024, prototype::run_suite as fn()),
++      ("metadata", 48 * 1024, metadata::run_suite as fn()),
++      ("lang", 96 * 1024, lang::run_suite as fn()),
++      ("trampoline", 96 * 1024, trampoline::run_suite as fn()),
++    ] {
++      std::thread::Builder::new()
++        .name(name.into())
++        .stack_size(stack)
++        .spawn(move || {
++          run();
++          // SAFETY: query of this running task; no pointers escape.
++          let remaining = unsafe { esp_idf_sys::uxTaskGetStackHighWaterMark(std::ptr::null_mut()) };
++          println!("acceptance suite {name}: stack min free {remaining} of {stack} B");
++        })
++        .expect("acceptance task")
++        .join()
++        .expect("acceptance suite");
++      std::thread::sleep(std::time::Duration::from_millis(10));
++    }
+     println!("Shards ESP32 acceptance suites passed");
+   }
+ }
+@@ -48,6 +67,10 @@ fn main() {
+   assert_eq!(report.outcomes[0].1, Some(Outcome::Completed(Var::Int(42))));
+   assert!(report.spawned_failures.is_empty());
+   assert!(report.ticks >= 2, "Pause must suspend and resume");
++  let ticks = report.ticks;
++  drop(report);
++  drop(program);
++  drop(catalog);
+   #[cfg(feature = "acceptance")]
+   acceptance::run();
+   // Low-water marks since boot: parse, compose and run all happened above.
+@@ -61,7 +84,7 @@ fn main() {
+   };
+   println!(
+     "Shards ESP32 smoke test passed: 42 ({} ticks); main stack min free {} of {} B, heap min free {} B",
+-    report.ticks,
++    ticks,
+     stack_free,
+     esp_idf_sys::CONFIG_ESP_MAIN_TASK_STACK_SIZE,
+     heap_free

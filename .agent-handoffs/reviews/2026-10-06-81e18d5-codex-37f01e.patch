@@ -1,0 +1,149 @@
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index e0dfc01..d119f5c 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -47,9 +47,11 @@ jobs:
+       - run: cargo clippy -p shards-core -p shards-lang --target wasm32-wasip1 --lib --tests -- -D warnings
+       - name: Run acceptance, metadata and frontend tests on wasm
+         run: |
+-          cargo test -p shards-core --test prototype --test metadata --test trampoline --target wasm32-wasip1 --no-run
++          cargo test -p shards-core --test prototype --test metadata --test trampoline --test host_contract --test registry --target wasm32-wasip1 --no-run
+           cargo test -p shards-lang --test lang --target wasm32-wasip1 --no-run
+           node scripts/run-wasi.mjs "$(ls -t target/wasm32-wasip1/debug/deps/prototype-*.wasm | head -1)"
+           node scripts/run-wasi.mjs "$(ls -t target/wasm32-wasip1/debug/deps/metadata-*.wasm | head -1)"
+           node scripts/run-wasi.mjs "$(ls -t target/wasm32-wasip1/debug/deps/trampoline-*.wasm | head -1)"
++          node scripts/run-wasi.mjs "$(ls -t target/wasm32-wasip1/debug/deps/host_contract-*.wasm | head -1)"
++          node scripts/run-wasi.mjs "$(ls -t target/wasm32-wasip1/debug/deps/registry-*.wasm | head -1)"
+           node scripts/run-wasi.mjs "$(ls -t target/wasm32-wasip1/debug/deps/lang-*.wasm | head -1)"
+diff --git a/crates/shards-core/src/stackless/arena.rs b/crates/shards-core/src/stackless/arena.rs
+index ada9662..bb4d99a 100644
+--- a/crates/shards-core/src/stackless/arena.rs
++++ b/crates/shards-core/src/stackless/arena.rs
+@@ -26,6 +26,13 @@ impl<T> Default for Arena<T> {
+ }
+ 
+ impl<T> Arena<T> {
++  /// Reserve a known subtree without a transient doubling allocation.
++  pub fn reserve(&mut self, additional: usize) {
++    self
++      .slots
++      .reserve_exact(additional.saturating_sub(self.free.len()));
++  }
++
+   pub fn insert(&mut self, value: T) -> Handle {
+     let index = self.free.pop().unwrap_or_else(|| {
+       self.slots.push(Slot {
+@@ -89,6 +96,8 @@ mod tests {
+     let mut arena = Arena::default();
+     let old = arena.insert(String::from("old"));
+     assert_eq!(arena.remove(old).as_deref(), Some("old"));
++    // Moving the backing allocation must not revive the removed handle.
++    arena.reserve(128);
+     let new = arena.insert(String::from("new"));
+     assert_eq!(old.index, new.index);
+     assert!(arena.get(old).is_none());
+diff --git a/crates/shards-core/src/stackless/engine.rs b/crates/shards-core/src/stackless/engine.rs
+index 6b65189..ff7330f 100644
+--- a/crates/shards-core/src/stackless/engine.rs
++++ b/crates/shards-core/src/stackless/engine.rs
+@@ -115,8 +115,8 @@ struct Frame {
+ impl Frame {
+   fn new(code: Code) -> Self {
+     Self {
++      states: Vec::with_capacity(code.flow().nodes.len()),
+       code,
+-      states: Vec::new(),
+       pc: 0,
+       value: Var::None,
+       parent: None,
+@@ -149,6 +149,26 @@ impl Engine {
+ 
+   /// Depth-first initialization, preserving source order without Rust recursion.
+   fn build(&mut self, code: Code, ctx: &mut InstanceCtx) -> Result<Handle> {
++    // The immutable graph gives the exact eagerly instantiated frame count.
++    // Reserve once: Vec growth at a deep branch otherwise briefly needs both
++    // the old and doubled arena, and wastes scarce device heap after growth.
++    let mut count = 0;
++    let mut pending = vec![code.clone()];
++    while let Some(code) = pending.pop() {
++      count += 1;
++      for node in &code.flow().nodes {
++        if let Some(control) = node.control() {
++          for i in 0..control.len() {
++            pending.push(match &control {
++              Control::Do(call) => Code::Call((*call).clone()),
++              _ => Code::Child(node.clone(), i),
++            });
++          }
++        }
++      }
++    }
++    drop(pending);
++    self.frames.reserve(count);
+     let root = self.frames.insert(Frame::new(code));
+     let mut work = vec![root];
+     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+@@ -161,7 +181,10 @@ impl Engine {
+         }
+         let node = frame.code.flow().nodes[index].clone();
+         let state = if let Some(control) = node.control() {
+-          let mut c = Continuation::default();
++          let mut c = Continuation {
++            children: Vec::with_capacity(control.len()),
++            ..Continuation::default()
++          };
+           if let Control::Do(call) = &control {
+             c.call = Some((*call).clone());
+           }
+diff --git a/examples/esp32/build.rs b/examples/esp32/build.rs
+index 227e0a5..5db6086 100644
+--- a/examples/esp32/build.rs
++++ b/examples/esp32/build.rs
+@@ -1,7 +1,7 @@
+ fn main() {
+   embuild::espidf::sysenv::output();
+   println!("cargo:rustc-check-cfg=cfg(stackful)");
+-  println!("cargo:rustc-check-cfg=cfg(feature, values(\"docs\"))");
++  println!("cargo:rustc-check-cfg=cfg(feature, values(\"docs\", \"output-checks\"))");
+   #[cfg(feature = "acceptance")]
+   acceptance();
+ }
+@@ -26,6 +26,12 @@ fn acceptance() {
+       "../../crates/shards-core/tests/metadata.rs",
+       "metadata_tests",
+     ),
++    (
++      "host_contract",
++      "../../crates/shards-core/tests/host_contract.rs",
++      "host_contract_tests",
++    ),
++    ("registry", "../../crates/shards-core/tests/registry.rs", ""),
+     (
+       "lang",
+       "../../crates/shards-lang/tests/lang.rs",
+diff --git a/examples/esp32/src/main.rs b/examples/esp32/src/main.rs
+index 7098472..d099619 100644
+--- a/examples/esp32/src/main.rs
++++ b/examples/esp32/src/main.rs
+@@ -13,6 +13,12 @@ mod acceptance {
+   mod metadata {
+     include!(concat!(env!("OUT_DIR"), "/metadata.rs"));
+   }
++  mod host_contract {
++    include!(concat!(env!("OUT_DIR"), "/host_contract.rs"));
++  }
++  mod registry {
++    include!(concat!(env!("OUT_DIR"), "/registry.rs"));
++  }
+   mod lang {
+     include!(concat!(env!("OUT_DIR"), "/lang.rs"));
+   }
+@@ -26,6 +32,8 @@ mod acceptance {
+     for (name, stack, run) in [
+       ("prototype", 48 * 1024, prototype::run_suite as fn()),
+       ("metadata", 48 * 1024, metadata::run_suite as fn()),
++      ("host_contract", 48 * 1024, host_contract::run_suite as fn()),
++      ("registry", 48 * 1024, registry::run_suite as fn()),
+       ("lang", 96 * 1024, lang::run_suite as fn()),
+       ("trampoline", 96 * 1024, trampoline::run_suite as fn()),
+     ] {

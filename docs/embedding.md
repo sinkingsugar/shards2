@@ -4,7 +4,7 @@ How a Rust program (the host) adds its own shards and runs Shards scripts on the
 
 ## 1. Crates
 
-- `shards-core`: values, types, the shard traits, compose, and both schedulers.
+- `shards-core`: values, types, the shard traits, compose, and the scheduler (`Mesh`).
 - `shards-lang`: source to wire definitions, `check` and `run`.
 - `shards-io` (native only): the shared Tokio runtime, `spawn` for async work and `spawn_blocking` for blocking work.
 
@@ -14,15 +14,19 @@ Depend on them by path or git. Host shards live in the host's own crate, and not
 
 Every shard has one static description (`ShardDesc`). Its name, version, help, parameters, input and output come from there, and the decoder, catalog and documentation all read it. Prefix host shard names with a namespace (`Host.Reading`) so they cannot collide with core names; `Catalog::new` rejects duplicates, aliases included.
 
+Declare `effects: Effects` and `lifetime: Lifetime` from `shards_core::signature` in the description. Effects describe potential suspension, I/O, time, randomness and unknown behavior; use `Effects::NONE` only for operations with none of these. `ShardDesc::undocumented` defaults to unknown effects and lifetime. This is a trusted host contract. Stateless describes semantic lifetime: temporary state retained during a suspended operation does not make a shard stateful; state remembered across invocations does.
+
+Compose records mesh reads through `ComposeCtx::read_var` (also used by `Operand`) and writes through `mark_initialized`. A read-modify-write must use both. `var` is only a binding lookup and records no read. Use the compose helpers for child flows and wires so their effects and mesh access are included. `CompiledWire::signature()` exposes exact composed types and inferred mesh access; `ShardDesc::signature()` exposes native metadata through the same owned-or-borrowed view.
+
 Choose the trait by what the shard does:
 
 | The shard | Implement | Notes |
 |---|---|---|
-| Returns at once (reads, computes, converts) | `LeafShard` | One implementation for both schedulers. "Leaf" means it never suspends, not that it does little work. |
+| Returns at once (reads, computes, converts) | `LeafShard` | "Leaf" means it never suspends, not that it does little work. |
 | Does slow or blocking work (a long scan, a blocking library call, human-paced input) | `AsyncShard`, with `shards_io::runtime::spawn_blocking` | The work runs on the blocking pool. Only the waiting instance suspends; other wires keep running. |
 | Waits on async I/O | `AsyncShard`, with `shards_io::runtime::spawn` | Race every await against the cancellation token. |
 
-Host shards should not need the backend-specific control-flow traits.
+Host shards do not implement the full `Shard` contract: control flow (running a nested flow, suspending in the middle of one) is core-only, because the engine enters children through a closed `Control` description and `activate` cannot run child flows. A host shard that needs a flow takes it as a parameter and hands it to a core control shard, or declares it as a function parameter; a public continuation protocol is an open design item (`docs/current-state.md`).
 
 ### Parameters
 
@@ -45,6 +49,7 @@ Compose runs once per wire shape, and its result is shared by every instance. It
 - **Leaf shards** return `Flow::Next(value)`. Runtime failures are `Error::Activation(message)`. `Maybe` can catch them; otherwise they end the instance.
 - **Async shards** start one operation per activation from owned inputs: no borrows of frames or of `ctx`. The adapter polls it on later ticks.
 - **Blocking work cannot be interrupted from outside.** `spawn_blocking` passes a cancellation token: check it at safe points or wire it to the library's own cancel hook. Cancelling the instance cancels the token. Never leave external state half-changed when stopping early.
+- **Read and build values through the accessors**, not the storage: `Var::as_str`, `Var::as_seq` (a `&[Var]`) and `Var::as_table` give borrowed views; a `Table` has `get`, `len`, `contains_key` and `iter`/`keys`/`values` in sorted key order. Build tables with `Table::builder().with("key", value).build()`, `collect()` from `(key, Var)` pairs, or `Var::table([...])`; derive a changed table with `table.into_builder()`, which takes the storage when it is not shared. These build map tables (sorted entries). A fixed table type carries an interned key `Shape`; compose turns literals into struct tables of their shape and reads literal keys by slot, and a host that returns one record shape many times can do the same with `Table::with_shape(shape, values)` (values in the shape's sorted key order) or convert a built value once with `into_struct`. Do not intern a shape per value with unbounded key sets: shapes live in the type registry, which never frees ([values-and-types.md](values-and-types.md) §2.1). Float vectors are `Var::float2(x, y)`, `float3`, `float4` (f32 components, wrapped in `Float2`/`Float3`/`Float4`, which deref to the array).
 - **Keep per-instance state in `State`**, not in `Compiled`. Session-wide resources (an open process handle, a connection) belong to the host's own services, looked up at activation by a key the script passes.
 
 ## 3. The catalog and scripts
@@ -57,8 +62,8 @@ Catalog::new(&[shards_core::shards::CATALOG, HOST_CATALOG])
 
 Add `shards_io::CATALOG` if scripts use `Http.Get`. Then:
 
-- **Check without running:** `shards_lang::check::<shards_core::Mesh>(Source::new(path, text), &catalog, &defines)`. It returns the 1.x `{ok, file, diagnostics}` JSON envelope (`to_json()`), and `shards_lang::render` prints a diagnostic for humans.
-- **Run:** `Program::load(source, &catalog, &defines)`, then `program.run::<shards_core::Mesh>()`. The default is the stackless scheduler; `StackfulMesh` is the other one. The report has each entry wire's outcome, plus failures of spawned instances.
+- **Check without running:** `shards_lang::check(Source::new(path, text), &catalog, &defines)`. It returns the 1.x `{ok, file, diagnostics}` JSON envelope (`to_json()`), and `shards_lang::render` prints a diagnostic for humans.
+- **Run:** `Program::load(source, &catalog, &defines)`, then `program.run()`. The report has each entry wire's outcome, plus failures of spawned instances.
 - **Script arguments:** `defines` maps `name` to a string, read as `@name` in scripts.
 - **Logging:** `Log` writes to standard output; values print as text: whole floats without `.0`, other floats exact (1.x rounded to six digits). A host shard can log with `shards_core::log::emit`. `shards_core::log::capture` collects the lines a run logs, including lines logged by work it started through `shards_io` on other threads, which is useful in host tests.
 
@@ -68,25 +73,27 @@ The language is the 1.x syntax with the changes in [surface-syntax-review.md](su
 - `;` comments are rejected.
 - Int and Float mix in arithmetic and comparisons.
 - `f"..."` strings and `t.key` / `s.0` paths are supported.
-- `Maybe` without `Else` passes its input through.
-- Code goes in wires on a mesh run by `@run(mesh FPS: n)`; loose code runs as the `root` wire when there is no `@run`.
+- `Maybe` without `else` passes its input through.
+- Code goes in wires on a mesh run by `@run(mesh fps: n)`; loose code runs as the `root` wire when there is no `@run`.
+- Named, reusable code is a function: `@fn(Scale input: Float output: Float params: {factor: Float} { Math.Multiply(factor) })`, called like a shard (`3.0 | Scale(factor: 2.0)`). A function sees only its input, its parameters and the mesh variables it declares in `uses:`/`mutates:`; `stateful: true` gives it one persistent instance per call site (`Keep` allowed); `pure: true` is checked. `Return` ends the function with its input. Stateless functions may recurse (`Mesh::set_max_call_depth` bounds the nesting; exceeding it fails the instance with `recursion-limit`).
 
 ## 4. Testing a host
 
-Test host shards through scripts, on both schedulers, as `embedding.rs` does: `Program::load`, then `run::<Mesh>()` and `run::<StackfulMesh>()`, with `log::capture` for output. Use `check` for the compose errors your shards report. Run blocking shards against fakes of the host where possible; keep live runs for what only the real host can show.
+Test host shards through scripts, as `embedding.rs` does: `Program::load`, then `run()`, with `log::capture` for output. Use `check` for the compose errors your shards report. Run blocking shards against fakes of the host where possible; keep live runs for what only the real host can show.
 
 ## 5. Warm sessions and hot reload
 
 Use `shards_lang::Session` when the host owns its event loop and long-lived
 services. Keep connections and other expensive resources in the host and
-look them up during shard activation. Both native schedulers support the
-same API; stackless also supports WASI and ESP-IDF.
+look them up during shard activation. The same API runs on native, WASI and
+ESP-IDF.
 
 There are two replacement modes:
 
-- **`reload_preserving`** keeps unchanged callers, locals, `Once` state,
-  mesh values and suspended execution. Edited nested `Do` bodies are selected
-  at their next call boundary. This is what `shards2 watch` uses.
+- **`reload_preserving`** keeps unchanged callers, locals, `Keep` and
+  `Once` state, mesh values and suspended execution. Edited function bodies
+  are selected at their next call (golden path §11). This is what
+  `shards2 watch` uses.
 - **`reload`** explicitly restarts the whole program on a fresh mesh. All
   script and mesh state, including host-declared mesh-variable schemas, is
   discarded. Host services owned outside the mesh survive either mode.
@@ -96,51 +103,47 @@ rejected edit returns its source and located diagnostics; the current
 execution continues unchanged. Compilation is synchronous and pauses the
 host loop on that thread.
 
-### Preserving a caller while editing a nested wire
+### Preserving a caller while editing a function
 
 ```shards
-@wire(step { 10 | Log })
+@fn(Step input: None output: Int params: {} { 10 | Log })
 @wire(main {
-  Once({ 0 >= counter })
+  Keep(counter 0)
   Inc(counter) | Log
-  Do(step)
-} Looped: true)
+  Step
+} looped: true)
 @mesh(m)
 @schedule(m main)
-@run(m FPS: 30)
+@run(m fps: 30)
 ```
 
-Changing `10` to `20` in `step` keeps `main` running: its counter continues,
-its `Once` does not repeat, and its next `Do(step)` uses the edited body.
-This works through multiple nested `Do` calls, including a child called
-repeatedly inside a parent that never returns.
+Changing `10` to `20` in `Step` keeps `main` running: its counter continues,
+its `Keep` state is retained, and its next call to `Step` runs the edited
+body. A call site selects the newest accepted body when it enters; an
+invocation already in flight finishes on the body it started with, and its
+own calls, entered after the edit, select the newest bodies. Callers whose
+own definition did not change keep their compiled body and state, whatever
+their callees did.
 
-An in-flight call pins the body it started with until it returns. A pending
-async operation is neither cancelled nor overlapped with its replacement by
-an accepted nested edit. If the edited call never returns, that call never
-adopts the edit; request a full restart to cancel it. Each nested call has
-its own boundary. An unchanged parent body can select a new child on its
-next child call; an edited parent body already in flight retains its old
-call sites, so rearranged descendants cannot be mistaken for old ones.
+A candidate body is admitted only if its input, output, parameters and
+`stateful` flag match what the callers were composed with, and its inferred
+effects and mesh access fit inside what they were admitted with; otherwise
+the edit is rejected with `reload-incompatible`, naming the function and
+the change, before any running instance changes. A stateless function may
+change its locals freely: every invocation gets the new frame layout, and
+the caller never moves.
 
-Replacement must preserve a retained call site's input/output types, local
-slot layout, and definite-initialization contract. Type or binding changes,
-including new locals inside the changed callee, reject the edit with
-`reload-incompatible`. This is checked before any running instance changes.
-Diagnostics name the specific incompatible change. Added or changed locals point
-to their declaration, including declarations inside nested flows; removed locals
-fall back to the affected wire because their declaration is absent. The message
-also explains that `r` in watch performs a full restart.
-There is no arbitrary local-state migration or in-place coroutine rewriting.
-Use a full restart for incompatible edits. Changing the caller's own body
-restarts that caller and its locals, so stable initialization and counters
-should live in an unchanged caller above the editable `Do` body.
-
-Allowing appended locals in an edited callee is a follow-up. `Do` currently
-shares its caller's frame: a new callee slot can shift slots used later by the
-caller, so merely accepting a larger layout is insufficient. Supporting this
-needs stable existing bindings, safe growth of retained instance frames and
-initialization rules while old calls remain in flight.
+A stateful function keeps `Keep` slots that match the new body by name and
+type (editing `Keep(n 0)` to `Keep(n 10)` keeps the value of `n`;
+reordering `Keep`s keeps both); slots that changed type or disappeared
+reset, and so does native shard state inside the body, since no shard
+declares a compatibility contract yet. Resets happen at the call site's
+next entry. Whether a reset is acceptable is the host's policy
+(`ResetPolicy`): a `Session` rejects such edits by default
+(`reload-resets-state`), and `shards2 watch` applies them, since running
+watch is the opt-in. `Session::reload_report` (and the `report` on
+`WatchEvent::Reloaded`) lists what was retained, reset and restarted, by
+name.
 
 Other lifetime rules:
 
@@ -148,93 +151,62 @@ Other lifetime rules:
   Changed scheduled roots restart; removed schedules are cancelled.
   Retained instances keep scheduler order; new/restarted entries append.
   Reordering `@schedule` alone does not reorder retained instances.
-- Unchanged nested `Do` bodies retain their shard state too. Their `Once`
-  blocks do not repeat merely because a different body was edited.
+- Unchanged stateful functions retain their state too. Their `Once` blocks
+  do not repeat merely because another function was edited.
 - `Spawn` remains a static compiled dependency. Editing its target can
   restart the code that owns that dependency. Spawned instances are detached:
   compatible ones survive independently, while changed/removed ones are
-  cancelled; new spawns run the new code. The candidate also composes retained
-  children's input specializations, even if new entries no longer spawn those
-  types. Pending old calls can still spawn work belonging to their pinned code.
-- Unchanged completed/stopped entries remain finished, so saving a different
-  wire does not repeat setup effects. Failed entries stay stopped until the
-  next accepted reload, when they retry. Spawned failures are reported but
-  are not independently retried by the session.
-- Every replaced state gets cleanup attempted once. At a nested boundary,
-  cleanup and instantiation run when the next call starts. A failure there
-  is a runtime failure (`Maybe` can catch instantiation errors); it does not
-  roll back the committed revision. Terminal cleanup still visits the other
-  states if cleanup panics on native builds.
-
-### Driving a session and retaining explicit mesh values
-
-```rust
-use std::collections::HashMap;
-use shards_core::{Catalog, Mesh, Var};
-use shards_lang::{Session, Source};
-
-let catalog = Catalog::new(&[shards_core::shards::CATALOG]).unwrap();
-let defines = HashMap::new();
-let mut mesh = Mesh::new();
-mesh.declare_var("shared-counter", Var::Int(0), true);
-let mut session = Session::with_mesh(mesh);
-match session.reload_preserving(
-    Source::new("live.shs", "Inc(shared-counter)"), &catalog, &defines,
-) {
-  Ok(finished) => { /* consume cancelled/replaced instances' outcomes */ }
-  Err((source, diagnostics)) => { /* render against the rejected source */ }
-}
-// In the host loop, once per frame; tick does not sleep.
-for finished in session.tick() {
-  println!("{}: {:?}", finished.wire, finished.outcome);
-}
-// Submit edits through reload_preserving between ticks. On shutdown:
-let finished = session.stop();
-```
+  cancelled. A spawned wire that calls an edited function selects the new
+  body at its next call like any other caller.
+- Entry roots cancelled by a reload report `Cancelled`, including spawned
+  children. Failed entries stay stopped until the next accepted reload, and
+  then run again.
 
 `Session::with_mesh` accepts an idle, host-configured mesh. Preserving reload
 keeps its mesh-variable frame and schema unchanged, so values survive even
 when a scheduled root restarts. Scripts access declared mesh variables with
-the usual reads and updates. Creating/removing/changing the type of a mesh
+the usual reads and updates; a function reaches them only through its
+declared `uses` and `mutates`. Creating/removing/changing the type of a mesh
 variable during preserving reload is not supported. To reset such a session,
 create a fresh configured mesh and session; `reload` alone starts from the
 default empty mesh schema.
 
 `tick` returns every newly finished entry and child outcome once and retires
 the records. A session keeps no outcome history, only bounded entry status.
-At `Iterations`, remaining work is cancelled and reported in that tick.
-An accepted reload resets the revision's tick budget and updates its `FPS`;
+At `iterations`, remaining work is cancelled and reported in that tick.
+An accepted reload resets the revision's tick budget and updates its `fps`;
 `frame_interval()` exposes the suggested delay, with pacing owned by the host.
 `stop` cancels everything and releases the mesh. Dropping the session also
 cancels work, but cannot return cleanup errors.
 
-`ReloadHost` extends `SessionHost` for custom hosts that support isolated
-candidate compilation and validated installation. Compiled artifacts remain
-immutable. Inline revision selection belongs to a mesh; each active `Do`
-state retains an `Arc` to its selected immutable body. Candidate caches are
-fresh per revision. Old code remains only while referenced by retained roots
-or call state, not in a cumulative revision history. The process-wide type
-registry still interns types for the process lifetime.
+`Session` drives a `Mesh` directly; a host configures the mesh it starts
+from through `Session::with_mesh`. Compiled artifacts remain immutable:
+body selection belongs to a mesh, and each active call site retains an
+`Arc` to the body it selected. Candidate caches are fresh per revision. Old
+code remains only while referenced by retained roots or call sites, not in
+a cumulative revision history. The process-wide type registry still interns
+types for the process lifetime.
 
 Cancellation on root replacement, stop, or full restart drops pending
 futures, but does not join detached blocking workers or undo external
 effects. Such operations must cooperate with cancellation; a host requiring
 strict worker quiescence must enforce it in its service before admitting new
-work. Preserving an in-flight `Do` avoids restarting that call, but does not
-solve every host-side cancellation race.
+work. Preserving an in-flight invocation avoids restarting that call, but
+does not solve every host-side cancellation race.
 
 Offline tests in `crates/shards-cli/tests/embedding.rs` verify warm service
 reuse, cancellation on full reload, and pending-operation completion across
-preserving reload on both schedulers. The shared frontend suite verifies
-caller counters, unchanged `Once` state, deep call boundaries, mesh values,
-incompatible edits, cleanup failures, and retained spawned specializations.
+preserving reload. The shared frontend suite verifies caller counters,
+unchanged `Once` state, deep call boundaries, mesh values, incompatible
+edits, state resets under both policies, cleanup failures, and retained
+spawned children.
 Hosts can use the same pattern with recorded inputs to test without live I/O.
 
 ### Watching a file
 
 ```sh
 cargo run -p shards-cli -- watch live.shs
-cargo run -p shards-cli -- watch --stackful live.shs key:value
+cargo run -p shards-cli -- watch live.shs key:value
 ```
 
 The CLI polls contents every 100 ms and requires two identical samples before
@@ -243,11 +215,12 @@ incompatible changes or read errors preserve the current execution and are
 reported once until observed contents/error change. A watcher stays alive
 after completion, the iteration limit or runtime failure; failed wires are
 explicitly reported as stopped until the next successful reload/restart.
-`FPS` controls ticking; without it the watcher uses a 16 ms interval and
+`fps` controls ticking; without it the watcher uses a 16 ms interval and
 continues checking edits even when the script requests a very low frame rate.
 
-Enter `r` to validate the current file and explicitly restart all script
-execution in the same process. Enter `q`, send Ctrl-C, or close stdin to
+Each accepted edit prints what it retained, reset and restarted. Enter `r`
+to validate the current file and explicitly restart all script execution in
+the same process. Enter `q`, send Ctrl-C, or close stdin to
 cancel the execution and exit cleanly. Successful shutdown does not mean
 every revision ran successfully.
 
@@ -257,13 +230,13 @@ suppression, preserving reload and tick pacing. It installs no keyboard,
 signal, logging or async-runtime handlers. For a blocking host loop:
 
 ```rust
-use shards_core::{Catalog, Mesh};
+use shards_core::Catalog;
 use shards_lang::{FileWatcher, Session, WatchControl, WatchEvent};
 use std::collections::HashMap;
 use std::sync::mpsc;
 
 let catalog = Catalog::new(&[shards_core::shards::CATALOG]).unwrap();
-let mut session = Session::<Mesh>::new(); // or Session::with_mesh(...)
+let mut session = Session::new(); // or Session::with_mesh(...)
 let (commands, input) = mpsc::channel::<WatchControl>();
 // Hand `commands` to your UI/input thread. Send Restart or Stop as needed.
 FileWatcher::new("live.shs").run(
@@ -297,3 +270,7 @@ This watches one source file. Dependency watching, asynchronous compilation,
 general state migration, cross-revision cache reuse and a network serving
 protocol remain deferred. An embedding host can trigger either reload mode
 from its own watcher or command channel.
+
+### Execution limits (M4)
+
+`Mesh::set_max_call_depth(n)` limits nested named invocations; the default is 256 on native/WASI and 32 on ESP-IDF. Exceeding it reports an activation diagnostic with code `recursion-limit`. Anonymous control blocks do not count as named calls. The compose nesting limit remains separately enforced while compose still recurses. A preserving revision retains the mesh's configured runtime limit. The trampoline resumes the active leaf directly and owns child state centrally; LeafShard and AsyncShard implementations need no changes.

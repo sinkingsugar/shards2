@@ -1,6 +1,6 @@
 # Prototype Shard Contract: Decisions Replacing `shards.h`
 
-**Status:** Agreed (2026-10-04), after review by Astra and the maintainer, and implemented in `crates/shards-core` for both schedulers. Later additions (panic boundary, definite initialization, lifecycle rules, wake modes, shared `LeafShard`/`AsyncShard` APIs) are recorded in the relevant sections and in [`stackless-experiment.md`](stackless-experiment.md).
+**Status:** Agreed (2026-10-04), after review by Astra and the maintainer, and implemented in `crates/shards-core`. Later additions (panic boundary, definite initialization, lifecycle rules, wake modes, shared `LeafShard`/`AsyncShard` APIs) are recorded in the relevant sections and in [`stackless-experiment.md`](stackless-experiment.md).
 **Scope:** The interface decisions the §5 prototype in [`shards-2-compose-split.md`](shards-2-compose-split.md) needs. In 1.x, all of these are fixed by the C ABI in `include/shards/shards.h`. Each decision below is marked as either:
 
 - **Prototype only:** a choice the prototype can make and throw away.
@@ -47,7 +47,7 @@ instantiation and cleanup still run. See the [VM measurements](vm-execution-benc
 
 `getParam` exists today for serialization, the formatter round trip and tooling. In 2.0 those read the AST or the `Params` value instead of asking an instance.
 
-**Immutable parameters can still describe dynamic inputs.** A parameter that refers to a variable (e.g. `Take(waypoint)`, `Repeat(Times: n)`) compiles into a **binding** whose value is read during activation (§8). Updating that variable's value does not require recompilation. Changing *which* variable the parameter refers to does. This keeps the useful 1.x behavior of variable-valued parameters.
+**Immutable parameters can still describe dynamic inputs.** A parameter that refers to a variable (e.g. `Take(waypoint)`, `Repeat(times: n)`) compiles into a **binding** whose value is read during activation (§8). Updating that variable's value does not require recompilation. Changing *which* variable the parameter refers to does. This keeps the useful 1.x behavior of variable-valued parameters.
 
 **Commitment:** parameters are immutable inputs to compose. Changing a parameter means building a new compiled node. For live editing (roadmap §3.5), that is a replacement, not a mutation.
 
@@ -178,7 +178,9 @@ builds validate every intermediate constructor output as well.
 
 **Follow-up (2026-10-04):** a bounded stackless experiment was run after the prototype: [`stackless-experiment.md`](stackless-experiment.md). Result: the stackless scheduler is the default and both are maintained, one backend per mesh. Suspension is therefore represented both ways: in the stackless contract as `Step::Suspend` returned from `activate` (with resume points in `State`), and in the stackful contract inside `ActivationCtx`. Leaf and async shards are written once over both (`LeafShard`, `AsyncShard`).
 
-**Measurement:** with stackful execution, each instance's memory includes its coroutine stack and continuation overhead, not only its shard state. Report the two separately, so a result "close to `sizeof(State)`" does not hide the scheduler's cost.
+**Follow-up (2026-10-07):** golden path M4 replaced the recursive stackless activation with a directly resumable engine and deleted the stackful scheduler. Suspension is now represented one way: `Step::Suspend` returned from `Shard::activate`, with the resume point in `State` (builtin composites instead expose a `Control` description, and the engine owns their continuations). `LeafShard` keeps the suspension-free `Flow` result. `ActivationCtx` has no suspend call.
+
+**Measurement (historical):** with stackful execution, each instance's memory included its coroutine stack and continuation overhead, not only its shard state; the two were reported separately.
 
 ## 8. Variables
 
@@ -236,3 +238,9 @@ measurement. The compiled/state split is not contingent on by-value outputs.
 8. §8: compose-time resolution to `Local`/`Mesh` bindings.
 
 Prototype-only choices (§1 dispatch, §6 output slot, `ActivationCtx` API and suspension representation, §7 stackful coroutines, §9 minimal `Var`) can change after measurement without breaking these.
+
+## Golden path M4 execution update
+
+The stackless runner now owns generation-tagged flow frames and dispatches child entry/completion iteratively. Pending async leaves and Pause resume directly; no ancestor handler is dispatched merely to find a pending leaf. Composite continuations retain the input, phase, loop limit/counter and selected child. The runner resets transient continuation state on value/error/control-signal exits, and routes errors through the nearest Maybe and Return through Do's current named boundary. No frame pointer survives a callback or suspension.
+
+Initialization and cleanup are iterative and preserve the existing depth-first/reverse-depth-first order. Cleanup detaches ownership before calling host code, attempts all leaf cleanups through the shared lifecycle helper, and reports the first panic. Reloaded Do bodies stay pinned while active and replace their child subtree only at the next entry. Native LeafShard and AsyncShard APIs are unchanged. Ordinary variable scope, Keep storage and root-loop yielding are preserved for the later function/frame-layout milestone.

@@ -1,0 +1,215 @@
+diff --git a/crates/shards-core/src/signature.rs b/crates/shards-core/src/signature.rs
+index 2411a6d..5ce5917 100644
+--- a/crates/shards-core/src/signature.rs
++++ b/crates/shards-core/src/signature.rs
+@@ -224,6 +224,59 @@ pub struct Occurrence {
+   pub lifetime: Lifetime,
+ }
+ 
++/// A persistent occurrence tree: parents retain a child's relative paths once,
++/// rather than copying all descendant paths into every compiled ancestor.
++/// Iteration materializes full paths only for tooling that requests them.
++#[derive(Clone, Debug, Default, PartialEq, Eq)]
++pub struct Occurrences(std::sync::Arc<Vec<OccurrenceEntry>>);
++#[derive(Clone, Debug, PartialEq, Eq)]
++enum OccurrenceEntry {
++  Node(Occurrence),
++  Child(Vec<PathStep>, Occurrences),
++}
++impl Occurrences {
++  pub fn is_empty(&self) -> bool {
++    self.0.is_empty()
++  }
++  pub fn len(&self) -> usize {
++    self.iter().count()
++  }
++  pub fn iter(&self) -> impl Iterator<Item = Occurrence> + '_ {
++    let mut stack = vec![(self.0.iter(), 0)];
++    let mut prefix = Vec::new();
++    std::iter::from_fn(move || {
++      loop {
++        let (entries, _) = stack.last_mut()?;
++        match entries.next() {
++          Some(OccurrenceEntry::Node(node)) => {
++            let mut node = node.clone();
++            node.path.splice(0..0, prefix.iter().cloned());
++            return Some(node);
++          }
++          Some(OccurrenceEntry::Child(path, child)) => {
++            let restore = prefix.len();
++            prefix.extend(path.iter().cloned());
++            stack.push((child.0.iter(), restore));
++          }
++          None => {
++            let (_, restore) = stack.pop().expect("nonempty");
++            prefix.truncate(restore);
++          }
++        }
++      }
++    })
++  }
++  pub(crate) fn insert(&mut self, index: usize, node: Occurrence) {
++    std::sync::Arc::make_mut(&mut self.0).insert(index, OccurrenceEntry::Node(node));
++  }
++  fn include(&mut self, child: &Self, prefix: &[PathStep]) {
++    if !child.is_empty() {
++      std::sync::Arc::make_mut(&mut self.0)
++        .push(OccurrenceEntry::Child(prefix.to_vec(), child.clone()));
++    }
++  }
++}
++
+ /// Immutable analysis shared with compiled code. A caller prefixes the relative
+ /// paths when incorporating a cached callee, preserving every use site.
+ #[derive(Clone, Debug, PartialEq, Eq)]
+@@ -232,7 +285,7 @@ pub struct Analysis {
+   pub lifetime: Lifetime,
+   pub uses: Vec<MeshAccess>,
+   pub mutates: Vec<MeshAccess>,
+-  pub occurrences: Vec<Occurrence>,
++  pub occurrences: Occurrences,
+ }
+ impl Default for Analysis {
+   fn default() -> Self {
+@@ -241,7 +294,7 @@ impl Default for Analysis {
+       lifetime: Lifetime::Stateless,
+       uses: Vec::new(),
+       mutates: Vec::new(),
+-      occurrences: Vec::new(),
++      occurrences: Occurrences::default(),
+     }
+   }
+ }
+@@ -270,12 +323,7 @@ impl Analysis {
+     for access in &child.mutates {
+       self.access(&access.name, access.ty, true);
+     }
+-    self
+-      .occurrences
+-      .extend(child.occurrences.iter().cloned().map(|mut o| {
+-        o.path.splice(0..0, prefix.iter().cloned());
+-        o
+-      }));
++    self.occurrences.include(&child.occurrences, prefix);
+   }
+   pub fn mesh_json(accesses: &[MeshAccess]) -> String {
+     format!(
+@@ -369,3 +417,54 @@ impl Signature<'_> {
+     )
+   }
+ }
++
++#[cfg(test)]
++mod tests {
++  use super::*;
++
++  #[test]
++  fn shared_occurrences_keep_each_call_path_without_copying_descendants() {
++    let mut leaf = Occurrences::default();
++    leaf.insert(
++      0,
++      Occurrence {
++        path: vec![PathStep::Item(99)],
++        input: Type::any(),
++        output: Type::any(),
++        effects: Effects::NONE,
++        lifetime: Lifetime::Stateless,
++      },
++    );
++    let mut chain = leaf.clone();
++    for depth in 0..32 {
++      let mut parent = Occurrences::default();
++      parent.include(&chain, &[PathStep::Item(depth)]);
++      let OccurrenceEntry::Child(_, retained) = &parent.0[0] else {
++        panic!("child")
++      };
++      assert!(std::sync::Arc::ptr_eq(&retained.0, &chain.0));
++      chain = parent;
++    }
++    let mut callers = Occurrences::default();
++    callers.include(&chain, &[PathStep::Wire("first".into())]);
++    callers.include(&chain, &[PathStep::Wire("second".into())]);
++    callers.include(&leaf, &[PathStep::Wire("sibling".into())]);
++    let paths: Vec<_> = callers.iter().map(|o| o.path).collect();
++    for (index, name) in ["first", "second"].into_iter().enumerate() {
++      let mut expected = vec![PathStep::Wire(name.into())];
++      expected.extend((0..32).rev().map(PathStep::Item));
++      expected.push(PathStep::Item(99));
++      assert_eq!(paths[index], expected);
++    }
++    assert_eq!(
++      paths[2],
++      vec![PathStep::Wire("sibling".into()), PathStep::Item(99)]
++    );
++    assert_eq!(callers.len(), 3);
++    // Copy-on-write preserves reports already incorporated by a parent.
++    let duplicate = leaf.iter().next().unwrap();
++    leaf.insert(0, duplicate);
++    assert_eq!(leaf.len(), 2);
++    assert_eq!(callers.len(), 3);
++  }
++}
+diff --git a/crates/shards-core/tests/host_contract.rs b/crates/shards-core/tests/host_contract.rs
+index 1ca09bc..d54066a 100644
+--- a/crates/shards-core/tests/host_contract.rs
++++ b/crates/shards-core/tests/host_contract.rs
+@@ -147,7 +147,17 @@ macro_rules! host_contract_tests {
+       });
+       let wire = mesh.compile("unknown", Type::none()).unwrap();
+       assert!(wire.flow.analysis.effects.unknown);
+-      assert!(wire.flow.analysis.occurrences[0].effects.unknown);
++      assert!(
++        wire
++          .flow
++          .analysis
++          .occurrences
++          .iter()
++          .next()
++          .unwrap()
++          .effects
++          .unknown
++      );
+       assert_eq!(
+         wire.flow.analysis.lifetime,
+         shards_core::signature::Lifetime::Unknown
+diff --git a/crates/shards-lang/src/program.rs b/crates/shards-lang/src/program.rs
+index 80a479a..eb635ef 100644
+--- a/crates/shards-lang/src/program.rs
++++ b/crates/shards-lang/src/program.rs
+@@ -331,7 +331,6 @@ impl Program {
+           let occurrences = analysis
+             .occurrences
+             .iter()
+-            .cloned()
+             .map(|mut occurrence| {
+               occurrence.path.insert(0, PathStep::Wire(wire.clone()));
+               let mut d = Diagnostic::new(Phase::Compose, "", "", "");
+diff --git a/examples/esp32/build.rs b/examples/esp32/build.rs
+index da6bf8d..227e0a5 100644
+--- a/examples/esp32/build.rs
++++ b/examples/esp32/build.rs
+@@ -77,7 +77,7 @@ fn acceptance() {
+               .collect();
+             let name = &f.sig.ident;
+             calls.push(
+-              quote! { #(#cfgs)* { println!("acceptance: {}", stringify!(#name)); #name(); } },
++              quote! { #(#cfgs)* { println!("acceptance: {}", stringify!(#name)); #name(); std::thread::sleep(std::time::Duration::from_millis(10)); } },
+             );
+           }
+           Item::Mod(m) => {
+diff --git a/examples/esp32/src/main.rs b/examples/esp32/src/main.rs
+index cd405ec..8eae8a3 100644
+--- a/examples/esp32/src/main.rs
++++ b/examples/esp32/src/main.rs
+@@ -1,4 +1,11 @@
+ #[cfg(feature = "acceptance")]
++// Generated token streams lose source newlines and macro lint exemptions.
++// These style lints run on the original suites in the workspace instead.
++#[allow(
++  clippy::possible_missing_else,
++  clippy::type_complexity,
++  clippy::missing_const_for_thread_local
++)]
+ mod acceptance {
+   mod prototype {
+     include!(concat!(env!("OUT_DIR"), "/prototype.rs"));

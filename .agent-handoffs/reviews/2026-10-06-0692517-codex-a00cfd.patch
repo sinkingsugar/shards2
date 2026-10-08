@@ -1,0 +1,32 @@
+diff --git a/crates/shards-lang/tests/lang.rs b/crates/shards-lang/tests/lang.rs
+index 5d1cb56..498d074 100644
+--- a/crates/shards-lang/tests/lang.rs
++++ b/crates/shards-lang/tests/lang.rs
+@@ -1110,10 +1110,12 @@ If(Any(b {a}) {4} {5}) = z
+       }
+       // Spawn chains compose recursively too.
+       let mut src = String::new();
+-      for i in 0..200 {
++      let spawn_depth = if cfg!(target_os = "espidf") { 80 } else { 200 };
++      assert!(spawn_depth > shards_core::compose::MAX_FLOW_DEPTH);
++      for i in 0..spawn_depth {
+         src.push_str(&format!("@wire(s{i} {{Spawn(s{})}})\n", i + 1));
+       }
+-      src.push_str("@wire(s200 {1})\nSpawn(s0)");
++      src.push_str(&format!("@wire(s{spawn_depth} {{1}})\nSpawn(s0)"));
+       assert_eq!(check(&src).diagnostics[0].code, "too-deep");
+     }
+ 
+diff --git a/examples/esp32/sdkconfig.defaults b/examples/esp32/sdkconfig.defaults
+index 0257ebf..13ed341 100644
+--- a/examples/esp32/sdkconfig.defaults
++++ b/examples/esp32/sdkconfig.defaults
+@@ -1,6 +1,6 @@
+ # Parsing and composing use the task stack even with the stackless scheduler.
+-# This is a starting budget for the small smoke script, not the nesting limit.
+-CONFIG_ESP_MAIN_TASK_STACK_SIZE=65536
++# The shared acceptance suite exercises the full recursive compose limit.
++CONFIG_ESP_MAIN_TASK_STACK_SIZE=98304
+ CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=4096
+ CONFIG_FREERTOS_IDLE_TASK_STACKSIZE=4096
+ CONFIG_PTHREAD_TASK_STACK_SIZE_DEFAULT=8192

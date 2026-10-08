@@ -1,12 +1,14 @@
 //! Wires for the instance benchmark (design doc §5), mirroring the 1.x
 //! baseline's `shards/tests/bench-instances.shs` with the prototype's shard
-//! subset: state set up in `Once`, vector math, a conditional, and a nested
-//! `Do` into a sub-wire that suspends. Not ported, because the prototype has
-//! no equivalent yet: the 1.x entity's sequence/table literals, `Take`,
-//! `Match` and `Regex.Match`.
+//! subset: state set up in `Once`, vector math, a conditional, and a call
+//! into a function that suspends. Not ported, because the prototype has no
+//! equivalent yet: the 1.x entity's sequence/table literals, `Take`, `Match`
+//! and `Regex.Match`.
 
 use crate::compose::WireDef;
+use crate::function::FunctionDef;
 use crate::shards::defs::*;
+use crate::types::Type;
 use crate::var::Var;
 
 /// Mesh variables the wires expect, as `(name, initial value, mutable)`:
@@ -21,38 +23,38 @@ pub fn mesh_vars(n: i64) -> Vec<(&'static str, Var, bool)> {
   ]
 }
 
+/// The functions the wires call: `Think` takes the entity's energy, suspends
+/// midway, and returns the new energy.
+pub fn functions() -> Vec<FunctionDef> {
+  vec![
+    FunctionDef::new("Think", Type::float(), Type::float()).body(vec![
+      add(val(Var::Float(0.5))),
+      declare("energy"),
+      pause(),
+      when(
+        vec![is_more_equal(val(Var::Float(100.0)))],
+        vec![konst(Var::Float(0.0)), update("energy")],
+      ),
+      get("energy"),
+    ]),
+  ]
+}
+
 pub fn wires() -> Vec<WireDef> {
   vec![
-    // Runs inline in the entity (shares its locals) and suspends midway.
-    WireDef {
-      name: "entity-think".into(),
-      looped: false,
-      flow: vec![
-        get("energy"),
-        add(val(Var::Float(0.5))),
-        update("energy"),
-        pause(),
-        when(
-          vec![is_more_equal(val(Var::Float(100.0)))],
-          vec![konst(Var::Float(0.0)), update("energy")],
-        ),
-      ],
-    },
     WireDef {
       name: "entity".into(),
       looped: true,
       flow: vec![
-        once(vec![
-          konst(Var::Float(0.0)),
-          set("energy"),
-          konst(Var::Float3([0.0, 0.0, 0.0])),
-          set("pos"),
-          inc("ready-count"),
-        ]),
+        keep("energy", Var::Float(0.0)),
+        keep("pos", Var::float3(0.0, 0.0, 0.0)),
+        once(vec![inc("ready-count")]),
         get("pos"),
-        add(val(Var::Float3([0.1, 0.0, 0.0]))),
+        add(val(Var::float3(0.1, 0.0, 0.0))),
         update("pos"),
-        do_("entity-think"),
+        get("energy"),
+        call("Think", vec![]),
+        update("energy"),
         inc("iterations"),
       ],
     },

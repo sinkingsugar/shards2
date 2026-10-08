@@ -4,12 +4,12 @@ use std::io::BufRead;
 use std::process::ExitCode;
 use std::sync::mpsc;
 
-use shards_core::Outcome;
-use shards_lang::{FileWatcher, Finished, ReloadHost, Session, WatchControl, WatchEvent, render};
+use shards_core::{Outcome, ResetPolicy};
+use shards_lang::{FileWatcher, Finished, Session, WatchControl, WatchEvent, render};
 
 use crate::{Options, catalog};
 
-pub(super) fn watch<H: ReloadHost>(o: &Options) -> Result<ExitCode, String> {
+pub(super) fn watch(o: &Options) -> Result<ExitCode, String> {
   let (quit, input) = mpsc::channel();
   let signal_quit = quit.clone();
   let signal = shards_io::runtime::runtime().spawn(async move {
@@ -38,7 +38,9 @@ pub(super) fn watch<H: ReloadHost>(o: &Options) -> Result<ExitCode, String> {
     o.file
   );
   let catalog = catalog();
-  let mut session = Session::<H>::new();
+  let mut session = Session::new();
+  // Running watch is the opt-in for applying state resets (golden path §11).
+  session.set_reset_policy(ResetPolicy::Apply);
   let mut error = None;
   FileWatcher::new(&o.file).run(
     &mut session,
@@ -60,17 +62,25 @@ pub(super) fn watch<H: ReloadHost>(o: &Options) -> Result<ExitCode, String> {
       WatchEvent::Reloaded {
         restarted,
         finished,
+        report,
       } => {
         print_finished(finished);
-        eprintln!(
-          "{}: {}",
-          o.file,
-          if restarted {
-            "restarted"
-          } else {
-            "reloaded (nested edits apply at the next call boundary)"
+        if restarted {
+          eprintln!("{}: restarted", o.file);
+        } else {
+          let mut parts = vec!["reloaded (edited functions apply at their next call)".to_string()];
+          for (label, names) in [
+            ("retained", &report.retained),
+            ("reset", &report.reset),
+            ("restarted", &report.restarted),
+            ("swapped", &report.swapped),
+          ] {
+            if !names.is_empty() {
+              parts.push(format!("{label}: {}", names.join(", ")));
+            }
           }
-        );
+          eprintln!("{}: {}", o.file, parts.join("; "));
+        }
       }
       WatchEvent::Rejected {
         source,

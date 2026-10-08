@@ -1,6 +1,6 @@
 #!/bin/bash
 # HTTP concurrency benchmark: N concurrent Http.Get requests against one
-# fixed-latency local server, on 1.x and on both 2.0 schedulers.
+# fixed-latency local server, on 1.x and on 2.0.
 #
 # Per run it records: instance creation time and request execution time
 # (separately), ticks during execution, the client's peak OS thread count
@@ -53,14 +53,13 @@ run_client() {
 }
 
 echo "server latency ${LATENCY_MS} ms; runs per point: $RUNS"
-for runtime in 1.x 2.0-stackless 2.0-stackful; do
+for runtime in 1.x 2.0; do
   for n in $COUNTS; do
     for r in $(seq 1 "$RUNS"); do
       curl -fs "$STATS/reset" > /dev/null
       case $runtime in
         1.x) line=$(run_client "$SHARDS_1X" "$DIR/client-1x.shs" url:"$URL" instances:"$n") ;;
-        2.0-stackless) line=$(run_client "$CLIENT_20" "$URL" "$n" stackless) ;;
-        2.0-stackful) line=$(run_client "$CLIENT_20" "$URL" "$n" stackful) ;;
+        2.0) line=$(run_client "$CLIENT_20" "$URL" "$n") ;;
       esac
       echo "${line#BENCH } server_$(curl -fs "$STATS/stats")" | sed 's/ completed=/ server_completed=/'
     done

@@ -149,6 +149,15 @@ pub fn render(d: &Diagnostic, source: &Source) -> String {
   if !d.did_you_mean.is_empty() {
     out.push_str(&format!("  did you mean: {}\n", d.did_you_mean.join(", ")));
   }
+  if let Some(r) = &d.related {
+    match (r.line, r.column) {
+      (Some(line), Some(column)) => out.push_str(&format!(
+        "  note: {} at {file}:{line}:{column}\n",
+        r.message
+      )),
+      _ => out.push_str(&format!("  note: {}\n", r.message)),
+    }
+  }
   if !d.path.is_empty() {
     out.push_str(&format!("  at: {}\n", d.path_string()));
   }

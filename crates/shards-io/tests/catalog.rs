@@ -12,10 +12,9 @@ fn http_get_is_described_without_starting_anything() {
   let catalog = Catalog::new(&[shards_core::shards::CATALOG, shards_io::CATALOG]).unwrap();
   let json = catalog.describe_json("Http.Get").unwrap();
   assert!(json.contains("\"targets\":\"native-only\""), "{json}");
-  assert!(json.contains("\"backends\":[\"stackful\",\"stackless\"]"));
-  assert!(json.contains("\"name\":\"URL\",\"index\":0"));
+  assert!(json.contains("\"name\":\"url\",\"index\":0"));
   assert!(json.contains("\"required\":true"));
-  assert!(json.contains("\"name\":\"Timeout\",\"index\":1"));
+  assert!(json.contains("\"name\":\"timeout\",\"index\":1"));
   assert!(json.contains("\"default\":10"));
   assert!(
     json
@@ -37,20 +36,20 @@ fn omitted_and_explicit_defaults_decode_the_same() {
     &GET_DESC,
     &[
       Arg::pos(url()),
-      Arg::named("Timeout", ParamValue::Value(Var::Int(10))),
+      Arg::named("timeout", ParamValue::Value(Var::Int(10))),
     ],
   )
   .unwrap();
-  assert_eq!(omitted.int("Timeout"), Some(10));
-  assert_eq!(explicit.int("Timeout"), Some(10));
-  assert_eq!(omitted.get("URL"), explicit.get("URL"));
+  assert_eq!(omitted.int("timeout"), Some(10));
+  assert_eq!(explicit.int("timeout"), Some(10));
+  assert_eq!(omitted.get("url"), explicit.get("url"));
   // A wrong literal type is caught by the shared decoder, from the same
   // declaration the catalog documents.
   let err = decode(
     &GET_DESC,
     &[
       Arg::pos(url()),
-      Arg::named("Timeout", ParamValue::Value(Var::string("10"))),
+      Arg::named("timeout", ParamValue::Value(Var::string("10"))),
     ],
   )
   .err()
@@ -58,7 +57,7 @@ fn omitted_and_explicit_defaults_decode_the_same() {
   let d = err.diagnostic().unwrap();
   assert_eq!(
     (d.code, d.param.as_deref()),
-    ("wrong-argument-type", Some("Timeout"))
+    ("wrong-argument-type", Some("timeout"))
   );
   assert!(!runtime_started());
 }

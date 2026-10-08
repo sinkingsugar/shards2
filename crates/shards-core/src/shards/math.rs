@@ -63,6 +63,19 @@ impl BinOp {
       BinOp::Divide => a / b,
     }
   }
+
+  /// The same operation in f32. For these four operations the result equals
+  /// computing in f64 and rounding once (double rounding is innocuous when
+  /// the wide format has at least 2p+2 bits; f64 has 53 against f32's 24),
+  /// so the vector fast paths below agree with the component rule.
+  fn f32(self, a: f32, b: f32) -> f32 {
+    match self {
+      BinOp::Add => a + b,
+      BinOp::Subtract => a - b,
+      BinOp::Multiply => a * b,
+      BinOp::Divide => a / b,
+    }
+  }
 }
 
 /// A number's shape: Int, Float, or a float vector of a size.
@@ -123,7 +136,7 @@ fn components(v: &Var) -> Option<([f64; 4], Option<usize>)> {
       None
     }
     Var::Float2(x) => {
-      c[..2].copy_from_slice(x);
+      x.iter().enumerate().for_each(|(i, v)| c[i] = f64::from(*v));
       Some(2)
     }
     Var::Float3(x) => {
@@ -153,6 +166,28 @@ pub fn arith(op: BinOp, name: &str, input: &Var, operand: &Var) -> Result<Var> {
       })
     });
   }
+  // Same-size vectors, directly in f32 (same results as the general rule).
+  match (input, operand) {
+    (Var::Float2(a), Var::Float2(b)) => {
+      return Ok(Var::float2(op.f32(a[0], b[0]), op.f32(a[1], b[1])));
+    }
+    (Var::Float3(a), Var::Float3(b)) => {
+      return Ok(Var::float3(
+        op.f32(a[0], b[0]),
+        op.f32(a[1], b[1]),
+        op.f32(a[2], b[2]),
+      ));
+    }
+    (Var::Float4(a), Var::Float4(b)) => {
+      return Ok(Var::float4(
+        op.f32(a[0], b[0]),
+        op.f32(a[1], b[1]),
+        op.f32(a[2], b[2]),
+        op.f32(a[3], b[3]),
+      ));
+    }
+    _ => {}
+  }
   let mismatch = || Error::Activation(format!("{name}: operand type mismatch"));
   let (a, na) = components(input).ok_or_else(mismatch)?;
   let (b, nb) = components(operand).ok_or_else(mismatch)?;
@@ -164,22 +199,24 @@ pub fn arith(op: BinOp, name: &str, input: &Var, operand: &Var) -> Result<Var> {
   // A number on either side applies to every component.
   let at = |c: &[f64; 4], n: Option<usize>, i: usize| if n.is_some() { c[i] } else { c[0] };
   let r: [f64; 4] = std::array::from_fn(|i| op.f64(at(&a, na, i), at(&b, nb, i)));
+  // Components are computed in f64 and rounded once to f32.
+  let r = r.map(|x| x as f32);
   Ok(match size {
-    2 => Var::Float2([r[0], r[1]]),
-    3 => Var::Float3([r[0] as f32, r[1] as f32, r[2] as f32]),
-    _ => Var::Float4([r[0] as f32, r[1] as f32, r[2] as f32, r[3] as f32]),
+    2 => Var::float2(r[0], r[1]),
+    3 => Var::float3(r[0], r[1], r[2]),
+    _ => Var::float4(r[0], r[1], r[2], r[3]),
   })
 }
 
 /// Shared compose of the binary shards: the input and the operand (literal
 /// or variable) are numbers or float vectors that mix ([`Shape::mix`]).
-pub(crate) fn compose_binary<B: Backend>(
+pub(crate) fn compose_binary(
   args: &Args,
-  ctx: &mut ComposeCtx<'_, B>,
+  ctx: &mut ComposeCtx<'_>,
   name: &'static str,
   op: BinOp,
 ) -> Result<Composed<Operand>> {
-  let (operand, ty) = Operand::compose_arg(args, "Operand", name, ctx)?;
+  let (operand, ty) = Operand::compose_arg(args, "operand", name, ctx)?;
   let input = ctx.input();
   let mixed = match (Shape::of_type(input), Shape::of_type(ty)) {
     (Some(a), Some(b)) => Shape::mix(a, b),
@@ -194,7 +231,7 @@ pub(crate) fn compose_binary<B: Backend>(
         op.mismatch(ty, input),
       )
       .shard(name)
-      .param("Operand", Some(args.param_index("Operand")))
+      .param("operand", Some(args.param_index("operand")))
       .types(
         Some(TypeRef::of(input)),
         ARITHMETIC.iter().copied().map(TypeRef::named).collect(),
@@ -208,7 +245,7 @@ pub(crate) fn compose_binary<B: Backend>(
 }
 
 pub static BINARY_PARAMS: &[ParamDecl] = &[decl(
-  "Operand",
+  "operand",
   crate::shard_doc!(
     "The right-hand value: a number or float vector that mixes with the input, as a literal or a variable read at activation."
   ),
@@ -246,6 +283,8 @@ const fn binary_desc(
     )),
     targets: Targets::All,
     aliases,
+    effects: crate::signature::Effects::NONE,
+    lifetime: crate::signature::Lifetime::Stateless,
   }
 }
 
@@ -283,7 +322,7 @@ impl<S: BinarySpec> LeafShard for Binary<S> {
   type State = ();
   const DESC: ShardDesc = S::DESC;
 
-  fn compose<B: Backend>(args: &Args, ctx: &mut ComposeCtx<'_, B>) -> Result<Composed<Operand>> {
+  fn compose(args: &Args, ctx: &mut ComposeCtx<'_>) -> Result<Composed<Operand>> {
     compose_binary(args, ctx, S::DESC.name, S::OP)
   }
 
@@ -299,7 +338,7 @@ impl<S: BinarySpec> LeafShard for Binary<S> {
 // --- Math.Dec ---
 
 pub static DEC_PARAMS: &[ParamDecl] = &[decl(
-  "Variable",
+  "variable",
   crate::shard_doc!("The mutable Int variable to decrement."),
   Forms::VARIABLE,
   NONE_TYPES,
@@ -311,13 +350,15 @@ pub const DEC_DESC: ShardDesc = ShardDesc {
   version: 1,
   summary: crate::shard_doc!("Decrements an Int variable and outputs the new value."),
   help: crate::shard_doc!(
-    "Ignores its input. Variable must be a mutable Int; overflow is an activation error."
+    "Ignores its input. `variable` must be a mutable Int; overflow is an activation error."
   ),
   params: Params::Declared(DEC_PARAMS),
   input: InputDesc::Ignored,
   output: OutputDesc::Fixed(TypeName::Int),
   targets: Targets::All,
   aliases: &["Dec"],
+  effects: crate::signature::Effects::NONE,
+  lifetime: crate::signature::Lifetime::Stateless,
 };
 
 pub struct Dec;
@@ -327,7 +368,7 @@ impl LeafShard for Dec {
   type State = ();
   const DESC: ShardDesc = DEC_DESC;
 
-  fn compose<B: Backend>(args: &Args, ctx: &mut ComposeCtx<'_, B>) -> Result<Composed<Binding>> {
+  fn compose(args: &Args, ctx: &mut ComposeCtx<'_>) -> Result<Composed<Binding>> {
     compose_counter(args, ctx, DEC_DESC.name)
   }
 
@@ -378,6 +419,8 @@ const fn unary_desc(
     output: OutputDesc::SameAsInput,
     targets: Targets::All,
     aliases,
+    effects: crate::signature::Effects::NONE,
+    lifetime: crate::signature::Lifetime::Stateless,
   }
 }
 
@@ -438,11 +481,7 @@ impl UnarySpec for CeilOp {
 }
 
 /// Checks that the input type is one of `accepted`.
-fn require_input<B: Backend>(
-  ctx: &ComposeCtx<'_, B>,
-  name: &str,
-  accepted: &[TypeName],
-) -> Result<Type> {
+fn require_input(ctx: &ComposeCtx<'_>, name: &str, accepted: &[TypeName]) -> Result<Type> {
   let input = ctx.input();
   if accepted.iter().any(|t| t.to_type() == input) {
     return Ok(input);
@@ -476,7 +515,7 @@ impl<S: UnarySpec> LeafShard for Unary<S> {
   type State = ();
   const DESC: ShardDesc = S::DESC;
 
-  fn compose<B: Backend>(_: &Args, ctx: &mut ComposeCtx<'_, B>) -> Result<Composed<()>> {
+  fn compose(_: &Args, ctx: &mut ComposeCtx<'_>) -> Result<Composed<()>> {
     let output = require_input(ctx, S::DESC.name, ARITHMETIC)?;
     Ok(Composed {
       compiled: (),
@@ -496,9 +535,9 @@ impl<S: UnarySpec> LeafShard for Unary<S> {
           .ok_or_else(|| Error::Activation(format!("{}: integer overflow", S::DESC.name)))?,
       ),
       Var::Float(v) => Var::Float(S::float(*v)),
-      Var::Float2(v) => Var::Float2(v.map(S::float)),
-      Var::Float3(v) => Var::Float3(v.map(f32op)),
-      Var::Float4(v) => Var::Float4(v.map(f32op)),
+      Var::Float2(v) => Var::from(v.map(f32op)),
+      Var::Float3(v) => Var::from(v.map(f32op)),
+      Var::Float4(v) => Var::from(v.map(f32op)),
       _ => {
         return Err(Error::Activation(format!(
           "{}: input type mismatch",
@@ -523,6 +562,8 @@ pub const LENGTH_DESC: ShardDesc = ShardDesc {
   output: OutputDesc::Fixed(TypeName::Float),
   targets: Targets::All,
   aliases: &[],
+  effects: crate::signature::Effects::NONE,
+  lifetime: crate::signature::Lifetime::Stateless,
 };
 
 pub struct Length;
@@ -532,7 +573,7 @@ impl LeafShard for Length {
   type State = ();
   const DESC: ShardDesc = LENGTH_DESC;
 
-  fn compose<B: Backend>(_: &Args, ctx: &mut ComposeCtx<'_, B>) -> Result<Composed<()>> {
+  fn compose(_: &Args, ctx: &mut ComposeCtx<'_>) -> Result<Composed<()>> {
     require_input(ctx, LENGTH_DESC.name, VECTORS)?;
     Ok(Composed {
       compiled: (),
@@ -546,7 +587,7 @@ impl LeafShard for Length {
 
   fn activate(_: &(), _: &mut (), _: &mut impl LeafCtx, input: &Var) -> Result<Flow> {
     let squares: f64 = match input {
-      Var::Float2(v) => v.iter().map(|x| x * x).sum(),
+      Var::Float2(v) => v.iter().map(|x| f64::from(*x).powi(2)).sum(),
       Var::Float3(v) => v.iter().map(|x| f64::from(*x).powi(2)).sum(),
       Var::Float4(v) => v.iter().map(|x| f64::from(*x).powi(2)).sum(),
       _ => {

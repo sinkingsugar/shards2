@@ -1,0 +1,218 @@
+{
+  "metadata": {
+    "started_utc": "2026-10-07T14:12:10.585779+00:00",
+    "head": "7bac245210054bdbc3a592f866b7120ae2456de3",
+    "cpu": "2",
+    "rounds": 3,
+    "binaries_sha256": {
+      "/Users/sugar/devel/shards/build/Release/shards": "f2e92b7e449e645e2864ead7c2f74197a32b1966cc931352848f8717d939bb04",
+      "/Users/sugar/devel/shards2/target/release/examples/bench_instances": "05de7e9f4ceba48e5fe1df6c2e5a740c64192218482c811db12b9c833a33f003",
+      "/Users/sugar/devel/shards2/target/release/examples/bench_depth": "6e6a18cca3ff26c6167e6b9f0f2e18971539c5a4a7085b10466bbd786ebb9e6e",
+      "/Users/sugar/devel/shards2/target/release/examples/bench_async": "f4ec864b266ece27a0a91a4a2b30fc788fe71cf184e1f7dc179482a914b2427d"
+    },
+    "note": "Release examples rebuilt at this HEAD. Only benchmark harness changes in working tree. Sequential runs, CPU pinned; frequency not locked. HTTP measured separately without affinity pinning."
+  },
+  "records": [
+    {
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "bash",
+        "bench/shards-1x/run.sh",
+        "/Users/sugar/devel/shards/build/Release/shards",
+        "1"
+      ],
+      "stdout": "== steady state (instances, ticks=1000)\nBENCH instances=100 ticks=1000 total_ms=11.097 iterations=50000 tick_us=11.10 ns_per_instance_tick=111.0\nBENCH instances=1000 ticks=1000 total_ms=136.622 iterations=500000 tick_us=136.62 ns_per_instance_tick=136.6\nBENCH instances=10000 ticks=1000 total_ms=3940.07 iterations=5000000 tick_us=3940.07 ns_per_instance_tick=394.0\n== resume cost vs depth (instances=1000, ticks=1000)\ndepth=1 BENCH instances=1000 ticks=1000 total_ms=107.971 resumes=1000000 tick_us=107.97 ns_per_instance_tick=108.0\ndepth=4 BENCH instances=1000 ticks=1000 total_ms=107.24 resumes=1000000 tick_us=107.24 ns_per_instance_tick=107.2\ndepth=16 BENCH instances=1000 ticks=1000 total_ms=111.388 resumes=1000000 tick_us=111.39 ns_per_instance_tick=111.4\ndepth=32 BENCH instances=1000 ticks=1000 total_ms=108.943 resumes=1000000 tick_us=108.94 ns_per_instance_tick=108.9\n",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "/Users/sugar/devel/shards2/target/release/examples/bench_instances",
+        "100"
+      ],
+      "stdout": "scheduler=stackless instances=100 compile_ms=0.319 spawn_ms=0.051 ready_ms=0.169 us_per_instance=1.69 tick_us=11.49 ns_per_instance_tick=114.9 iterations=50000 rss_kb_per_instance=3.36 heap_kb_per_instance=1.75 non_heap_kb_per_instance=1.61 state_bytes_per_instance=688 wire_composes=2 shard_composes=21 var_bytes=32\n",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "/Users/sugar/devel/shards2/target/release/examples/bench_instances",
+        "1000"
+      ],
+      "stdout": "scheduler=stackless instances=1000 compile_ms=0.050 spawn_ms=0.110 ready_ms=1.061 us_per_instance=1.06 tick_us=102.70 ns_per_instance_tick=102.7 iterations=500000 rss_kb_per_instance=2.00 heap_kb_per_instance=1.68 non_heap_kb_per_instance=0.32 state_bytes_per_instance=688 wire_composes=2 shard_composes=21 var_bytes=32\n",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "/Users/sugar/devel/shards2/target/release/examples/bench_instances",
+        "10000"
+      ],
+      "stdout": "scheduler=stackless instances=10000 compile_ms=0.049 spawn_ms=0.776 ready_ms=9.623 us_per_instance=0.96 tick_us=1019.26 ns_per_instance_tick=101.9 iterations=5000000 rss_kb_per_instance=1.90 heap_kb_per_instance=1.84 non_heap_kb_per_instance=0.06 state_bytes_per_instance=688 wire_composes=2 shard_composes=21 var_bytes=32\n",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "/Users/sugar/devel/shards2/target/release/examples/bench_depth",
+        "--progress"
+      ],
+      "stdout": "scheduler=stackless phase=progress depth=1 instances=1000 ticks=1000 ns_per_instance_tick=85.58\nscheduler=stackless phase=progress depth=4 instances=1000 ticks=1000 ns_per_instance_tick=83.86\nscheduler=stackless phase=progress depth=16 instances=1000 ticks=1000 ns_per_instance_tick=85.65\nscheduler=stackless phase=progress depth=32 instances=1000 ticks=1000 ns_per_instance_tick=84.36\n",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "/Users/sugar/devel/shards2/target/release/examples/bench_async"
+      ],
+      "stdout": "scheduler=stackless mode=PollEveryTick tick_us=21.98 ns_per_instance_tick=22.0 polls=1000000 completed_requests=19000\nscheduler=stackless mode=OnNotify tick_us=3.45 ns_per_instance_tick=3.5 polls=38000 completed_requests=19000\n",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "bash",
+        "bench/shards-1x/run.sh",
+        "/Users/sugar/devel/shards/build/Release/shards",
+        "1"
+      ],
+      "stdout": "== steady state (instances, ticks=1000)\nBENCH instances=100 ticks=1000 total_ms=11.3659 iterations=50000 tick_us=11.37 ns_per_instance_tick=113.7\nBENCH instances=1000 ticks=1000 total_ms=141.913 iterations=500000 tick_us=141.91 ns_per_instance_tick=141.9\nBENCH instances=10000 ticks=1000 total_ms=4193.82 iterations=5000000 tick_us=4193.82 ns_per_instance_tick=419.4\n== resume cost vs depth (instances=1000, ticks=1000)\ndepth=1 BENCH instances=1000 ticks=1000 total_ms=109.935 resumes=1000000 tick_us=109.94 ns_per_instance_tick=109.9\ndepth=4 BENCH instances=1000 ticks=1000 total_ms=109.671 resumes=1000000 tick_us=109.67 ns_per_instance_tick=109.7\ndepth=16 BENCH instances=1000 ticks=1000 total_ms=104.317 resumes=1000000 tick_us=104.32 ns_per_instance_tick=104.3\ndepth=32 BENCH instances=1000 ticks=1000 total_ms=106.467 resumes=1000000 tick_us=106.47 ns_per_instance_tick=106.5\n",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "/Users/sugar/devel/shards2/target/release/examples/bench_instances",
+        "100"
+      ],
+      "stdout": "scheduler=stackless instances=100 compile_ms=0.053 spawn_ms=0.020 ready_ms=0.122 us_per_instance=1.22 tick_us=10.14 ns_per_instance_tick=101.4 iterations=50000 rss_kb_per_instance=3.20 heap_kb_per_instance=1.75 non_heap_kb_per_instance=1.45 state_bytes_per_instance=688 wire_composes=2 shard_composes=21 var_bytes=32\n",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "/Users/sugar/devel/shards2/target/release/examples/bench_instances",
+        "1000"
+      ],
+      "stdout": "scheduler=stackless instances=1000 compile_ms=0.043 spawn_ms=0.087 ready_ms=1.133 us_per_instance=1.13 tick_us=100.49 ns_per_instance_tick=100.5 iterations=500000 rss_kb_per_instance=2.02 heap_kb_per_instance=1.68 non_heap_kb_per_instance=0.34 state_bytes_per_instance=688 wire_composes=2 shard_composes=21 var_bytes=32\n",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "/Users/sugar/devel/shards2/target/release/examples/bench_instances",
+        "10000"
+      ],
+      "stdout": "scheduler=stackless instances=10000 compile_ms=0.046 spawn_ms=0.855 ready_ms=9.877 us_per_instance=0.99 tick_us=1017.88 ns_per_instance_tick=101.8 iterations=5000000 rss_kb_per_instance=1.90 heap_kb_per_instance=1.84 non_heap_kb_per_instance=0.06 state_bytes_per_instance=688 wire_composes=2 shard_composes=21 var_bytes=32\n",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "/Users/sugar/devel/shards2/target/release/examples/bench_depth",
+        "--progress"
+      ],
+      "stdout": "scheduler=stackless phase=progress depth=1 instances=1000 ticks=1000 ns_per_instance_tick=82.78\nscheduler=stackless phase=progress depth=4 instances=1000 ticks=1000 ns_per_instance_tick=83.96\nscheduler=stackless phase=progress depth=16 instances=1000 ticks=1000 ns_per_instance_tick=84.84\nscheduler=stackless phase=progress depth=32 instances=1000 ticks=1000 ns_per_instance_tick=83.00\n",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "/Users/sugar/devel/shards2/target/release/examples/bench_async"
+      ],
+      "stdout": "scheduler=stackless mode=PollEveryTick tick_us=19.08 ns_per_instance_tick=19.1 polls=1000000 completed_requests=19000\nscheduler=stackless mode=OnNotify tick_us=3.18 ns_per_instance_tick=3.2 polls=38000 completed_requests=19000\n",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "bash",
+        "bench/shards-1x/run.sh",
+        "/Users/sugar/devel/shards/build/Release/shards",
+        "1"
+      ],
+      "stdout": "== steady state (instances, ticks=1000)\nBENCH instances=100 ticks=1000 total_ms=11.3956 iterations=50000 tick_us=11.40 ns_per_instance_tick=114.0\nBENCH instances=1000 ticks=1000 total_ms=144.085 iterations=500000 tick_us=144.09 ns_per_instance_tick=144.1\nBENCH instances=10000 ticks=1000 total_ms=4061.27 iterations=5000000 tick_us=4061.27 ns_per_instance_tick=406.1\n== resume cost vs depth (instances=1000, ticks=1000)\ndepth=1 BENCH instances=1000 ticks=1000 total_ms=106.174 resumes=1000000 tick_us=106.17 ns_per_instance_tick=106.2\ndepth=4 BENCH instances=1000 ticks=1000 total_ms=113.62 resumes=1000000 tick_us=113.62 ns_per_instance_tick=113.6\ndepth=16 BENCH instances=1000 ticks=1000 total_ms=103.73 resumes=1000000 tick_us=103.73 ns_per_instance_tick=103.7\ndepth=32 BENCH instances=1000 ticks=1000 total_ms=110.886 resumes=1000000 tick_us=110.89 ns_per_instance_tick=110.9\n",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "/Users/sugar/devel/shards2/target/release/examples/bench_instances",
+        "100"
+      ],
+      "stdout": "scheduler=stackless instances=100 compile_ms=0.051 spawn_ms=0.019 ready_ms=0.126 us_per_instance=1.26 tick_us=10.10 ns_per_instance_tick=101.0 iterations=50000 rss_kb_per_instance=3.20 heap_kb_per_instance=1.75 non_heap_kb_per_instance=1.45 state_bytes_per_instance=688 wire_composes=2 shard_composes=21 var_bytes=32\n",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "/Users/sugar/devel/shards2/target/release/examples/bench_instances",
+        "1000"
+      ],
+      "stdout": "scheduler=stackless instances=1000 compile_ms=0.043 spawn_ms=0.102 ready_ms=1.183 us_per_instance=1.18 tick_us=99.99 ns_per_instance_tick=100.0 iterations=500000 rss_kb_per_instance=2.02 heap_kb_per_instance=1.68 non_heap_kb_per_instance=0.34 state_bytes_per_instance=688 wire_composes=2 shard_composes=21 var_bytes=32\n",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "/Users/sugar/devel/shards2/target/release/examples/bench_instances",
+        "10000"
+      ],
+      "stdout": "scheduler=stackless instances=10000 compile_ms=0.043 spawn_ms=0.810 ready_ms=9.919 us_per_instance=0.99 tick_us=1031.42 ns_per_instance_tick=103.1 iterations=5000000 rss_kb_per_instance=1.90 heap_kb_per_instance=1.84 non_heap_kb_per_instance=0.06 state_bytes_per_instance=688 wire_composes=2 shard_composes=21 var_bytes=32\n",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "/Users/sugar/devel/shards2/target/release/examples/bench_depth",
+        "--progress"
+      ],
+      "stdout": "scheduler=stackless phase=progress depth=1 instances=1000 ticks=1000 ns_per_instance_tick=81.56\nscheduler=stackless phase=progress depth=4 instances=1000 ticks=1000 ns_per_instance_tick=82.61\nscheduler=stackless phase=progress depth=16 instances=1000 ticks=1000 ns_per_instance_tick=86.53\nscheduler=stackless phase=progress depth=32 instances=1000 ticks=1000 ns_per_instance_tick=85.27\n",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "taskset",
+        "-c",
+        "2",
+        "/Users/sugar/devel/shards2/target/release/examples/bench_async"
+      ],
+      "stdout": "scheduler=stackless mode=PollEveryTick tick_us=19.16 ns_per_instance_tick=19.2 polls=1000000 completed_requests=19000\nscheduler=stackless mode=OnNotify tick_us=3.22 ns_per_instance_tick=3.2 polls=38000 completed_requests=19000\n",
+      "stderr": ""
+    }
+  ]
+}

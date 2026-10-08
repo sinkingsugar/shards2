@@ -1,11 +1,11 @@
 //! The example from docs/embedding.md, as a test: a host crate defines its
 //! own shards with the public API only (as an external crate would), adds
-//! them to the catalog, and checks and runs a script on both schedulers.
+//! them to the catalog, and checks and runs a script.
 
 use std::collections::HashMap;
 
 use shards_core::args::Args;
-use shards_core::compose::{Backend, ComposeCtx};
+use shards_core::compose::ComposeCtx;
 use shards_core::describe::{
   DefaultValue, Forms, InputDesc, OutputDesc, ParamDecl, Params, Requirement, ShardDesc, Targets,
   TypeName,
@@ -22,7 +22,7 @@ use shards_lang::{Program, Source};
 
 static READING_PARAMS: &[ParamDecl] = &[
   ParamDecl {
-    name: "Sensor",
+    name: "sensor",
     help: "Which sensor to read: a literal, or an Int variable read at activation.",
     forms: Forms::LITERAL.or(Forms::VARIABLE),
     types: &[TypeName::Int],
@@ -30,7 +30,7 @@ static READING_PARAMS: &[ParamDecl] = &[
     ty: None,
   },
   ParamDecl {
-    name: "Unit",
+    name: "unit",
     help: "Override the unit (optional): a literal or a String variable.",
     forms: Forms::LITERAL.or(Forms::VARIABLE),
     types: &[TypeName::String],
@@ -55,6 +55,8 @@ const READING_DESC: ShardDesc = ShardDesc {
   output: OutputDesc::Dynamic("{id: Int value: Float | None unit: String}"),
   targets: Targets::All,
   aliases: &[],
+  effects: shards_core::signature::Effects::UNKNOWN,
+  lifetime: shards_core::signature::Lifetime::Unknown,
 };
 
 struct Reading;
@@ -64,17 +66,14 @@ impl LeafShard for Reading {
   type State = ();
   const DESC: ShardDesc = READING_DESC;
 
-  fn compose<B: Backend>(
-    args: &Args,
-    ctx: &mut ComposeCtx<'_, B>,
-  ) -> Result<Composed<ReadingCompiled>> {
+  fn compose(args: &Args, ctx: &mut ComposeCtx<'_>) -> Result<Composed<ReadingCompiled>> {
     // Compose reads only its arguments and declared context: never the host.
     // The declared types (Int) are checked by core, for a literal (by the
     // decoder) and for a variable (by compose_arg).
-    let (sensor, _) = Operand::compose_arg(args, "Sensor", READING_DESC.name, ctx)?;
+    let (sensor, _) = Operand::compose_arg(args, "sensor", READING_DESC.name, ctx)?;
     // An optional parameter: None when the script did not give it.
     let unit =
-      Operand::compose_optional_arg(args, "Unit", READING_DESC.name, ctx)?.map(|(op, _)| op);
+      Operand::compose_optional_arg(args, "unit", READING_DESC.name, ctx)?.map(|(op, _)| op);
     Ok(Composed {
       compiled: ReadingCompiled { sensor, unit },
       // A fixed record: `r.value` composes to `Float | None`, `r.typo` fails.
@@ -93,7 +92,7 @@ impl LeafShard for Reading {
   fn activate(c: &ReadingCompiled, _: &mut (), ctx: &mut impl LeafCtx, _: &Var) -> Result<Flow> {
     let Var::Int(id) = c.sensor.get(ctx) else {
       return Err(Error::Activation(
-        "Host.Reading: Sensor is not an Int".into(),
+        "Host.Reading: sensor is not an Int".into(),
       ));
     };
     // The host is read at activation; an unknown value is an explicit none.
@@ -127,6 +126,8 @@ const SCAN_DESC: ShardDesc = ShardDesc {
   output: OutputDesc::Fixed(TypeName::Int),
   targets: Targets::NativeOnly,
   aliases: &[],
+  effects: shards_core::signature::Effects::UNKNOWN,
+  lifetime: shards_core::signature::Lifetime::Unknown,
 };
 
 struct Scan;
@@ -136,7 +137,7 @@ impl AsyncShard for Scan {
   type Op = IoTask;
   const DESC: ShardDesc = SCAN_DESC;
 
-  fn compose<B: Backend>(_: &Args, _: &mut ComposeCtx<'_, B>) -> Result<Composed<()>> {
+  fn compose(_: &Args, _: &mut ComposeCtx<'_>) -> Result<Composed<()>> {
     // The declared input (Int) is enforced by compose before this runs.
     Ok(Composed {
       compiled: (),
@@ -174,7 +175,7 @@ fn catalog() -> Catalog {
 
 const SCRIPT: &str = r#"
 @sensor | ParseInt = id
-Host.Reading(Sensor: id) = r
+Host.Reading(sensor: id) = r
 If(r.value | IsNone {"unreadable"} {f"{r.id}: {r.value}{r.unit}"}) | Log
 1000 | Host.Scan
 "#;
@@ -183,30 +184,21 @@ If(r.value | IsNone {"unreadable"} {f"{r.id}: {r.value}{r.unit}"}) | Log
 fn a_host_checks_and_runs_a_script_with_its_own_shards() {
   let mut defines = HashMap::new();
   defines.insert("sensor".to_string(), "4".to_string());
-  let report =
-    shards_lang::check::<shards_core::Mesh>(Source::new("host.shs", SCRIPT), &catalog(), &defines);
+  let report = shards_lang::check(Source::new("host.shs", SCRIPT), &catalog(), &defines);
   assert!(report.ok(), "{}", report.to_json());
 
   let program = Program::load(Source::new("host.shs", SCRIPT), &catalog(), &defines)
     .unwrap_or_else(|(_, d)| panic!("{d:?}"));
-  for stackful in [false, true] {
-    let (report, lines) = shards_core::log::capture(|| {
-      if stackful {
-        program.run::<shards_core::StackfulMesh>()
-      } else {
-        program.run::<shards_core::Mesh>()
-      }
-    });
-    let report = report.unwrap_or_else(|d| panic!("{d:?}"));
-    assert_eq!(lines, ["4: 6C"]);
-    assert!(matches!(
-      &report.outcomes[0].1,
-      Some(Outcome::Completed(Var::Int(1000)))
-    ));
-  }
+  let (report, lines) = shards_core::log::capture(|| program.run());
+  let report = report.unwrap_or_else(|d| panic!("{d:?}"));
+  assert_eq!(lines, ["4: 6C"]);
+  assert!(matches!(
+    &report.outcomes[0].1,
+    Some(Outcome::Completed(Var::Int(1000)))
+  ));
 
   // A typo on the host's fixed record is a located compose error.
-  let report = shards_lang::check::<shards_core::Mesh>(
+  let report = shards_lang::check(
     Source::new("host.shs", "Host.Reading = r\nr.valeu"),
     &catalog(),
     &HashMap::new(),
@@ -219,7 +211,7 @@ fn a_host_checks_and_runs_a_script_with_its_own_shards() {
 
   // Declared input types are enforced for host shards too: Host.Scan does
   // not check its input itself.
-  let report = shards_lang::check::<shards_core::Mesh>(
+  let report = shards_lang::check(
     Source::new("host.shs", "\"x\" | Host.Scan"),
     &catalog(),
     &HashMap::new(),
@@ -237,18 +229,18 @@ fn a_host_checks_and_runs_a_script_with_its_own_shards() {
 
   // A variable of the wrong type for a declared parameter is reported by
   // core, located at the shard.
-  let report = shards_lang::check::<shards_core::Mesh>(
-    Source::new("host.shs", "\"two\" = s\nHost.Reading(Sensor: s)"),
+  let report = shards_lang::check(
+    Source::new("host.shs", "\"two\" = s\nHost.Reading(sensor: s)"),
     &catalog(),
     &HashMap::new(),
   );
   let d = &report.diagnostics[0];
   assert_eq!(
     (d.code, d.param.as_deref(), d.line),
-    ("wrong-variable-type", Some("Sensor"), Some(2))
+    ("wrong-variable-type", Some("sensor"), Some(2))
   );
   assert!(
-    d.message.contains("Sensor must be Int, but s is String"),
+    d.message.contains("sensor must be Int, but s is String"),
     "{}",
     d.message
   );
@@ -256,17 +248,15 @@ fn a_host_checks_and_runs_a_script_with_its_own_shards() {
   // The optional parameter: absent (the default unit), and given as a
   // variable.
   for (src, unit) in [
-    ("Host.Reading(Sensor: 2) = r\nr.unit", "C"),
+    ("Host.Reading(sensor: 2) = r\nr.unit", "C"),
     (
-      "\"F\" = u\nHost.Reading(Sensor: 2 Unit: u) = r\nr.unit",
+      "\"F\" = u\nHost.Reading(sensor: 2 unit: u) = r\nr.unit",
       "F",
     ),
   ] {
     let program = Program::load(Source::new("host.shs", src), &catalog(), &HashMap::new())
       .unwrap_or_else(|(_, d)| panic!("{d:?}"));
-    let report = program
-      .run::<shards_core::Mesh>()
-      .unwrap_or_else(|d| panic!("{d:?}"));
+    let report = program.run().unwrap_or_else(|d| panic!("{d:?}"));
     assert!(
       matches!(&report.outcomes[0].1, Some(Outcome::Completed(Var::String(u))) if &**u == unit),
       "{src}: {:?}",
@@ -328,7 +318,7 @@ impl AsyncShard for Warm {
     ..SCAN_DESC
   };
 
-  fn compose<B: Backend>(args: &Args, ctx: &mut ComposeCtx<'_, B>) -> Result<Composed<()>> {
+  fn compose(args: &Args, ctx: &mut ComposeCtx<'_>) -> Result<Composed<()>> {
     Scan::compose(args, ctx)
   }
 
@@ -346,14 +336,14 @@ impl AsyncShard for Warm {
 
 #[test]
 fn reload_keeps_host_service_warm_and_cancels_pending_operations() {
-  fn exercise<H: shards_lang::SessionHost>() {
+  fn exercise() {
     static WARM: ShardType = async_type::<Warm>();
     let catalog = Catalog::new(&[shards_core::shards::CATALOG, &[&WARM]]).unwrap();
     let service = std::rc::Rc::new(WarmService::default());
     WARM_SERVICE.with(|s| *s.borrow_mut() = Some(service.clone()));
-    let mut session = shards_lang::Session::<H>::new();
+    let mut session = shards_lang::Session::new();
     let defines = HashMap::new();
-    let load = |session: &mut shards_lang::Session<H>, text| {
+    let load = |session: &mut shards_lang::Session, text| {
       session
         .reload(Source::new("warm.shs", text), &catalog, &defines)
         .unwrap_or_else(|(_, d)| panic!("{d:?}"))
@@ -386,23 +376,22 @@ fn reload_keeps_host_service_warm_and_cancels_pending_operations() {
     assert_eq!(std::rc::Rc::strong_count(&service), 2); // Host + service registry only.
     WARM_SERVICE.with(|s| *s.borrow_mut() = None);
   }
-  exercise::<shards_core::Mesh>();
-  exercise::<shards_core::StackfulMesh>();
+  exercise();
 }
 
 #[test]
 fn preserving_reload_keeps_pending_host_operation_until_its_call_returns() {
-  fn exercise<H: shards_lang::ReloadHost>() {
+  fn exercise() {
     static WARM: ShardType = async_type::<Warm>();
     let catalog = Catalog::new(&[shards_core::shards::CATALOG, &[&WARM]]).unwrap();
     let service = std::rc::Rc::new(WarmService::default());
     WARM_SERVICE.with(|s| *s.borrow_mut() = Some(service.clone()));
-    let mut session = shards_lang::Session::<H>::new();
+    let mut session = shards_lang::Session::new();
     let defines = HashMap::new();
-    let load = |session: &mut shards_lang::Session<H>, input| {
+    let load = |session: &mut shards_lang::Session, input| {
       let source = format!(
-        r#"@wire(inner {{{input} Host.Warm}})
-@wire(main {{Once({{0 >= n}}) Inc(n) Log Do(inner)}} Looped: true)
+        r#"@fn(Inner input: None output: Int params: {{}} {{{input} Host.Warm}})
+@wire(main {{Keep(n 0) Inc(n) Log Inner}} looped: true)
 @mesh(m) @schedule(m main) @run(m)"#
       );
       session
@@ -429,6 +418,5 @@ fn preserving_reload_keeps_pending_host_operation_until_its_call_returns() {
     assert_eq!(std::rc::Rc::strong_count(&service), 2);
     WARM_SERVICE.with(|s| *s.borrow_mut() = None);
   }
-  exercise::<shards_core::Mesh>();
-  exercise::<shards_core::StackfulMesh>();
+  exercise();
 }

@@ -1,0 +1,14 @@
+=== prompt
+From the sequence [1 2 3 4 5 6 7 8], keep only the even numbers and log the resulting sequence (as one value).
+=== expected
+[2 4 6 8]
+=== reference
+[1 2 3 4 5 6 7 8] = xs
+[] | Var(out)
+0 | Var(i)
+Repeat({
+  xs | Take(i) = x
+  When({x | Math.Divide(2) | Math.Multiply(2) | Is(x)} {x | Push(out)})
+  Inc(i)
+} times: 8)
+out | Log

@@ -323,7 +323,7 @@ pub enum OutputDesc {
   Dynamic(&'static str),
 }
 
-/// Where a shard can run, beyond which backends implement it.
+/// Where a shard can run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Targets {
   All,
@@ -342,6 +342,9 @@ impl Targets {
 /// The static description of one shard kind.
 #[derive(Clone, Copy, Debug)]
 pub struct ShardDesc {
+  /// Trusted native effect contract; omission through `undocumented` is unknown.
+  pub effects: crate::signature::Effects,
+  pub lifetime: crate::signature::Lifetime,
   pub name: &'static str,
   /// Bump when compose output changes for the same inputs (not for help
   /// edits). The compose cache is process-local, see the design doc §4.
@@ -362,6 +365,8 @@ impl ShardDesc {
   /// arguments passed through.
   pub const fn undocumented(name: &'static str, version: u32) -> ShardDesc {
     ShardDesc {
+      effects: crate::signature::Effects::UNKNOWN,
+      lifetime: crate::signature::Lifetime::Unknown,
       name,
       version,
       summary: "",

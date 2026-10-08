@@ -24,14 +24,14 @@ fn shards2(args: &[&str]) -> (i32, String, String) {
 
 #[test]
 fn check_json_reports_located_diagnostics() {
-  let file = script("bad.shs", "0 >= n\n\"a\" | Add(2)\n");
+  let file = script("bad.shs", "0 | Var(n)\n\"a\" | Add(2)\n");
   let (code, out, _) = shards2(&["check", "--json", &file]);
   assert_eq!(code, 1);
   assert!(out.starts_with("{\"ok\":false,"), "{out}");
   assert!(out.contains("\"code\":\"input-type-mismatch\""), "{out}");
   assert!(out.contains("\"line\":2,\"column\":7"), "{out}");
 
-  let (code, _, err) = shards2(&["check", "--stackful", &file]);
+  let (code, _, err) = shards2(&["check", &file]);
   assert_eq!(code, 1);
   assert!(
     err.contains("bad.shs:2:7: compose error: Math.Add needs Int, Float, Float2, Float3 or Float4 input, got String"),
@@ -42,25 +42,54 @@ fn check_json_reports_located_diagnostics() {
 
 #[test]
 fn check_ok_and_run_with_script_arguments() {
-  let file = script("ok.shs", "@n | Ref(text)\n40 | Add(2)\n");
+  let file = script("ok.shs", "@n = text\n40 | Add(2)\n");
   let (code, out, _) = shards2(&["check", "--json", &file, "n:hello"]);
-  assert_eq!(
-    (code, out.trim()),
-    (
-      0,
-      format!("{{\"ok\":true,\"file\":\"{file}\",\"diagnostics\":[]}}").as_str()
-    )
+  assert_eq!(code, 0, "{out}");
+  assert!(
+    out.starts_with(&format!(
+      "{{\"ok\":true,\"file\":\"{file}\",\"diagnostics\":[],\"wires\":["
+    )),
+    "{out}"
+  );
+  assert!(
+    out.contains("\"input\":\"Int\",\"output\":\"Int\""),
+    "{out}"
   );
   // Script arguments may come before the file.
   let (code, _, err) = shards2(&["check", "n:hello", &file]);
   assert_eq!(code, 0, "{err}");
-  for backend in [&[][..], &["--stackful"][..]] {
-    let mut args = vec!["run"];
-    args.extend_from_slice(backend);
-    args.extend_from_slice(&[&file, "n:hello"]);
-    let (code, out, err) = shards2(&args);
-    assert_eq!((code, out.as_str()), (0, "root: 42\n"), "{err}");
-  }
+  let (code, out, err) = shards2(&["run", &file, "n:hello"]);
+  assert_eq!((code, out.as_str()), (0, "root: 42\n"), "{err}");
+}
+
+#[test]
+fn run_json_separates_the_log_from_wire_results() {
+  // A log line that looks like a result line stays in `log`.
+  let file = script(
+    "json.shs",
+    "@wire(main { 1 | Log(\"main\") Maybe({[1] | Take(3)}) \"a\\\"b\" | Log })\n@mesh(m) @schedule(m,main) @run(m)\n",
+  );
+  let (code, out, err) = shards2(&["run", "--json", &file]);
+  assert_eq!((code, err.as_str()), (0, ""), "{out}");
+  let expected = format!(
+    r#"{{"ok":true,"file":"{file}","diagnostics":[],"log":["main: 1","Maybe: activation error: Take: index 3 is out of range (length 1)","a\"b"],"outcomes":[{{"wire":"main","outcome":"completed","value":"\"a\\\"b\""}}],"spawned_failures":[]}}"#
+  );
+  assert_eq!(out.trim(), expected);
+  let failing = script("fail.shs", "[1] | Take(3)\n");
+  let (code, out, _) = shards2(&["run", "--json", &failing]);
+  assert_eq!(code, 1);
+  assert!(
+    out.contains(r#""ok":false"#)
+      && out.contains(r#""outcome":"failed","error":"activation error: Take"#),
+    "{out}"
+  );
+  let unknown = script("unknown.shs", "Nope\n");
+  let (code, out, _) = shards2(&["run", "--json", &unknown]);
+  assert_eq!(code, 1);
+  assert!(
+    out.contains(r#""code":"unknown-shard""#) && out.contains(r#""log":[],"outcomes":[]"#),
+    "{out}"
+  );
 }
 
 #[test]
@@ -105,12 +134,11 @@ fn watch_reloads_atomic_saves_and_keeps_running_after_rejected_edits() {
     }
   }
 
-  for backend in [&[][..], &["--stackful"][..]] {
+  {
     let file = script("watch.shs", "41");
     let mut child = KillOnDrop(
       Command::new(env!("CARGO_BIN_EXE_shards2"))
         .arg("watch")
-        .args(backend)
         .arg(&file)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -154,21 +182,21 @@ fn watch_reloads_atomic_saves_and_keeps_running_after_rejected_edits() {
     std::fs::write(&replacement, "42").unwrap();
     std::fs::rename(&replacement, &file).unwrap();
     wait_for("root: 42");
-    let live = |body| {
+    let live = |output, body| {
       format!(
-        r#"@wire(inner {{{body}}})
-@wire(main {{Once({{0 >= n}}) Inc(n) Do(inner)}} Looped: true)
-@mesh(m) @schedule(m main) @run(m FPS: 10)"#
+        r#"@fn(Inner input: None output: {output} params: {{n: Int}} {{{body}}})
+@wire(main {{Keep(n 0) Inc(n) Inner(n: n)}} looped: true)
+@mesh(m) @schedule(m main) @run(m fps: 10)"#
       )
     };
-    std::fs::write(&file, live(r#"f"old {n}" Log"#)).unwrap();
+    std::fs::write(&file, live("String", r#"f"old {n}" Log"#)).unwrap();
     wait_for("old 1");
-    std::fs::write(&file, live(r#"f"new {n}" Log"#)).unwrap();
+    std::fs::write(&file, live("String", r#"f"new {n}" Log"#)).unwrap();
     let line = wait_for("new ");
     assert!(line.strip_prefix("new ").unwrap().parse::<i64>().unwrap() > 1);
     // A changed interface is rejected; explicit restart accepts it and
     // resets script locals without restarting the watching process.
-    std::fs::write(&file, live(r#"f"restart {n}" Log 123"#)).unwrap();
+    std::fs::write(&file, live("Int", r#"f"restart {n}" Log 123"#)).unwrap();
     wait_for("edit rejected; previous execution retained");
     child.0.stdin.as_mut().unwrap().write_all(b"r\n").unwrap();
     wait_for("restart 1");

@@ -1,0 +1,337 @@
+diff --git a/crates/shards-lang/src/lower.rs b/crates/shards-lang/src/lower.rs
+index 55f6c1f..f567a4e 100644
+--- a/crates/shards-lang/src/lower.rs
++++ b/crates/shards-lang/src/lower.rs
+@@ -32,15 +32,71 @@ pub const ROOT_WIRE: &str = "root";
+ /// Where each emitted shard came from, by occurrence path.
+ #[derive(Default, Debug)]
+ pub struct SourceMap {
+-  /// `(wire, steps below the wire)` to the span of the source construct.
+-  shards: HashMap<(String, Vec<PathStep>), Span>,
++  /// Roots by wire name; child paths share prefixes instead of copying a
++  /// complete path into each descendant. Flat ownership keeps drop iterative.
++  roots: HashMap<String, usize>,
++  nodes: Vec<SourceNode>,
+   /// Each wire's declaration.
+   wires: HashMap<String, Span>,
+ }
+ 
++#[derive(Default, Debug)]
++struct SourceNode {
++  children: Vec<(PathStep, usize)>,
++  span: Option<Span>,
++}
++
++// A borrowed ordering key keeps lookups allocation-free, including wide flows.
++fn source_step_key(step: &PathStep) -> (u8, usize, &str) {
++  match step {
++    PathStep::Wire(name) => (0, 0, name),
++    PathStep::Shard { index, name } => (1, *index, name),
++    PathStep::Param(name) => (2, 0, name),
++    PathStep::Item(index) => (3, *index, ""),
++  }
++}
++
++impl SourceNode {
++  fn search(&self, step: &PathStep) -> Result<usize, usize> {
++    self
++      .children
++      .binary_search_by(|(key, _)| source_step_key(key).cmp(&source_step_key(step)))
++  }
++}
++
+ impl SourceMap {
++  fn insert(&mut self, wire: &str, path: Vec<PathStep>, span: Span) {
++    let mut node = if let Some(&root) = self.roots.get(wire) {
++      root
++    } else {
++      let root = self.nodes.len();
++      self.nodes.push(SourceNode::default());
++      self.roots.insert(wire.to_owned(), root);
++      root
++    };
++    for step in path {
++      node = match self.nodes[node].search(&step) {
++        Ok(i) => self.nodes[node].children[i].1,
++        Err(i) => {
++          let child = self.nodes.len();
++          self.nodes.push(SourceNode::default());
++          // Most source paths append siblings in source order. Keep compact
++          // sorted edges so wide flows still have logarithmic lookup.
++          let edges = &mut self.nodes[node].children;
++          if edges.is_empty() {
++            edges.reserve_exact(1);
++          }
++          edges.insert(i, (step, child));
++          child
++        }
++      };
++    }
++    self.nodes[node].span = Some(span);
++  }
++
+   /// The source span for a compose diagnostic: the shard at the end of its
+-  /// path, or the closest enclosing one that is known.
++  /// path, or the closest enclosing one that is known. A nested Wire resets
++  /// the lookup to that definition, independent of its calling occurrence.
+   pub fn locate(&self, d: &Diagnostic) -> Option<Span> {
+     let k = d
+       .path
+@@ -49,15 +105,20 @@ impl SourceMap {
+     let PathStep::Wire(wire) = &d.path[k] else {
+       return None;
+     };
+-    let mut steps = d.path[k + 1..].to_vec();
+-    loop {
+-      if let Some(span) = self.shards.get(&(wire.clone(), steps.clone())) {
+-        return Some(*span);
+-      }
+-      if steps.pop().is_none() {
+-        return self.wires.get(wire).copied();
+-      }
++    let mut span = self.wires.get(wire).copied();
++    let Some(&root) = self.roots.get(wire) else {
++      return span;
++    };
++    let mut node = root;
++    span = self.nodes[node].span.or(span);
++    for step in &d.path[k + 1..] {
++      let Ok(i) = self.nodes[node].search(step) else {
++        break;
++      };
++      node = self.nodes[node].children[i].1;
++      span = self.nodes[node].span.or(span);
+     }
++    span
+   }
+ }
+ 
+@@ -168,6 +229,10 @@ pub fn lower(
+       .help("add `@run(mesh)` to start the mesh, or remove the schedule"),
+     );
+   }
++  for node in &mut l.map.nodes {
++    node.children.shrink_to_fit();
++  }
++  l.map.nodes.shrink_to_fit();
+   out.map = l.map;
+   (out, l.problems)
+ }
+@@ -556,7 +621,7 @@ impl Lowerer<'_> {
+       index: out.len(),
+       name: def.ty.name().to_string(),
+     });
+-    self.map.shards.insert((self.wire.clone(), path), span);
++    self.map.insert(&self.wire, path, span);
+     out.push(def);
+   }
+ 
+@@ -1296,3 +1361,57 @@ fn is_plain_var(pipe: &Pipe) -> bool {
+ fn is_plain(pipe: &Pipe) -> bool {
+   is_plain_var(pipe) || matches!(&pipe.blocks[..], [b] if is_constant(b))
+ }
++
++#[cfg(test)]
++mod source_map_tests {
++  use super::*;
++  use shards_core::diagnostic::Phase;
++
++  #[test]
++  fn source_paths_share_prefixes_and_keep_nearest_locations() {
++    let mut map = SourceMap::default();
++    let parent = PathStep::Shard {
++      index: 0,
++      name: "When".into(),
++    };
++    let branch = PathStep::Param("then".into());
++    let leaf = |index| PathStep::Shard {
++      index,
++      name: "Const".into(),
++    };
++    map.wires.insert("w".into(), Span::new(0, 100));
++    map.insert("w", vec![parent.clone()], Span::new(1, 90));
++    // Insert siblings out of order to exercise sorted lookup and shared ancestry.
++    for i in [2, 0, 1] {
++      map.insert(
++        "w",
++        vec![parent.clone(), branch.clone(), leaf(i)],
++        Span::new(10 + i, 11 + i),
++      );
++    }
++    assert_eq!(map.nodes.len(), 6); // root, parent, branch, three leaves
++    let mut d = Diagnostic::new(Phase::Compose, "", "", "");
++    for i in 0..3 {
++      d.path = vec![
++        PathStep::Wire("w".into()),
++        parent.clone(),
++        branch.clone(),
++        leaf(i),
++      ];
++      assert_eq!(map.locate(&d), Some(Span::new(10 + i, 11 + i)));
++      d.path.push(PathStep::Item(17));
++      assert_eq!(map.locate(&d), Some(Span::new(10 + i, 11 + i)));
++    }
++    d.path = vec![PathStep::Wire("w".into()), parent.clone(), branch, leaf(9)];
++    assert_eq!(map.locate(&d), Some(Span::new(1, 90)));
++    // A nested wire starts a new definition; never fall back into its caller.
++    map.wires.insert("other".into(), Span::new(200, 220));
++    d.path.push(PathStep::Wire("other".into()));
++    d.path.push(parent.clone());
++    assert_eq!(map.locate(&d), Some(Span::new(200, 220)));
++    d.path.push(PathStep::Wire("missing".into()));
++    assert_eq!(map.locate(&d), None);
++    d.path = vec![parent];
++    assert_eq!(map.locate(&d), None);
++  }
++}
+diff --git a/crates/shards-lang/src/parser.rs b/crates/shards-lang/src/parser.rs
+index a74411c..584bebd 100644
+--- a/crates/shards-lang/src/parser.rs
++++ b/crates/shards-lang/src/parser.rs
+@@ -162,6 +162,9 @@ impl<'a> Parser<'a> {
+       }
+     };
+     self.open.pop();
++    // Completed syntax lists are immutable; spare capacity otherwise compounds
++    // across every small nested parameter/statement list.
++    items.shrink_to_fit();
+     (items, Span::new(open_span.start, end))
+   }
+ 
+@@ -193,6 +196,7 @@ impl<'a> Parser<'a> {
+         self.bump();
+       }
+     }
++    out.shrink_to_fit();
+     out
+   }
+ 
+@@ -265,6 +269,7 @@ impl<'a> Parser<'a> {
+         }
+       }
+     }
++    blocks.shrink_to_fit();
+     Some(Pipe { blocks, span })
+   }
+ 
+diff --git a/crates/shards-lang/tests/lang.rs b/crates/shards-lang/tests/lang.rs
+index 418cd41..c3dc620 100644
+--- a/crates/shards-lang/tests/lang.rs
++++ b/crates/shards-lang/tests/lang.rs
+@@ -1152,6 +1152,8 @@ If(Any(b {a}) {4} {5}) = z
+         let diagnostics = program.compose::<Mesh>();
+         assert!(diagnostics.is_empty(), "{wrapper}: {diagnostics:?}");
+         drop(program);
++        #[cfg(not(target_os = "espidf"))]
++        assert!(check(&src).ok(), "{wrapper}");
+         assert!(run(&src, &no_defines()).succeeded(), "{wrapper}");
+         // The chain is at the limit: one more wire is too deep. If compose's
+         // level counting drifts, this fails instead of the test silently
+@@ -1210,6 +1212,9 @@ If(Any(b {a}) {4} {5}) = z
+       }
+       let program = Program::load(Source::new("t.shs", &src), &catalog(), &no_defines()).unwrap_or_else(|(_, d)| panic!("{d:?}"));
+       assert!(program.compose::<Mesh>().is_empty());
++      drop(program);
++      #[cfg(not(target_os = "espidf"))]
++      assert!(check(&src).ok());
+     }
+ 
+     #[test]
+diff --git a/crates/shards-lang/examples/frontend_memory.rs b/crates/shards-lang/examples/frontend_memory.rs
+new file mode 100644
+index 0000000..719ddef
+--- /dev/null
++++ b/crates/shards-lang/examples/frontend_memory.rs
+@@ -0,0 +1,92 @@
++//! Reproducible frontend peak-memory probes for the device acceptance fixtures.
++//! Run in release with docs disabled. Counts requested heap bytes, not RSS or
++//! allocator overhead. Native results are not device budgets. No timing claims.
++use std::alloc::{GlobalAlloc, Layout, System};
++use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
++
++use shards_core::{Catalog, Mesh};
++use shards_lang::{Program, Source};
++
++struct Counting;
++static LIVE: AtomicUsize = AtomicUsize::new(0);
++static PEAK: AtomicUsize = AtomicUsize::new(0);
++// SAFETY: allocation and deallocation use System with the original layout and
++// pointer. Counters never dereference allocations or alter their lifetimes.
++unsafe impl GlobalAlloc for Counting {
++  unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
++    let ptr = unsafe { System.alloc(layout) };
++    if !ptr.is_null() {
++      let live = LIVE.fetch_add(layout.size(), Relaxed) + layout.size();
++      PEAK.fetch_max(live, Relaxed);
++    }
++    ptr
++  }
++  unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
++    LIVE.fetch_sub(layout.size(), Relaxed);
++    unsafe { System.dealloc(ptr, layout) };
++  }
++  // Default realloc deliberately counts allocate/copy/free, consistently across
++  // compared revisions. It can overstate an allocator's in-place growth peak.
++}
++#[global_allocator]
++static ALLOCATOR: Counting = Counting;
++
++fn measure<T>(fixture: &str, phase: &str, f: impl FnOnce() -> T) -> T {
++  let before = LIVE.load(Relaxed);
++  PEAK.store(before, Relaxed);
++  let result = f();
++  let live = LIVE.load(Relaxed);
++  let peak = PEAK.load(Relaxed);
++  println!("{fixture},{phase},{before},{live},{peak}");
++  result
++}
++
++fn main() {
++  let catalog = Catalog::new(&[shards_core::shards::CATALOG]).unwrap();
++  println!("fixture,phase,before_bytes,live_bytes,peak_bytes");
++  let mut chain = String::new();
++  for i in 0..80 {
++    chain.push_str(&format!("@wire(w{i} {{Do(w{})}})\n", i + 1));
++  }
++  chain.push_str("@wire(w80 {1})\nDo(w0)");
++  let mut nested = String::from("1");
++  for _ in 0..30 {
++    nested = format!("When({{true}} {{{nested}}})");
++  }
++  let mut wrapped = String::new();
++  let n = (shards_core::compose::MAX_FLOW_DEPTH - 2) / 2;
++  for i in 0..n {
++    wrapped.push_str(&format!(
++      "@wire(w{i} {{When({{true}} {{Do(w{})}})}})\n",
++      i + 1
++    ));
++  }
++  wrapped.push_str(&format!("@wire(w{n} {{1}})\nDo(w0)"));
++  for (name, text, valid) in [
++    ("do80", chain, false),
++    ("when30", nested, true),
++    ("wrapped_when", wrapped, true),
++  ] {
++    let source = Source::new("memory.shs", text);
++    let (tree, problems) = measure(name, "parse", || shards_lang::parse(&source));
++    assert!(problems.is_empty());
++    drop(tree);
++    drop(problems);
++    let program = measure(name, "load", || {
++      Program::load(source, &catalog, &Default::default()).unwrap_or_else(|(_, d)| panic!("{d:?}"))
++    });
++    let diagnostics = measure(name, "compose", || program.compose::<Mesh>());
++    assert_eq!(diagnostics.is_empty(), valid);
++    if !valid {
++      assert_eq!(diagnostics[0].code, "too-deep");
++    }
++    drop(diagnostics);
++    let report = measure(name, "analyze", || program.analyze::<Mesh>());
++    assert_eq!(report.ok(), valid);
++    drop(report);
++    if valid {
++      let report = measure(name, "run", || program.run::<Mesh>().unwrap());
++      assert!(report.succeeded());
++    }
++  }
++}

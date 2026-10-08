@@ -1,15 +1,15 @@
 //! Control flow added for real scripts: `If`, `Match`, `Maybe`, `All`,
-//! `Any`. Descriptions, compose and compiled types live here, shared by
-//! both schedulers; execution is in `stackful.rs` and
-//! `stackless/shards.rs`. Every compiled type keeps its nested flows in one
-//! list ([`ControlFlows::flows`]) so instantiation, cleanup and size
-//! accounting are one helper per scheduler.
+//! `Any`. Descriptions, compose and compiled types live here; the engine
+//! runs them (`stackless/engine.rs`, adapters in `stackless/shards.rs`).
+//! Every compiled type keeps its nested flows in one list
+//! ([`ControlFlows::flows`]) so instantiation, cleanup and size accounting
+//! are one helper.
 
 use super::*;
 
 /// The nested flows of a control shard, in a fixed order.
-pub trait ControlFlows<B: Backend> {
-  fn flows(&self) -> &[CompiledFlow<B>];
+pub trait ControlFlows {
+  fn flows(&self) -> &[CompiledFlow];
 }
 
 fn compose_error(
@@ -27,15 +27,15 @@ fn compose_error(
 }
 
 /// A predicate flow, which must output Bool.
-fn compose_predicate<B: Backend>(
-  ctx: &mut ComposeCtx<'_, B>,
+fn compose_predicate(
+  ctx: &mut ComposeCtx<'_>,
   flow: &[ShardDef],
   input: Type,
   conditional: bool,
   shard: &str,
   param: &str,
   index: usize,
-) -> Result<CompiledFlow<B>> {
+) -> Result<CompiledFlow> {
   let compiled = if conditional {
     ctx.compose_flow_conditional(flow, input)?
   } else {
@@ -66,28 +66,28 @@ const FLOW: Forms = Forms::FLOW;
 
 pub static IF_PARAMS: &[ParamDecl] = &[
   decl(
-    "Predicate",
+    "predicate",
     crate::shard_doc!("A flow that receives the input and outputs a Bool."),
     FLOW,
     NONE_TYPES,
     Requirement::Required,
   ),
   decl(
-    "Then",
+    "then",
     crate::shard_doc!("The flow to run when the predicate is true."),
     FLOW,
     NONE_TYPES,
     Requirement::Required,
   ),
   decl(
-    "Else",
+    "else",
     crate::shard_doc!("The flow to run when the predicate is false."),
     FLOW,
     NONE_TYPES,
     Requirement::Optional,
   ),
   decl(
-    "Passthrough",
+    "passthrough",
     crate::shard_doc!("Output the input instead of the branch's output."),
     Forms::LITERAL,
     &[TypeName::Bool],
@@ -98,9 +98,9 @@ pub static IF_PARAMS: &[ParamDecl] = &[
 pub const IF_DESC: ShardDesc = ShardDesc {
   name: "If",
   version: 1,
-  summary: crate::shard_doc!("Runs Then or Else depending on a predicate."),
+  summary: crate::shard_doc!("Runs `then` or `else` depending on a predicate."),
   help: crate::shard_doc!(
-    "All three flows receive If's input. The output is the branch's output (a union when the branches differ); without Else, a false predicate outputs the input. With Passthrough, the input. A Stop, Restart or Return inside a flow propagates."
+    "All three flows receive If's input. The output is the branch's output (a union when the branches differ); without `else`, a false predicate outputs the input. With `passthrough`, the input. A Stop, Restart or Return inside a flow propagates."
   ),
   params: Params::Declared(IF_PARAMS),
   input: InputDesc::Any,
@@ -109,37 +109,36 @@ pub const IF_DESC: ShardDesc = ShardDesc {
   )),
   targets: Targets::All,
   aliases: &[],
+  effects: crate::signature::Effects::NONE,
+  lifetime: crate::signature::Lifetime::Stateless,
 };
 
 /// `flows`: `[predicate, then]` or `[predicate, then, else]`.
-pub struct IfCompiled<B: Backend> {
-  pub(crate) flows: Vec<CompiledFlow<B>>,
+pub struct IfCompiled {
+  pub(crate) flows: Vec<CompiledFlow>,
   pub(crate) passthrough: bool,
 }
 
-impl<B: Backend> ControlFlows<B> for IfCompiled<B> {
-  fn flows(&self) -> &[CompiledFlow<B>] {
+impl ControlFlows for IfCompiled {
+  fn flows(&self) -> &[CompiledFlow] {
     &self.flows
   }
 }
 
-pub(crate) fn compose_if<B: Backend>(
-  args: &Args,
-  ctx: &mut ComposeCtx<'_, B>,
-) -> Result<Composed<IfCompiled<B>>> {
+pub(crate) fn compose_if(args: &Args, ctx: &mut ComposeCtx<'_>) -> Result<Composed<IfCompiled>> {
   let input = ctx.input();
   let pred = compose_predicate(
     ctx,
-    args.flow("Predicate").expect("decoded"),
+    args.flow("predicate").expect("decoded"),
     input,
     false,
     "If",
-    "Predicate",
+    "predicate",
     0,
   )?;
-  let then = ctx.compose_flow_conditional(args.flow("Then").expect("decoded"), input)?;
-  let passthrough = args.bool("Passthrough").unwrap_or(false);
-  let els = match args.flow("Else") {
+  let then = ctx.compose_flow_conditional(args.flow("then").expect("decoded"), input)?;
+  let passthrough = args.bool("passthrough").unwrap_or(false);
+  let els = match args.flow("else") {
     Some(flow) => Some(ctx.compose_flow_conditional(flow, input)?),
     None => None,
   };
@@ -160,20 +159,20 @@ pub(crate) fn compose_if<B: Backend>(
 
 pub static MATCH_PARAMS: &[ParamDecl] = &[
   decl(
-    "Cases",
-    crate::shard_doc!(
-      "Value-flow pairs, `[value {flow} value {flow}]`; a `none` value matches anything."
-    ),
+    "cases",
+    crate::shard_doc!("Value-flow pairs, `[value {flow} value {flow}]`."),
     Forms::CASES,
     NONE_TYPES,
     Requirement::Required,
   ),
   decl(
-    "Passthrough",
-    crate::shard_doc!("Output the input instead of the matched case's output."),
-    Forms::LITERAL,
-    &[TypeName::Bool],
-    Requirement::Default(DefaultValue::Bool(true)),
+    "default",
+    crate::shard_doc!(
+      "The flow to run when no case matches. Required unless the cases cover every value of the input type; `default: {}` outputs the input."
+    ),
+    FLOW,
+    NONE_TYPES,
+    Requirement::Optional,
   ),
 ];
 
@@ -182,53 +181,76 @@ pub const MATCH_DESC: ShardDesc = ShardDesc {
   version: 1,
   summary: crate::shard_doc!("Runs the flow of the first case equal to the input."),
   help: crate::shard_doc!(
-    "Cases are tried in order and compare as in Is; a `none` case matches anything. The matched flow receives the input. By default Match passes its input through; with `Passthrough: false` it outputs the matched flow's output (the input when nothing matched)."
+    "Cases are tried in order and compare as in Is; `none` matches only none. The matched flow receives the input, and Match outputs that flow's output (an empty flow `{}` outputs its input). Match must be exhaustive: either the cases cover every value of the input type (true and false for a Bool, none for None, all of them for a union of those), or `default:` runs when nothing matched."
   ),
   params: Params::Declared(MATCH_PARAMS),
   input: InputDesc::Any,
-  output: OutputDesc::Dynamic(crate::shard_doc!("the input, or the matched case's output")),
+  output: OutputDesc::Dynamic(crate::shard_doc!(
+    "the union of the case and default outputs"
+  )),
   targets: Targets::All,
   aliases: &[],
+  effects: crate::signature::Effects::NONE,
+  lifetime: crate::signature::Lifetime::Stateless,
 };
 
-pub struct MatchCompiled<B: Backend> {
-  /// One value per flow; `None` matches anything.
+pub struct MatchCompiled {
+  /// One value per case flow.
   pub(crate) values: Vec<Var>,
-  pub(crate) flows: Vec<CompiledFlow<B>>,
-  pub(crate) passthrough: bool,
+  /// The case flows, then the default flow if there is one.
+  pub(crate) flows: Vec<CompiledFlow>,
 }
 
-impl<B: Backend> ControlFlows<B> for MatchCompiled<B> {
-  fn flows(&self) -> &[CompiledFlow<B>] {
+impl ControlFlows for MatchCompiled {
+  fn flows(&self) -> &[CompiledFlow] {
     &self.flows
   }
 }
 
-impl<B: Backend> MatchCompiled<B> {
-  /// The index of the first case matching `input`.
-  pub(crate) fn find(&self, input: &Var) -> Option<usize> {
+impl MatchCompiled {
+  /// The flow to run for `input`: the first equal case, else the default.
+  /// Compose proved one of them exists for every input of its type.
+  pub(crate) fn find(&self, input: &Var) -> Result<usize> {
     self
       .values
       .iter()
-      .position(|v| matches!(v, Var::None) || super::values::values_equal(v, input))
+      .position(|v| super::values::values_equal(v, input))
+      .or((self.flows.len() > self.values.len()).then_some(self.values.len()))
+      .ok_or_else(|| Error::Activation(format!("Match: no case matches {input}")))
   }
 }
 
-pub(crate) fn compose_match<B: Backend>(
+/// The values a type has, when there are finitely many and Match can prove
+/// coverage of them: Bool, None and unions of those.
+fn finite_values(ty: Type) -> Option<Vec<Var>> {
+  match ty.desc() {
+    TypeDesc::Bool => Some(vec![Var::Bool(false), Var::Bool(true)]),
+    TypeDesc::None => Some(vec![Var::None]),
+    TypeDesc::Union(members) => {
+      let mut all = Vec::new();
+      for m in members.iter() {
+        all.extend(finite_values(*m)?);
+      }
+      Some(all)
+    }
+    _ => None,
+  }
+}
+
+pub(crate) fn compose_match(
   args: &Args,
-  ctx: &mut ComposeCtx<'_, B>,
-) -> Result<Composed<MatchCompiled<B>>> {
+  ctx: &mut ComposeCtx<'_>,
+) -> Result<Composed<MatchCompiled>> {
   let input = ctx.input();
-  let cases = args.cases("Cases").expect("decoded Cases");
+  let cases = args.cases("cases").expect("decoded Cases");
   let mut values = Vec::with_capacity(cases.len());
-  let mut flows = Vec::with_capacity(cases.len());
+  let mut flows = Vec::with_capacity(cases.len() + 1);
   for (value, flow) in cases {
     let ty = value.type_of();
-    let can_match = matches!(value, Var::None) || super::values::comparable(input, ty);
-    if !can_match {
+    if !super::values::comparable(input, ty) {
       return Err(compose_error(
         "Match",
-        "Cases",
+        "cases",
         0,
         "unmatchable-case",
         format!("the case {value} ({ty}) can never match a {input} input"),
@@ -237,23 +259,44 @@ pub(crate) fn compose_match<B: Backend>(
     values.push(value.clone());
     flows.push(ctx.compose_flow_conditional(flow, input)?);
   }
-  let passthrough = args.bool("Passthrough").unwrap_or(true);
-  let output = if passthrough || flows.is_empty() {
-    input
-  } else {
-    let default = values.iter().any(|v| matches!(v, Var::None));
-    let mut members: Vec<Type> = flows.iter().map(|f| f.output).collect();
-    if !default {
-      members.push(input);
+  match args.flow("default") {
+    Some(flow) => flows.push(ctx.compose_flow_conditional(flow, input)?),
+    None => {
+      let missing: Option<Vec<Var>> = finite_values(input).map(|all| {
+        all
+          .into_iter()
+          .filter(|v| !values.iter().any(|c| super::values::values_equal(c, v)))
+          .collect()
+      });
+      let message = match missing {
+        Some(missing) if missing.is_empty() => None,
+        Some(missing) => {
+          let names: Vec<String> = missing.iter().map(|v| v.to_string()).collect();
+          Some(format!(
+            "Match does not cover {} of its {input} input: add those cases, or `default: {{...}}`",
+            names.join(" and ")
+          ))
+        }
+        None => Some(format!(
+          "Match on {input} cannot list every value: add `default: {{...}}` (`default: {{}}` outputs the input)"
+        )),
+      };
+      if let Some(message) = message {
+        return Err(Error::Diagnostic(Box::new(
+          Diagnostic::new(
+            Phase::Compose,
+            "compose-error",
+            "non-exhaustive-match",
+            message,
+          )
+          .shard("Match"),
+        )));
+      }
     }
-    Type::union(members)
-  };
+  }
+  let output = Type::union(flows.iter().map(|f| f.output).collect::<Vec<_>>());
   Ok(Composed {
-    compiled: MatchCompiled {
-      values,
-      flows,
-      passthrough,
-    },
+    compiled: MatchCompiled { values, flows },
     output,
   })
 }
@@ -262,22 +305,22 @@ pub(crate) fn compose_match<B: Backend>(
 
 pub static MAYBE_PARAMS: &[ParamDecl] = &[
   decl(
-    "Action",
+    "action",
     crate::shard_doc!("The flow to try."),
     FLOW,
     NONE_TYPES,
     Requirement::Required,
   ),
   decl(
-    "Else",
-    crate::shard_doc!("The flow to run, with Maybe's input, if Action fails."),
+    "else",
+    crate::shard_doc!("The flow to run, with Maybe's input, if `action` fails."),
     FLOW,
     NONE_TYPES,
     Requirement::Optional,
   ),
   decl(
-    "Silent",
-    crate::shard_doc!("Do not log the error that Action failed with."),
+    "silent",
+    crate::shard_doc!("Do not log the error that `action` failed with."),
     Forms::LITERAL,
     &[TypeName::Bool],
     Requirement::Default(DefaultValue::Bool(false)),
@@ -287,9 +330,9 @@ pub static MAYBE_PARAMS: &[ParamDecl] = &[
 pub const MAYBE_DESC: ShardDesc = ShardDesc {
   name: "Maybe",
   version: 1,
-  summary: crate::shard_doc!("Runs Action; if it fails, runs Else instead."),
+  summary: crate::shard_doc!("Runs `action`; if it fails, runs `else` instead."),
   help: crate::shard_doc!(
-    "With Else: on success the output is Action's, on an activation error (logged unless Silent) it is Else's. Without Else, Maybe passes its input through either way, as in 1.x: Action runs for its effects. Cancellation is not caught. Effects of the part of Action that ran stay."
+    "With `else`: on success the output is `action`'s, on an activation error (logged unless `silent`) it is `else`'s. Without `else`, Maybe passes its input through either way, as in 1.x: `action` runs for its effects. Cancellation is not caught. Effects of the part of `action` that ran stay."
   ),
   params: Params::Declared(MAYBE_PARAMS),
   input: InputDesc::Any,
@@ -298,28 +341,30 @@ pub const MAYBE_DESC: ShardDesc = ShardDesc {
   )),
   targets: Targets::All,
   aliases: &[],
+  effects: crate::signature::Effects::IO,
+  lifetime: crate::signature::Lifetime::Stateless,
 };
 
 /// `flows`: `[action]` or `[action, else]`.
-pub struct MaybeCompiled<B: Backend> {
-  pub(crate) flows: Vec<CompiledFlow<B>>,
+pub struct MaybeCompiled {
+  pub(crate) flows: Vec<CompiledFlow>,
   pub(crate) silent: bool,
 }
 
-impl<B: Backend> ControlFlows<B> for MaybeCompiled<B> {
-  fn flows(&self) -> &[CompiledFlow<B>] {
+impl ControlFlows for MaybeCompiled {
+  fn flows(&self) -> &[CompiledFlow] {
     &self.flows
   }
 }
 
-pub(crate) fn compose_maybe<B: Backend>(
+pub(crate) fn compose_maybe(
   args: &Args,
-  ctx: &mut ComposeCtx<'_, B>,
-) -> Result<Composed<MaybeCompiled<B>>> {
+  ctx: &mut ComposeCtx<'_>,
+) -> Result<Composed<MaybeCompiled>> {
   let input = ctx.input();
   // Action may stop partway, so what it assigns is not definitely assigned.
-  let action = ctx.compose_flow_conditional(args.flow("Action").expect("decoded"), input)?;
-  let els = match args.flow("Else") {
+  let action = ctx.compose_flow_conditional(args.flow("action").expect("decoded"), input)?;
+  let els = match args.flow("else") {
     Some(flow) => Some(ctx.compose_flow_conditional(flow, input)?),
     None => None,
   };
@@ -333,13 +378,13 @@ pub(crate) fn compose_maybe<B: Backend>(
   Ok(Composed {
     compiled: MaybeCompiled {
       flows,
-      silent: args.bool("Silent").unwrap_or(false),
+      silent: args.bool("silent").unwrap_or(false),
     },
     output,
   })
 }
 
-/// What Maybe does with an error from Action: `None` to propagate it.
+/// What Maybe does with an error from action: `None` to propagate it.
 pub(crate) fn maybe_caught(silent: bool, err: Error) -> std::result::Result<(), Error> {
   match err {
     Error::Cancelled => Err(Error::Cancelled),
@@ -355,7 +400,7 @@ pub(crate) fn maybe_caught(silent: bool, err: Error) -> std::result::Result<(), 
 // --- All, Any ---
 
 pub static CONDITIONS_PARAMS: &[ParamDecl] = &[decl(
-  "Conditions",
+  "conditions",
   crate::shard_doc!(
     "One or more conditions, checked left to right: Bool literals, Bool variables, or flows that receive the input and output a Bool."
   ),
@@ -376,6 +421,8 @@ pub const ALL_DESC: ShardDesc = ShardDesc {
   output: OutputDesc::Fixed(TypeName::Bool),
   targets: Targets::All,
   aliases: &[],
+  effects: crate::signature::Effects::NONE,
+  lifetime: crate::signature::Lifetime::Stateless,
 };
 
 pub const ANY_DESC: ShardDesc = ShardDesc {
@@ -390,6 +437,8 @@ pub const ANY_DESC: ShardDesc = ShardDesc {
   output: OutputDesc::Fixed(TypeName::Bool),
   targets: Targets::All,
   aliases: &[],
+  effects: crate::signature::Effects::NONE,
+  lifetime: crate::signature::Lifetime::Stateless,
 };
 
 #[derive(Clone, Copy)]
@@ -400,31 +449,31 @@ pub(crate) enum Condition {
   Flow(usize),
 }
 
-pub struct ConditionsCompiled<B: Backend> {
+pub struct ConditionsCompiled {
   pub(crate) conditions: Vec<Condition>,
-  pub(crate) flows: Vec<CompiledFlow<B>>,
+  pub(crate) flows: Vec<CompiledFlow>,
   /// `All` stops at the first false, `Any` at the first true.
   pub(crate) stop_on: bool,
 }
 
-impl<B: Backend> ControlFlows<B> for ConditionsCompiled<B> {
-  fn flows(&self) -> &[CompiledFlow<B>] {
+impl ControlFlows for ConditionsCompiled {
+  fn flows(&self) -> &[CompiledFlow] {
     &self.flows
   }
 }
 
-pub(crate) fn compose_conditions<B: Backend>(
+pub(crate) fn compose_conditions(
   args: &Args,
-  ctx: &mut ComposeCtx<'_, B>,
+  ctx: &mut ComposeCtx<'_>,
   shard: &'static str,
   stop_on: bool,
-) -> Result<Composed<ConditionsCompiled<B>>> {
+) -> Result<Composed<ConditionsCompiled>> {
   let input = ctx.input();
-  let items = args.variadic("Conditions");
+  let items = args.variadic("conditions");
   if items.is_empty() {
     return Err(compose_error(
       shard,
-      "Conditions",
+      "conditions",
       0,
       "missing-argument",
       format!("{shard} needs at least one condition"),
@@ -438,11 +487,11 @@ pub(crate) fn compose_conditions<B: Backend>(
       ParamValue::Var(name) => {
         let info = ctx
           .read_var(name, shard)
-          .map_err(|e| e.with_param("Conditions", 0))?;
+          .map_err(|e| e.with_param("conditions", 0))?;
         if info.ty != Type::bool() {
           return Err(compose_error(
             shard,
-            "Conditions",
+            "conditions",
             0,
             "wrong-variable-type",
             format!("condition {name} must be a Bool, got {}", info.ty),
@@ -458,7 +507,7 @@ pub(crate) fn compose_conditions<B: Backend>(
           input,
           i > 0,
           shard,
-          "Conditions",
+          "conditions",
           0,
         )?);
         Condition::Flow(flows.len() - 1)
@@ -477,9 +526,3 @@ pub(crate) fn compose_conditions<B: Backend>(
 }
 
 // --- Repeat: Until and Forever (compose and compiled type in mod.rs) ---
-
-/// Whether the repeat should stop before its next iteration because of
-/// `Times` (`done` iterations so far).
-pub(crate) fn repeat_exhausted(times: Option<i64>, done: i64) -> bool {
-  times.is_some_and(|t| done >= t)
-}

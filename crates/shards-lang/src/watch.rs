@@ -5,9 +5,9 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use shards_core::{Catalog, Diagnostic};
+use shards_core::{Catalog, Diagnostic, ReloadReport};
 
-use crate::{Finished, ReloadHost, Session, Source};
+use crate::{Finished, Session, Source};
 
 const POLL: Duration = Duration::from_millis(100);
 const DEFAULT_FRAME: Duration = Duration::from_millis(16);
@@ -28,6 +28,8 @@ pub enum WatchEvent {
   Reloaded {
     restarted: bool,
     finished: Vec<Finished>,
+    /// What a preserving reload retained, reset and restarted.
+    report: ReloadReport,
   },
   Rejected {
     source: Source,
@@ -69,9 +71,9 @@ impl FileWatcher {
   /// poll/tick; this method does not sleep. `restart` bypasses save stability
   /// and validates the current file immediately, including rejected text.
   /// The host owns shutdown (`Session::stop`) when using this method directly.
-  pub fn poll<H: ReloadHost>(
+  pub fn poll(
     &mut self,
-    session: &mut Session<H>,
+    session: &mut Session,
     catalog: &Catalog,
     defines: &HashMap<String, String>,
     restart: bool,
@@ -97,9 +99,15 @@ impl FileWatcher {
             };
             match result {
               Ok(finished) => {
+                let report = if restart {
+                  ReloadReport::default()
+                } else {
+                  session.reload_report().cloned().unwrap_or_default()
+                };
                 event(WatchEvent::Reloaded {
                   restarted: restart,
                   finished,
+                  report,
                 });
                 self.tick_at = Instant::now();
               }
@@ -129,9 +137,9 @@ impl FileWatcher {
   /// and event callbacks. Stop cancels the session and reports final outcomes.
   /// Sleeps between control checks are capped at 10 ms,
   /// even when script FPS is low. Completion or a failed edit does not exit.
-  pub fn run<H: ReloadHost>(
+  pub fn run(
     &mut self,
-    session: &mut Session<H>,
+    session: &mut Session,
     catalog: &Catalog,
     defines: &HashMap<String, String>,
     mut control: impl FnMut() -> WatchControl,

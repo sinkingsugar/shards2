@@ -1,0 +1,2 @@
+Task,Model,ModelId,Variant,Trial,SemanticSuccess,FirstPassSuccess,FirstFailure,RepairRounds,Tokens,OutputTokens,LatencyMs,Failure
+01-hello,claude-haiku-4-5-20251001,claude-haiku-4-5-20251001,functions,1,true,true,,0,36224,371,6049,

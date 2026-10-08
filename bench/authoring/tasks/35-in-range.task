@@ -1,0 +1,14 @@
+=== prompt
+For each of 3, 8 and 12, log whether it lies between 5 and 10 inclusive, as a Bool (`true` or `false`), one per line.
+=== expected
+false
+true
+false
+=== reference
+[3 8 12] = xs
+0 | Var(i)
+Repeat({
+  xs | Take(i) = x
+  All({x | IsMoreEqual(5)} {x | IsLessEqual(10)}) | Log
+  Inc(i)
+} times: 3)

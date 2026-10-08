@@ -1,0 +1,10 @@
+=== prompt
+Log the sum of the elements of the sequence [3 8 1 9 4].
+=== expected
+25
+=== reference
+[3 8 1 9 4] = xs
+0 | Var(total)
+0 | Var(i)
+Repeat({ xs | Take(i) | Math.Add(total) | Update(total) Inc(i) } times: 5)
+total | Log

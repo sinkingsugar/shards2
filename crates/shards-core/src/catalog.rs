@@ -3,8 +3,7 @@
 //! with a compact index, full descriptions and search, as JSON.
 //!
 //! Reading the catalog only reads static descriptions: it never composes,
-//! instantiates, starts a reactor or does I/O. Backend availability is
-//! derived from the implementations attached to each `ShardType`.
+//! instantiates, starts a reactor or does I/O.
 
 use crate::describe::{DefaultValue, InputDesc, OutputDesc, Params, Requirement, TypeName};
 use crate::diagnostic::json_str;
@@ -20,7 +19,8 @@ pub struct Catalog {
 impl Catalog {
   /// Builds a catalog from per-crate lists of shard types, e.g.
   /// `Catalog::new(&[shards_core::shards::CATALOG, shards_io::CATALOG])`.
-  /// Fails on a duplicate shard name.
+  /// Fails on a duplicate shard name, or a parameter whose name is not a
+  /// lowercase label (golden-path.md D3: uppercase is a shard).
   pub fn new(lists: &[&[&'static ShardType]]) -> Result<Catalog, String> {
     let mut shards: Vec<&'static ShardType> = Vec::new();
     let names = |s: &ShardType| {
@@ -33,6 +33,16 @@ impl Catalog {
         if shards.iter().any(|s| names(s).contains(&name)) {
           return Err(format!("duplicate shard name in catalog: {name}"));
         }
+      }
+      if let crate::describe::Params::Declared(params) = ty.desc.params
+        && let Some(p) = params.iter().find(|p| !is_label(p.name))
+      {
+        return Err(format!(
+          "{}: parameter `{}` must be a lowercase label (`{}`)",
+          ty.name(),
+          p.name,
+          p.name.to_lowercase()
+        ));
       }
       shards.push(ty);
     }
@@ -81,7 +91,7 @@ impl Catalog {
       .collect()
   }
 
-  /// The compact index: name, summary, backends and targets of every shard.
+  /// The compact index: name, summary and targets of every shard.
   pub fn index_json(&self) -> String {
     let entries: Vec<String> = self.shards.iter().map(|s| summary_json(s)).collect();
     format!(
@@ -126,13 +136,14 @@ fn aliases_json(s: &ShardType) -> String {
 
 fn summary_json(s: &ShardType) -> String {
   format!(
-    "{{\"name\":{}{},\"summary\":{},\"documented\":{},\"backends\":{},\"targets\":{}}}",
+    "{{\"name\":{}{},\"summary\":{},\"documented\":{},\"targets\":{},\"effects\":{},\"lifetime\":{}}}",
     json_str(s.name()),
     aliases_json(s),
     json_str(s.desc.summary),
     s.desc.is_documented(),
-    strings_json(&s.backends()),
     json_str(s.desc.targets.name()),
+    s.desc.effects.to_json(),
+    json_str(s.desc.lifetime.name()),
   )
 }
 
@@ -148,6 +159,7 @@ fn default_json(d: DefaultValue) -> String {
 
 fn describe_json(s: &ShardType) -> String {
   let d = &s.desc;
+  let signature = d.signature();
   let input = match d.input {
     InputDesc::Any => "{\"kind\":\"any\"}".to_string(),
     InputDesc::Ignored => "{\"kind\":\"ignored\"}".to_string(),
@@ -212,7 +224,7 @@ fn describe_json(s: &ShardType) -> String {
     }
   };
   format!(
-    "{{\"schema\":{},\"name\":{}{},\"version\":{},\"summary\":{},\"help\":{},\"documented\":{},\"backends\":{},\"targets\":{},\"input\":{input},\"output\":{output},\"params\":{params}}}",
+    "{{\"schema\":{},\"name\":{}{},\"version\":{},\"summary\":{},\"help\":{},\"documented\":{},\"targets\":{},\"input\":{input},\"output\":{output},\"params\":{params},\"effects\":{},\"lifetime\":{},\"uses\":[],\"mutates\":[],\"signature\":{}}}",
     json_str(SCHEMA),
     json_str(d.name),
     aliases_json(s),
@@ -220,7 +232,18 @@ fn describe_json(s: &ShardType) -> String {
     json_str(d.summary),
     json_str(d.help),
     d.is_documented(),
-    strings_json(&s.backends()),
     json_str(d.targets.name()),
+    signature.effects.to_json(),
+    json_str(signature.lifetime.name()),
+    signature.to_json(),
   )
+}
+
+/// A parameter label: lowercase letters, digits and `-`, starting with a
+/// letter, as variable names are written.
+fn is_label(name: &str) -> bool {
+  name.starts_with(|c: char| c.is_ascii_lowercase())
+    && name
+      .chars()
+      .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }

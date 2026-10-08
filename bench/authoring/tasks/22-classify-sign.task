@@ -1,0 +1,14 @@
+=== prompt
+For each of the integers -3, 0 and 7 (in that order), log `negative`, `zero` or `positive`.
+=== expected
+negative
+zero
+positive
+=== reference
+[-3 0 7] = xs
+0 | Var(i)
+Repeat({
+  xs | Take(i) = x
+  If({x | IsLess(0)} {"negative"} {If({x | Is(0)} {"zero"} {"positive"})}) | Log
+  Inc(i)
+} times: 3)

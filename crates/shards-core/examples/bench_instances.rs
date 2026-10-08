@@ -81,6 +81,9 @@ macro_rules! run_bench {
     for (name, value, mutable) in bench::mesh_vars(n) {
       mesh.declare_var(name, value, mutable);
     }
+    for def in bench::functions() {
+      mesh.add_function(def);
+    }
     for def in bench::wires() {
       mesh.add_wire(def);
     }
@@ -143,7 +146,7 @@ macro_rules! run_bench {
   println!(
     "scheduler={} instances={n} compile_ms={compile_ms:.3} spawn_ms={spawn_ms:.3} ready_ms={ready_ms:.3} \
      us_per_instance={:.2} tick_us={:.2} ns_per_instance_tick={:.1} iterations={} rss_kb_per_instance={:.2} heap_kb_per_instance={:.2} \
-     non_heap_kb_per_instance={:.2} state_bytes_per_instance={} stack_reserved_kb={} \
+     non_heap_kb_per_instance={:.2} state_bytes_per_instance={} \
      wire_composes={} shard_composes={} var_bytes={}",
     $scheduler,
     per_instance(ready_ms * 1000.0),
@@ -154,7 +157,6 @@ macro_rules! run_bench {
     per_instance(heap_kb),
     per_instance(rss_kb - heap_kb),
     memory.state_bytes,
-    memory.stack_reserved / 1024,
     stats.wire_composes,
     stats.shard_composes,
     std::mem::size_of::<Var>(),
@@ -164,15 +166,10 @@ macro_rules! run_bench {
 
 fn main() {
   let args: Vec<String> = std::env::args().skip(1).collect();
-  let stackless = args.iter().any(|a| a == "--stackless");
   let n: i64 = args
     .iter()
     .find(|a| !a.starts_with("--"))
     .map(|s| s.parse().expect("N must be an integer"))
     .unwrap_or(100);
-  if stackless {
-    run_bench!(shards_core::stackless::Mesh::new(), n, "stackless");
-  } else {
-    run_bench!(shards_core::StackfulMesh::new(), n, "stackful");
-  }
+  run_bench!(shards_core::Mesh::new(), n, "stackless");
 }

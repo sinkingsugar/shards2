@@ -45,6 +45,10 @@ pub struct TableType {
   /// Sorted by key, keys unique.
   pub keys: Vec<(Arc<str>, Type)>,
   pub rest: Option<Type>,
+  /// The interned key shape of a fixed table (`None` with a rest type):
+  /// a struct value of this type carries the same handle, so admission is
+  /// a handle compare (golden path §7.3).
+  pub shape: Option<Shape>,
 }
 
 impl TableType {
@@ -62,10 +66,130 @@ impl TableType {
   }
 }
 
-#[derive(Default)]
 struct Registry {
   descs: Vec<&'static TypeDesc>,
   ids: HashMap<&'static TypeDesc, Type>,
+  shapes: Vec<&'static [Arc<str>]>,
+  shape_ids: HashMap<&'static [Arc<str>], Shape>,
+}
+
+/// The primitive descriptions, interned first and in this order, so their
+/// handles are constants: `Type::none()` and friends do no lookup (they
+/// are compared on activation hot paths, such as a call's input check).
+const PRIMITIVES: [TypeDesc; 10] = [
+  TypeDesc::None,
+  TypeDesc::Never,
+  TypeDesc::Any,
+  TypeDesc::Bool,
+  TypeDesc::Int,
+  TypeDesc::Float,
+  TypeDesc::Float2,
+  TypeDesc::Float3,
+  TypeDesc::Float4,
+  TypeDesc::String,
+];
+
+impl Default for Registry {
+  fn default() -> Registry {
+    let mut reg = Registry {
+      descs: Vec::new(),
+      ids: HashMap::new(),
+      shapes: Vec::new(),
+      shape_ids: HashMap::new(),
+    };
+    for (i, desc) in PRIMITIVES.iter().enumerate() {
+      let desc: &'static TypeDesc = Box::leak(Box::new(desc.clone()));
+      reg.descs.push(desc);
+      reg.ids.insert(desc, Type(i as u32));
+    }
+    reg
+  }
+}
+
+/// An interned sorted key list: the keys of a struct table (golden path
+/// §7.3). Equal key sets intern to the same handle, so comparing shapes is
+/// comparing handles. Shapes live in the type registry, which never frees.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Shape(u32);
+
+impl Shape {
+  /// The shape of these keys, in any order; a repeated key panics (a bug
+  /// in the caller, like a duplicate field in a struct literal).
+  pub fn new<K: Into<Arc<str>>>(keys: impl IntoIterator<Item = K>) -> Shape {
+    let mut keys: Vec<Arc<str>> = keys.into_iter().map(Into::into).collect();
+    keys.sort();
+    if let Some(w) = keys.windows(2).find(|w| w[0] == w[1]) {
+      panic!("duplicate table key {}", w[0]);
+    }
+    Shape::intern_sorted(keys)
+  }
+
+  /// Interns `keys`, already sorted and unique.
+  fn intern_sorted(keys: Vec<Arc<str>>) -> Shape {
+    if let Some(shape) = registry()
+      .read()
+      .expect("type registry poisoned")
+      .shape_ids
+      .get(&keys[..])
+    {
+      return *shape;
+    }
+    let mut reg = registry().write().expect("type registry poisoned");
+    if let Some(shape) = reg.shape_ids.get(&keys[..]) {
+      return *shape;
+    }
+    let shape = Shape(u32::try_from(reg.shapes.len()).expect("too many shapes"));
+    let keys: &'static [Arc<str>] = Box::leak(keys.into_boxed_slice());
+    reg.shapes.push(keys);
+    reg.shape_ids.insert(keys, shape);
+    shape
+  }
+
+  /// How many shapes the process has interned (never freed).
+  pub fn registered() -> usize {
+    registry()
+      .read()
+      .expect("type registry poisoned")
+      .shapes
+      .len()
+  }
+
+  /// The keys, sorted.
+  pub fn keys(self) -> &'static [Arc<str>] {
+    registry().read().expect("type registry poisoned").shapes[self.0 as usize]
+  }
+
+  pub fn len(self) -> usize {
+    self.keys().len()
+  }
+
+  pub fn is_empty(self) -> bool {
+    self.keys().is_empty()
+  }
+
+  /// The slot of `key`, if the shape has it.
+  pub fn index_of(self, key: &str) -> Option<usize> {
+    self.keys().binary_search_by(|k| (**k).cmp(key)).ok()
+  }
+}
+
+impl fmt::Display for Shape {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    write!(f, "{{")?;
+    for (i, k) in self.keys().iter().enumerate() {
+      if i > 0 {
+        write!(f, " ")?;
+      }
+      write!(f, "{}", key_text(k))?;
+    }
+    write!(f, "}}")
+  }
+}
+
+impl fmt::Debug for Shape {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    write!(f, "Shape#{} {self}", self.0)
+  }
 }
 
 fn registry() -> &'static RwLock<Registry> {
@@ -74,6 +198,14 @@ fn registry() -> &'static RwLock<Registry> {
 }
 
 impl Type {
+  /// Whether a value of this type never owns heap storage (none, a
+  /// boolean, a number or a float vector): dropping a stale one releases
+  /// nothing.
+  pub(crate) fn is_scalar(self) -> bool {
+    // The primitive handles, in `PRIMITIVES` order: all but Any and String.
+    matches!(self.0, 0 | 1 | 3..=8)
+  }
+
   /// Returns the handle for `desc`, interning it if needed. Callers build
   /// sets and tables through [`Type::set`] and [`Type::table`], which
   /// canonicalize them first.
@@ -113,35 +245,36 @@ impl Type {
     registry().read().expect("type registry poisoned").descs[self.0 as usize]
   }
 
-  pub fn none() -> Type {
-    Type::intern(TypeDesc::None)
+  // The primitives are constants (see `PRIMITIVES`): no registry access.
+  pub const fn none() -> Type {
+    Type(0)
   }
-  pub fn never() -> Type {
-    Type::intern(TypeDesc::Never)
+  pub const fn never() -> Type {
+    Type(1)
   }
-  pub fn any() -> Type {
-    Type::intern(TypeDesc::Any)
+  pub const fn any() -> Type {
+    Type(2)
   }
-  pub fn bool() -> Type {
-    Type::intern(TypeDesc::Bool)
+  pub const fn bool() -> Type {
+    Type(3)
   }
-  pub fn int() -> Type {
-    Type::intern(TypeDesc::Int)
+  pub const fn int() -> Type {
+    Type(4)
   }
-  pub fn float() -> Type {
-    Type::intern(TypeDesc::Float)
+  pub const fn float() -> Type {
+    Type(5)
   }
-  pub fn float2() -> Type {
-    Type::intern(TypeDesc::Float2)
+  pub const fn float2() -> Type {
+    Type(6)
   }
-  pub fn float3() -> Type {
-    Type::intern(TypeDesc::Float3)
+  pub const fn float3() -> Type {
+    Type(7)
   }
-  pub fn float4() -> Type {
-    Type::intern(TypeDesc::Float4)
+  pub const fn float4() -> Type {
+    Type(8)
   }
-  pub fn string() -> Type {
-    Type::intern(TypeDesc::String)
+  pub const fn string() -> Type {
+    Type(9)
   }
   pub fn seq(inner: Type) -> Type {
     Type::intern(TypeDesc::Seq(inner))
@@ -158,7 +291,21 @@ impl Type {
     if let Some(w) = keys.windows(2).find(|w| w[0].0 == w[1].0) {
       panic!("duplicate table key {}", w[0].0);
     }
-    Type::intern(TypeDesc::Table(TableType { keys, rest }))
+    let shape = rest
+      .is_none()
+      .then(|| Shape::intern_sorted(keys.iter().map(|(k, _)| k.clone()).collect()));
+    Type::intern(TypeDesc::Table(TableType { keys, rest, shape }))
+  }
+
+  /// The fixed table of `shape` with one value type per key, in key order.
+  pub fn fixed_table_of(shape: Shape, types: impl IntoIterator<Item = Type>) -> Type {
+    let keys: Vec<(Arc<str>, Type)> = shape.keys().iter().cloned().zip(types).collect();
+    assert_eq!(keys.len(), shape.len(), "one type per key of {shape}");
+    Type::intern(TypeDesc::Table(TableType {
+      keys,
+      rest: None,
+      shape: Some(shape),
+    }))
   }
 
   /// A fixed table: exactly these keys.
@@ -221,15 +368,27 @@ impl Type {
       | (TypeDesc::String, Var::String(_)) => true,
       (TypeDesc::Seq(e), Var::Seq(items)) => items.iter().all(|v| e.admits(v)),
       (TypeDesc::Table(t), Var::Table(entries)) => {
+        if let (Some(expected), Some(actual)) = (t.shape, entries.shape()) {
+          // A struct value of a fixed type: the shape handle says whether
+          // the keys match (no lookups), then each slot is checked. The
+          // slot check is unconditional: `set_var` and `spawn` admit host
+          // values with this, in release too.
+          return expected == actual
+            && t
+              .keys
+              .iter()
+              .zip(entries.values())
+              .all(|((_, kt), v)| kt.admits(v));
+        }
         t.keys
           .iter()
           .all(|(k, kt)| entries.get(k).is_some_and(|v| kt.admits(v)))
-          && entries.iter().all(
-            |(k, v)| match t.keys.binary_search_by(|(name, _)| name.cmp(k)) {
+          && entries.iter().all(|(k, v)| {
+            match t.keys.binary_search_by(|(name, _)| (**name).cmp(k)) {
               Ok(_) => true,
               Err(_) => t.rest.is_some_and(|r| r.admits(v)),
-            },
-          )
+            }
+          })
       }
       _ => false,
     }
@@ -507,6 +666,12 @@ mod tests {
   #[should_panic(expected = "duplicate table key a")]
   fn a_repeated_table_key_panics() {
     Type::fixed_table([("a", Type::int()), ("a", Type::float())]);
+  }
+
+  #[test]
+  #[should_panic(expected = "duplicate table key a")]
+  fn a_repeated_shape_key_panics() {
+    Shape::new(["a", "b", "a"]);
   }
 
   #[test]

@@ -1,0 +1,25 @@
+[["3" "bad" "-2" "end" "end" "5" "oops" "7" "end" "4"] ["end" "2" "end"]] = inputs
+0 >= batch
+Repeat({
+  inputs | Take(batch) | ExpectSeq = items
+  0 >= sum
+  0 >= errors
+  false >= pending
+  0 >= i
+  items | Count = count
+  Repeat({
+    items | Take(i) | ExpectString = item
+    If({item | Is("end")} {
+      f"sum={sum} invalid={errors}" | Log
+      0 > sum
+      0 > errors
+      false > pending
+    } {
+      true > pending
+      Maybe({item | ParseInt | Math.Add(sum) > sum} {Inc(errors)} Silent: true)
+    })
+    Inc(i)
+  } Times: count)
+  When({pending} {f"sum={sum} invalid={errors}" | Log})
+  Inc(batch)
+} Times: 2)

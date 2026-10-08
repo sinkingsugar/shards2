@@ -1,11 +1,10 @@
-//! Shards that wait on an async operation, with one implementation for both
-//! schedulers. Prototype API.
+//! Shards that wait on an async operation. Prototype API.
 //!
 //! An [`AsyncShard`] starts one operation (a future) per activation, from
-//! owned inputs. [`Async`] adapts it to each scheduler: the future is created
-//! once, kept in the shard's state, and polled again on every resume until it
-//! completes. While it is pending, the instance waits on its waker (see
-//! [`crate::WakeMode`]); both adapters use the same waker.
+//! owned inputs. [`Async`] adapts it to the shard contract: the future is
+//! created once, kept in the shard's state as the resume point, and polled
+//! again on every resume until it completes. While it is pending, the
+//! instance waits on its waker (see [`crate::WakeMode`]).
 //!
 //! Cancellation drops the pending future, before the shard's state (and any
 //! resource an earlier shard holds) is released. Dropping a future cancels
@@ -23,8 +22,7 @@ use super::leaf::{Checked, check_output, checked};
 use super::*;
 use crate::describe::ShardDesc;
 use crate::instance::{CleanupCtx, InstanceCtx, LeafCtx};
-use crate::shard::{Flow, Shard};
-use crate::stackless::{self, Stackless, Step};
+use crate::shard::{ActivationCtx, Shard, Step};
 
 /// A shard that waits on an async operation. Prototype API.
 pub trait AsyncShard: 'static {
@@ -36,10 +34,7 @@ pub trait AsyncShard: 'static {
   /// shared decoder enforces the declared parameters.
   const DESC: ShardDesc;
 
-  fn compose<B: Backend>(
-    args: &Args,
-    ctx: &mut ComposeCtx<'_, B>,
-  ) -> Result<Composed<Self::Compiled>>;
+  fn compose(args: &Args, ctx: &mut ComposeCtx<'_>) -> Result<Composed<Self::Compiled>>;
 
   /// Starts one operation. Called once per activation that starts it; the
   /// returned future must own its inputs and resource handles (no borrows of
@@ -52,14 +47,12 @@ pub struct AsyncState<Op> {
   op: Option<Pin<Box<Op>>>,
 }
 
-/// Adapts an [`AsyncShard`] to both schedulers.
+/// Adapts an [`AsyncShard`] to the shard contract.
 pub struct Async<A>(PhantomData<fn() -> A>);
 
-/// The shard type of an async shard, with both implementations.
+/// The shard type of an async shard.
 pub const fn async_type<A: AsyncShard>() -> ShardType {
-  ShardType::new(A::DESC)
-    .with_stackful::<Async<A>>()
-    .with_stackless::<Async<A>>()
+  ShardType::new(A::DESC).implemented_by::<Async<A>>()
 }
 
 fn ensure_started<A: AsyncShard>(
@@ -80,56 +73,7 @@ impl<A: AsyncShard> Shard for Async<A> {
   const NAME: &'static str = A::DESC.name;
   const VERSION: u32 = A::DESC.version;
 
-  fn compose(
-    args: &Args,
-    ctx: &mut ComposeCtx<'_, Stackful>,
-  ) -> Result<Composed<Checked<A::Compiled>>> {
-    A::compose(args, ctx).map(checked)
-  }
-
-  fn instantiate(_: &Checked<A::Compiled>, _: &mut InstanceCtx) -> Result<AsyncState<A::Op>> {
-    Ok(AsyncState { op: None })
-  }
-
-  fn activate(
-    c: &Checked<A::Compiled>,
-    state: &mut AsyncState<A::Op>,
-    ctx: &mut crate::runtime::ActivationCtx<'_>,
-    input: &Var,
-  ) -> Result<Flow> {
-    ensure_started::<A>(&c.inner, state, ctx, input)?;
-    loop {
-      let op = state.op.as_mut().expect("operation started");
-      let poll = op.as_mut().poll(&mut Context::from_waker(ctx.waker()));
-      if let Poll::Ready(result) = poll {
-        state.op = None;
-        let value = result?;
-        check_output(A::DESC.name, c.output, &value)?;
-        return Ok(Flow::Next(value));
-      }
-      if let Err(err) = ctx.wait() {
-        // Cancelled while pending: drop the future before anything else.
-        state.op = None;
-        return Err(err);
-      }
-    }
-  }
-
-  fn cleanup(_: &Checked<A::Compiled>, state: &mut AsyncState<A::Op>, _: &mut CleanupCtx) {
-    state.op = None;
-  }
-}
-
-impl<A: AsyncShard> stackless::Shard for Async<A> {
-  type Compiled = Checked<A::Compiled>;
-  type State = AsyncState<A::Op>;
-  const NAME: &'static str = A::DESC.name;
-  const VERSION: u32 = A::DESC.version;
-
-  fn compose(
-    args: &Args,
-    ctx: &mut ComposeCtx<'_, Stackless>,
-  ) -> Result<Composed<Checked<A::Compiled>>> {
+  fn compose(args: &Args, ctx: &mut ComposeCtx<'_>) -> Result<Composed<Checked<A::Compiled>>> {
     A::compose(args, ctx).map(checked)
   }
 
@@ -141,7 +85,7 @@ impl<A: AsyncShard> stackless::Shard for Async<A> {
   fn activate(
     c: &Checked<A::Compiled>,
     state: &mut AsyncState<A::Op>,
-    ctx: &mut stackless::ActivationCtx<'_>,
+    ctx: &mut ActivationCtx<'_>,
     input: &Var,
   ) -> Result<Step> {
     ensure_started::<A>(&c.inner, state, ctx, input)?;

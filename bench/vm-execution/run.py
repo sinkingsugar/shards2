@@ -12,6 +12,7 @@ import platform
 import random
 import re
 import statistics
+import shutil
 import subprocess
 import sys
 import time
@@ -103,6 +104,18 @@ def script(case, width, iterations, batches):
 """
 
 
+def dialect(text, engine):
+    """The same workload in an engine's syntax. Scripts are written in the
+    1.x dialect; 2.0 declares with Var, labels lowercase, Push neither
+    declares nor clears, and a named sub-flow is a function (`Do` is gone)."""
+    if engine == "1x":
+        return text
+    return (text.replace("Push(items Clear: false)", "Push(items)")
+            .replace(" | Set(", " | Var(").replace("Times:", "times:")
+            .replace("@wire(step { Math.Add(1) })", "@fn(Step input: Int output: Int params: {} { Math.Add(1) })")
+            .replace("Do(step)", "Step"))
+
+
 def parse_output(output, iterations, batches):
     seconds = re.findall(r"VM_SECONDS: ([^\r\n]+)", output)
     valid = re.findall(r"VM_VALID: (\w+)", output)
@@ -127,7 +140,10 @@ def run(command, path, iterations, batches, timeout):
 
 
 def capture(command, cwd=None):
-    p = subprocess.run(command, cwd=cwd, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    try:
+        p = subprocess.run(command, cwd=cwd, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    except FileNotFoundError:
+        return f"{command[0]}: not available on this platform"
     return p.stdout.strip()
 
 
@@ -146,7 +162,7 @@ def provenance(args, engines):
         "arguments": {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()},
         "commands": engines, "binaries": {}, "repositories": {},
         "rustc": capture(["rustc", "-Vv"], ROOT),
-        "cpu": capture(["lscpu"]),
+        "cpu": capture(["lscpu"]) if shutil.which("lscpu") else capture(["sysctl", "-n", "machdep.cpu.brand_string"]),
         "affinity": sorted(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else None,
         "script_generator_sha256": sha256(Path(__file__)),
     }
@@ -235,8 +251,7 @@ def main():
     args.out.mkdir(parents=True, exist_ok=False)
     scripts = args.out / "scripts"
     scripts.mkdir()
-    engines = {"1x": [str(args.shards1)], "2-stackless": [str(args.shards2), "run"],
-               "2-stackful": [str(args.shards2), "run", "--stackful"]}
+    engines = {"1x": [str(args.shards1)], "2-stackless": [str(args.shards2), "run"]}
     (args.out / "metadata.json").write_text(json.dumps(provenance(args, engines), indent=2) + "\n")
     rng = random.Random(args.seed)
     jobs = [(case, width) for case in args.cases for width in args.widths]
@@ -247,25 +262,30 @@ def main():
         writer = csv.DictWriter(f, fieldnames=fields, lineterminator="\n")
         writer.writeheader()
         for job, (case, width) in enumerate(jobs, 1):
-            path = scripts / f"{case}-{width}.shs"
+            paths = {engine: scripts / f"{case}-{width}-{engine.split('-')[0]}.shs" for engine in engines}
+
+            def write(iterations, batches):
+                for engine, path in paths.items():
+                    path.write_text(dialect(script(case, width, iterations, batches), engine))
+
             iterations = args.iterations
             if iterations is None:
                 probe = 10000
-                path.write_text(script(case, width, probe, 2))
+                write(probe, 2)
                 rates = []
                 for engine, command in engines.items():
-                    times = run(command, path, probe, 2, args.timeout)
+                    times = run(command, paths[engine], probe, 2, args.timeout)
                     rates.append(times[-1] / probe)
                     calibration.append(dict(case=case, width=width, engine=engine, iterations=probe, seconds=times))
                 iterations = max(100, min(100_000_000, math.ceil(min(args.target_ms / 1000 / min(rates),
                                                                           args.max_ms / 1000 / max(rates)))))
             batches = args.warmup + args.samples
-            path.write_text(script(case, width, iterations, batches))
+            write(iterations, batches)
             for round_index in range(args.rounds):
                 order = list(engines)
                 rng.shuffle(order)
                 for engine in order:
-                    times = run(engines[engine], path, iterations, batches, args.timeout)
+                    times = run(engines[engine], paths[engine], iterations, batches, args.timeout)
                     for batch, seconds in enumerate(times):
                         row = dict(case=case, width=width, engine=engine, round=round_index, batch=batch,
                                    warmup=batch < args.warmup, iterations=iterations, seconds=seconds,

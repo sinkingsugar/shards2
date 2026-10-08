@@ -6,7 +6,7 @@ Shared working instructions for coding agents in this repository.
 
 Shards 2.0: a new Rust implementation of the Shards runtime. The 1.x implementation (C++ core with Rust modules) lives at `fragcolor-xyz/shards`, usually checked out at `../shards`. Use it to learn what a feature is for, and for tests and reusable Rust code, but do not copy its runtime architecture. Its author's view: the intent was good, the execution often was not. Do not treat 1.x behavior as correct by default: when "1.x does X", decide whether X is good, choose the better design, and list the difference under "Deviations from 1.x" in `docs/current-state.md`.
 
-Status: the core prototype is done and validates the design. Two schedulers (stackful and stackless) pass the same acceptance suite; **stackless is the default, and both are maintained**, one backend per mesh.
+Status: the core prototype is done and validates the design. The runtime has **one scheduler**: the iterative, directly resumable engine in `stackless/` (golden path M4). The stackful prototype scheduler was deleted after the M4 gate passed; nothing is written for two backends any more.
 
 ## Start a session here
 
@@ -19,9 +19,10 @@ This repository should be usable without previous chat history or private agent 
 
 ## Read first
 
+- `docs/golden-path.md`: the approved plan for the current work (functions, scope, the stackless engine, values). It is the contract for milestones M0 to M7 and overrides older statements in the documents below where they conflict.
 - `docs/shards-2-compose-split.md`: the design and the source of truth for the core model. Read it before changing core code.
 - `docs/prototype-shard-contract.md`: the shard contract (the decisions that replace 1.x's `shards.h`).
-- `docs/stackless-experiment.md`: the two schedulers, their trade-offs, the shared shard APIs, and the matched benchmarks against 1.x.
+- `docs/stackless-experiment.md`: the scheduler experiment and decision (historical: stackful is gone), the shared shard APIs, and the matched benchmarks against 1.x.
 - `docs/shard-metadata-and-compose.md`: metadata, argument decoding, structured diagnostics, and the completed catalog work.
 - `docs/values-and-types.md`: tables, float vectors, type sets and the acceptance rule.
 - `docs/embedding.md`: how a host crate adds its own shards and runs scripts (the guide for downstream projects).
@@ -29,11 +30,11 @@ This repository should be usable without previous chat history or private agent 
 
 ## Layout
 
-- `crates/shards-core`: compose (generic over a scheduler `Backend`), the stackful scheduler (`runtime/`), the stackless scheduler (`stackless/`), shared lifecycle helpers (`lifecycle.rs`), and the prototype shards (`shards/`).
+- `crates/shards-core`: compose (`compose.rs`), the shard contract (`shard.rs`), the scheduler (`stackless/`: frame arena, engine, mesh), shared lifecycle helpers (`lifecycle.rs`), and the prototype shards (`shards/`).
 - `crates/shards-io`: I/O shards (`Http.Get`) on a shared Tokio runtime, following 1.x's HTTP module. Native only.
-- `crates/shards-lang`: the language frontend: hand-written lexer and parser with spans, lowering to `WireDef`/`ShardDef` with a source map, and `check`/`run` on either scheduler (`docs/surface-syntax-review.md`).
-- `crates/shards-cli`: the `shards2` command (`check [--json]`, `run`, `watch`, `describe`, `search`, `catalog`; `--stackful` selects the other scheduler).
-- `bench/`: benchmarks matched with 1.x (`shards-1x/`, `http-concurrency/`).
+- `crates/shards-lang`: the language frontend: hand-written lexer and parser with spans, lowering to `WireDef`/`ShardDef` with a source map, and `check`/`run` (`docs/surface-syntax-review.md`).
+- `crates/shards-cli`: the `shards2` command (`check [--json]`, `run`, `watch`, `describe`, `search`, `catalog`).
+- `bench/`: benchmarks matched with 1.x (`shards-1x/`, `http-concurrency/`), and the authoring eval (`authoring/`, golden path §8; its README says how to run it).
 - `examples/esp32`: ESP-IDF firmware embedding the core and frontend on the stackless scheduler; a separate workspace with its own lockfile (`docs/esp32.md`).
 
 ## Core rules
@@ -45,18 +46,18 @@ This repository should be usable without previous chat history or private agent 
 
 ## Writing shards
 
-Both schedulers must keep working, so choose the shard API by what the shard does:
+Choose the shard API by what the shard does:
 
-- **Cannot suspend** (most shards): implement `LeafShard` (`shards/leaf.rs`) once; it runs on both schedulers. "Leaf" means it never suspends, not that it does little work.
+- **Cannot suspend** (most shards): implement `LeafShard` (`shards/leaf.rs`). "Leaf" means it never suspends, not that it does little work.
 - **Waits on async I/O**: implement `AsyncShard` (`shards/async_shard.rs`) once. `start` returns one future per operation, from owned inputs. Spawn I/O through `shards-io`'s shared runtime (`shards_io::runtime::spawn`); never put a runtime or reactor inside a shard, and never block. Race every await of in-flight work against the cancellation token: dropping a Tokio `JoinHandle` alone only detaches the task.
-- **Suspends or runs nested flows** (control flow like `When`, `Do`, `Repeat`): needs **two implementations**, stackful (`shards/stackful.rs`) and stackless (`stackless/shards.rs`), sharing their compose logic (`shards/mod.rs`), landing on both backends in the same commit. The stackless one keeps its resume point in `State` and resets it on every exit other than `Suspend`, including errors. Add parity tests to the shared suite. Keep this set small and explicit.
+- **Suspends or runs nested flows** (control flow like `When`, `Repeat`, `Maybe`): implements the full `Shard` contract (`shard.rs`). Its description, compose logic and compiled type live in `shards/mod.rs` or `shards/control.rs`; a composite exposes a `Control` description and the engine (`stackless/engine.rs`) enters its children and owns and resets its continuation (adapters in `stackless/shards.rs`). A directly suspending leaf (like `Pause`) keeps its resume point in `State` and resets it on every exit other than `Suspend`, including errors. Keep this set small and explicit.
 - **Lifecycle**: use `lifecycle.rs` (`cleanup_each`, `instantiate_all`) for anything that instantiates or cleans up child flows, so every cleanup is attempted even when one panics.
-- **Describing a shard** (`docs/shard-metadata-and-compose.md`): give it a `ShardDesc` with its parameter declarations as a `static`, and read arguments in compose through the decoded `Args` accessors, not by position. Write all prose (summary, help, parameter help) through `shard_doc!`, so the `docs` feature can compile it out for small builds. Never duplicate a name, version or parameter list: attach implementations to the one description (`ShardType::new(desc).with_stackful::<S>().with_stackless::<T>()`), and add the shard to its crate's `CATALOG` list. Report compose errors as structured `Error::Diagnostic`s.
-- **Tests**: acceptance tests are generated for both schedulers (`tests/prototype.rs`, `shards-io/tests/http.rs`, `shards-lang/tests/lang.rs`). New behavior gets a test in the shared suite, not in one backend only.
+- **Describing a shard** (`docs/shard-metadata-and-compose.md`): give it a `ShardDesc` with its parameter declarations as a `static`, and read arguments in compose through the decoded `Args` accessors, not by position. Write all prose (summary, help, parameter help) through `shard_doc!`, so the `docs` feature can compile it out for small builds. Never duplicate a name, version or parameter list: attach the implementation to the one description (`ShardType::new(desc).implemented_by::<S>()`), and add the shard to its crate's `CATALOG` list. Report compose errors as structured `Error::Diagnostic`s.
+- **Tests**: acceptance tests live in `tests/prototype.rs`, `tests/trampoline.rs`, `shards-io/tests/http.rs` and `shards-lang/tests/lang.rs`; the ESP32 firmware reruns the core and frontend suites in QEMU, so new behavior gets a test there, with device-sized fixtures where a case would exceed the device's memory.
 
 ## Scope
 
-The prototype milestone is complete. Next is porting the language front end and the first real modules. Port incrementally, keep both schedulers passing, and propose larger scope increases (graphics, physics, browser wasm) to the user instead of starting them. The gfx/physics 1.x baseline (design doc §5) comes before graphics porting.
+The prototype milestone is complete. Next is porting the language front end and the first real modules. Port incrementally, keep the suite passing natively, on WASI and on ESP-IDF, and propose larger scope increases (graphics, physics, browser wasm) to the user instead of starting them. The gfx/physics 1.x baseline (design doc §5) comes before graphics porting.
 
 ## Commands
 
@@ -65,18 +66,17 @@ The prototype milestone is complete. Next is porting the language front end and 
 - `cargo fmt --all` and `cargo fmt --manifest-path examples/esp32/Cargo.toml --all` before committing (2-space indent, see `rustfmt.toml`)
 - `cargo clippy --workspace --all-targets -- -D warnings`
 - docs off: `cargo test -p shards-core -p shards-io --no-default-features --test metadata --test catalog` and `cargo test -p shards-lang --no-default-features`
-- release stacks: `cargo test --release -p shards-lang --test lang nesting_up_to_the_limit`
+- release nesting: `cargo test --release -p shards-lang --test lang nesting_up_to_the_limit`
 - TLS: `cargo clippy -p shards-io --all-targets --features rustls-ring -- -D warnings`
 - wasm lint: `cargo clippy -p shards-core -p shards-lang --target wasm32-wasip1 --lib --tests -- -D warnings`
-- the stackful mesh exists only where `build.rs` sets `cfg(stackful)` (not wasm, not ESP-IDF); gate stackful code and test modules on that cfg.
 - wasm tests: `cargo test -p shards-core --test prototype --test metadata --target wasm32-wasip1 --no-run` and `cargo test -p shards-lang --test lang --target wasm32-wasip1 --no-run`, then run each emitted test `.wasm` with `node scripts/run-wasi.mjs <path>`. Install the target with `rustup target add wasm32-wasip1` if needed. Benchmark examples are native-only; do not use `--all-targets` for wasm.
 
-The toolchain is pinned in `rust-toolchain.toml`. CI runs fmt, clippy and tests on Linux and macOS, clippy for the `rustls-ring` build, and the stackless suite on wasm (Node WASI). A separate workflow links the ESP32 firmware for three chips and boots each in Espressif's QEMU (`scripts/esp32-qemu.sh`) when the core, frontend or example change; it needs no local run, but when `shards-core` or `shards-lang` gain or change a dependency, refresh `examples/esp32/Cargo.lock` (`cargo update -w` in `examples/esp32`), since the firmware builds with `--locked`.
+The toolchain is pinned in `rust-toolchain.toml`. CI runs fmt, clippy and tests on Linux and macOS, clippy for the `rustls-ring` build, and the suite on wasm (Node WASI). A separate workflow links the ESP32 firmware for three chips and boots each in Espressif's QEMU (`scripts/esp32-qemu.sh`) when the core, frontend or example change; it needs no local run, but when `shards-core` or `shards-lang` gain or change a dependency, refresh `examples/esp32/Cargo.lock` (`cargo update -w` in `examples/esp32`), since the firmware builds with `--locked`.
 
 
 ## Git
 
-Work on `main`; there are no feature branches so far. Commit after the full check set above passes locally, push, and watch the CI run (`gh run watch`); CI runs on pushes to `main` and on pull requests. Review findings from Astra are addressed in follow-up commits with regression tests.
+Golden-path work (`docs/golden-path.md`) happens on the `golden-path` branch, with a draft pull request to `main` so CI runs on every push; other work goes on `main`. Commit after the full check set above passes locally, push, and watch the CI run (`gh run watch`); CI runs on pushes to `main` and on pull requests. Review findings from Astra are addressed in follow-up commits with regression tests.
 
 ## Private projects
 

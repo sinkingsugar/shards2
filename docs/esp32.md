@@ -12,11 +12,11 @@ low-water marks to the serial console.
 | ESP32-S3 | `xtensa-esp32s3-espidf` | Espressif Rust `1.97.0.0` (`esp`) |
 | ESP32-C3 | `riscv32imc-esp-espidf` | `nightly-2026-10-03` |
 
-This uses Rust `std` on ESP-IDF, not bare-metal `no_std`. The coroutine mesh
-and its `corosensei` dependency are excluded on ESP-IDF, as on WASI: the
-crates' `build.rs` sets `cfg(stackful)` only where it exists. The
-desktop backends remain unchanged. `shards-io`, the desktop CLI, networking,
-GPIO and other peripheral shards are outside this initial build target.
+This uses Rust `std` on ESP-IDF, not bare-metal `no_std`. The runtime is
+the same engine as on desktop and WASI; the only target-specific defaults in
+the core are the device call-depth limit and the device-sized test fixtures.
+`shards-io`, the desktop CLI, networking, GPIO and other peripheral shards are
+outside this initial build target.
 
 ## Build
 
@@ -86,8 +86,9 @@ The script merges bootloader, partition table and app into a flash image, boots
 it, prints the serial log and fails unless the success line appears before a
 crash or the timeout (60 s by default; a third argument changes it).
 
-The example reserves 64 KiB for the ESP-IDF main task stack because parsing
-and composing still use the native stack. The success line reports the main
+The example reserves 128 KiB for its main task at boot, before suite allocations
+fragment the heap. Suites run sequentially and report cumulative stack/heap
+low-water marks after each suite. The final success line reports the main
 task's stack and heap low-water marks. Stack depth follows the code path, so
 the emulator measures it as a board would; heap figures depend on the chip's
 RAM layout and enabled components. Measured in QEMU on 2026-10-05 (commit
@@ -99,9 +100,13 @@ RAM layout and enabled components. Measured in QEMU on 2026-10-05 (commit
 | ESP32-S3 | 5,768 of 65,536 B | 320,248 B |
 | ESP32-C3 | 5,140 of 65,536 B | 259,692 B |
 
-The smoke script is shallow, so 64 KiB is generous for it. It is not evidence
-that the desktop nesting limit fits on a device: deeper scripts use more stack
-while parsing and composing, and real workloads need their own measurement.
+The smoke script is shallow, so 64 KiB is generous for it. The desktop
+nesting limit does not fit the 128 KiB acceptance task: a level of function
+compose takes several KiB of stack, so on ESP-IDF `MAX_FLOW_DEPTH` is 24
+(desktop 48), as the runtime call depth is 32 (desktop 256); deeper scripts
+use more stack while parsing and composing, and real workloads need their own
+measurement. The instance-count fixtures are the desktop ones (an entity instance of
+the acceptance workload holds about 1.7 KiB).
 Firmware uses `panic = "abort"`: panics terminate the application and do not
 provide desktop per-instance panic isolation. Shard documentation prose is
 disabled through both dependency paths; parameter contracts are retained.
@@ -124,3 +129,11 @@ jobs continue to test runtime semantics in depth.
 The build layout follows the official
 [ESP-IDF Rust template](https://github.com/esp-rs/esp-idf-template/tree/master/cargo)
 and Rust's [ESP-IDF target documentation](https://doc.rust-lang.org/rustc/platform-support/esp-idf.html).
+
+## M4 acceptance build
+
+CI builds with `--features acceptance`. The example build script derives a direct runner from `shards-core/tests/{prototype,metadata,host_contract,registry,trampoline}.rs` and `shards-lang/tests/lang.rs`, preserving test cfg attributes and using the default mesh. The regular smoke example remains available without this feature. Device tests omit panic-unwind-only behavior (ESP-IDF aborts on panic), native filesystem watching and host allocator instrumentation. Deep-call tests obey the device's default invocation limit of 32 and use a smaller over-limit source to fit the heap. The success marker is printed only after all enabled suites finish; a panic or missing marker fails QEMU.
+
+The shared-suite gate exposed heap and stack limits hidden by the smoke script. Recursive compose overflowed a 64 KiB stack; the 96 KiB attempt left too little heap for the original 100-instance case. Runtime follow-ups share occurrence metadata and reserve exact frame/state/child capacities. A temporary-suite-task attempt then failed to allocate a contiguous 128 KiB frontend stack after earlier suites on C3. The current runner reserves 128 KiB at boot and reports cumulative low-water marks after each suite. This budget is pending a successful full run on all three chips; historical smoke measurements above do not establish it.
+
+Deep diagnostics-only acceptance uses `Program::compose`, which avoids constructing a tooling occurrence report just to discard it. Dedicated source-analysis tests still inspect those reports. The smoke program and catalog are released before acceptance begins. ESP excessive-call rejection fixtures use 80 wires beyond the unchanged compose limit of 48. Malformed-input fixtures use `MAX_DEPTH + 1` beyond the unchanged parser limit of 64; native stress sizes remain 5,000 array levels and 500 Repeat levels. Valid nesting depths, including the 30-level nested-source case, and runtime instance counts are unchanged.

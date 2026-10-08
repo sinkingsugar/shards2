@@ -19,7 +19,7 @@ pub struct Program {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Statement {
-  /// `= x`, `>= x`, `> x`, `>> x`.
+  /// `= x`: binds an immutable name.
   Assign {
     op: AssignOp,
     op_span: Span,

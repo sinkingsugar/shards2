@@ -1,34 +1,15 @@
 //! Host-driven execution with transactional source replacement.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use std::time::Duration;
 
-use shards_core::diagnostic::Diagnostic;
-use shards_core::{Catalog, InstanceId, Outcome};
+use shards_core::diagnostic::{Diagnostic, PathStep};
+use shards_core::{
+  Catalog, CompiledWire, InstanceId, Mesh, Outcome, ReloadReport, ResetPolicy, Type, Var,
+};
 
-use crate::{Host, Program, Source};
-
-/// A host whose instances can all be cancelled before a replacement starts.
-///
-/// Like the built-in meshes, implementations must defer shard instantiation
-/// and activation until `tick`, cancel every child in `cancel_all`, retain
-/// cleanup failures as outcomes, and cancel remaining work when dropped.
-pub trait SessionHost: Host {
-  fn cancel_all(&mut self);
-}
-
-impl SessionHost for shards_core::Mesh {
-  fn cancel_all(&mut self) {
-    self.cancel_all();
-  }
-}
-
-#[cfg(stackful)]
-impl SessionHost for shards_core::StackfulMesh {
-  fn cancel_all(&mut self) {
-    self.cancel_all();
-  }
-}
+use crate::{Program, Source};
 
 /// An entry or spawned instance that finished, failed or was cancelled.
 /// Returned once; a session does not accumulate a history of outcomes.
@@ -38,52 +19,74 @@ pub struct Finished {
   pub outcome: Outcome,
 }
 
-struct Entry<W> {
+struct Entry {
   name: String,
-  wire: W,
+  wire: Arc<CompiledWire>,
   id: InstanceId,
 }
 
-struct Execution<H: Host> {
-  mesh: H,
-  entries: Vec<Entry<H::Wire>>,
+struct Execution {
+  mesh: Mesh,
+  entries: Vec<Entry>,
   failed: HashSet<InstanceId>,
   ticks: u64,
   iterations: Option<u64>,
   frame_interval: Option<Duration>,
 }
 
-/// A reloadable program on a host-owned event loop (stackless by default).
+/// A reloadable program on a host-owned event loop.
 ///
 /// `reload` validates all wires and explicitly restarts the whole mesh.
-/// `reload_preserving` (with a [`ReloadHost`]) retains compatible callers,
-/// locals and mesh values, selecting nested Do bodies at call boundaries.
+/// `reload_preserving` retains compatible callers, locals and mesh values,
+/// and call sites select edited function bodies at their next entry.
 /// Rejected edits leave execution untouched. Host services live outside this
 /// object and survive either mode. Each revision owns its compose cache.
 ///
 /// Calls are synchronous and require exclusive access: reload between ticks.
 /// Compilation can delay the host loop. Cancellation drops pending futures;
 /// external work still requires cooperative cancellation by the host shard.
-pub struct Session<H: SessionHost = shards_core::Mesh> {
-  active: Option<Execution<H>>,
+pub struct Session {
+  active: Option<Execution>,
+  reset_policy: ResetPolicy,
 }
 
-impl<H: SessionHost> Default for Session<H> {
+impl Default for Session {
   fn default() -> Self {
     Self::new()
   }
 }
 
-impl<H: SessionHost> Session<H> {
+impl Session {
   pub fn new() -> Self {
-    Self { active: None }
+    Self {
+      active: None,
+      reset_policy: ResetPolicy::default(),
+    }
+  }
+
+  /// What a preserving reload does when a stateful function's state would
+  /// reset (golden path §11): reject the edit (the embedding default) or
+  /// apply the resets and report them (what `shards2 watch` does).
+  pub fn set_reset_policy(&mut self, policy: ResetPolicy) {
+    self.reset_policy = policy;
+    if let Some(active) = &mut self.active {
+      active.mesh.set_reset_policy(policy);
+    }
+  }
+
+  /// What the last accepted preserving reload retained, reset and
+  /// restarted, by name; `None` without an active revision.
+  pub fn reload_report(&self) -> Option<&ReloadReport> {
+    self.active.as_ref().map(|a| a.mesh.reload_report())
   }
 
   /// Starts with a host-configured, idle mesh. Use `reload_preserving` to
-  /// keep its declared mesh variables across source revisions.
-  pub fn with_mesh(mesh: H) -> Self {
+  /// keep its declared mesh variables across source revisions. The mesh's
+  /// reset policy is the session's.
+  pub fn with_mesh(mesh: Mesh) -> Self {
     assert_eq!(mesh.running(), 0, "Session requires an idle mesh");
     Self {
+      reset_policy: mesh.reset_policy(),
       active: Some(Execution {
         mesh,
         entries: Vec::new(),
@@ -110,20 +113,18 @@ impl<H: SessionHost> Session<H> {
     defines: &HashMap<String, String>,
   ) -> Result<Vec<Finished>, (Source, Vec<Diagnostic>)> {
     let program = Program::load(source, catalog, defines)?;
-    let mut mesh = H::create();
-    for def in &program.lowered.wires {
-      mesh.add_wire(def.clone());
-    }
+    let mut mesh = program.mesh();
+    mesh.set_reset_policy(self.reset_policy);
     let entries = match compose_entries(&program, &mut mesh) {
       Ok(entries) => entries,
       Err(diagnostics) => return Err((program.source, diagnostics)),
     };
     let mut scheduled = Vec::new();
     for (name, wire) in entries {
-      match mesh.spawn(&wire) {
+      match mesh.spawn(&wire, Var::None) {
         Ok(id) => scheduled.push(Entry { name, wire, id }),
         Err(err) => {
-          let diagnostic = program.diagnostic(&name, err);
+          let diagnostic = program.diagnostic(PathStep::Wire(name), err);
           return Err((program.source, vec![diagnostic]));
         }
       }
@@ -193,14 +194,14 @@ impl<H: SessionHost> Session<H> {
     self.active.as_ref().map_or(0, |a| a.ticks)
   }
 
-  /// Suggested pacing from `@run(FPS:)`. The host chooses when to call tick;
+  /// Suggested pacing from `@run(fps:)`. The host chooses when to call tick;
   /// `None` means no rate was requested. Reload can change this value.
   pub fn frame_interval(&self) -> Option<Duration> {
     self.active.as_ref().and_then(|a| a.frame_interval)
   }
 }
 
-fn drain<H: Host>(mesh: &mut H) -> Vec<Finished> {
+fn drain(mesh: &mut Mesh) -> Vec<Finished> {
   mesh
     .take_finished()
     .into_iter()
@@ -208,57 +209,17 @@ fn drain<H: Host>(mesh: &mut H) -> Vec<Finished> {
     .collect()
 }
 
-/// A mesh supporting checked, call-boundary replacement. Candidates must be
-/// isolated from running instances; commit may only install a successfully
-/// validated candidate. Scheduling a wire compiled by that candidate must
-/// not fail after commit (except unrecoverable allocation failure).
-pub trait ReloadHost: SessionHost {
-  fn revision(&self) -> Self;
-  fn can_retain(&self, wire: &Self::Wire) -> bool;
-  fn validate_reload(
-    &self,
-    next: &mut Self,
-    removed: &HashSet<InstanceId>,
-  ) -> shards_core::Result<()>;
-  fn install_revision(&mut self, next: Self, removed: &HashSet<InstanceId>);
-}
-
-macro_rules! reload_host {
-  ($mesh:ty) => {
-    impl ReloadHost for $mesh {
-      fn revision(&self) -> Self {
-        <$mesh>::revision(self)
-      }
-      fn can_retain(&self, wire: &Self::Wire) -> bool {
-        <$mesh>::can_retain(self, wire)
-      }
-      fn validate_reload(
-        &self,
-        next: &mut Self,
-        removed: &HashSet<InstanceId>,
-      ) -> shards_core::Result<()> {
-        <$mesh>::validate_reload(self, next, removed)
-      }
-      fn install_revision(&mut self, next: Self, removed: &HashSet<InstanceId>) {
-        <$mesh>::install_revision(self, next, removed)
-      }
-    }
-  };
-}
-reload_host!(shards_core::Mesh);
-#[cfg(stackful)]
-reload_host!(shards_core::StackfulMesh);
-
-impl<H: ReloadHost> Session<H> {
+impl Session {
   /// Retains unchanged callers and their locals, Once state and suspended
-  /// execution. Changed Do bodies take effect on their next call; a call
-  /// already in flight pins its body until it returns. Compatible mesh
+  /// execution. Edited function bodies take effect at their next entry; an
+  /// invocation already in flight finishes on its body. Compatible mesh
   /// variables remain in the same frame. Changes to a root's own definition
   /// or static dependencies restart that root; removed roots are cancelled.
   ///
-  /// An incompatible Do interface or binding layout rejects the whole edit.
-  /// Use `reload` for an explicit full restart. Unchanged completed entries
-  /// stay finished; failed entries retry after an accepted reload.
+  /// An incompatible function interface rejects the whole edit, and so does
+  /// a reset of persistent state under the default policy. Use `reload` for
+  /// an explicit full restart. Unchanged completed entries stay finished;
+  /// failed entries retry after an accepted reload.
   pub fn reload_preserving(
     &mut self,
     source: Source,
@@ -271,9 +232,7 @@ impl<H: ReloadHost> Session<H> {
     let program = Program::load(source, catalog, defines)?;
     let active = self.active.as_mut().expect("active mesh");
     let mut candidate = active.mesh.revision();
-    for def in &program.lowered.wires {
-      candidate.add_wire(def.clone());
-    }
+    program.declare_on(&mut candidate);
     let entries = match compose_entries(&program, &mut candidate) {
       Ok(entries) => entries,
       Err(diagnostics) => return Err((program.source, diagnostics)),
@@ -302,7 +261,7 @@ impl<H: ReloadHost> Session<H> {
       .filter(|id| !retained.contains(id))
       .collect();
     if let Err(err) = active.mesh.validate_reload(&mut candidate, &removed) {
-      let d = program.diagnostic("", err);
+      let d = program.diagnostic(PathStep::Wire(String::new()), err);
       return Err((program.source, vec![d]));
     }
     active.mesh.install_revision(candidate, &removed);
@@ -310,7 +269,12 @@ impl<H: ReloadHost> Session<H> {
     active.entries = plan
       .into_iter()
       .map(|(name, wire, id)| {
-        let id = id.unwrap_or_else(|| active.mesh.spawn(&wire).expect("validated candidate wire"));
+        let id = id.unwrap_or_else(|| {
+          active
+            .mesh
+            .spawn(&wire, Var::None)
+            .expect("validated candidate wire")
+        });
         Entry { name, wire, id }
       })
       .collect();
@@ -325,21 +289,29 @@ impl<H: ReloadHost> Session<H> {
   }
 }
 
-fn compose_entries<H: Host>(
+fn compose_entries(
   program: &Program,
-  mesh: &mut H,
-) -> Result<Vec<(String, H::Wire)>, Vec<Diagnostic>> {
+  mesh: &mut Mesh,
+) -> Result<Vec<(String, Arc<CompiledWire>)>, Vec<Diagnostic>> {
   let mut entries = Vec::new();
   let mut diagnostics = Vec::new();
   for name in program.entries() {
-    match mesh.compile(&name) {
-      Ok(wire) => entries.push((name, wire)),
-      Err(err) => diagnostics.push(program.diagnostic(&name, err)),
+    match mesh.compile(&name, Type::none()) {
+      Ok(wire) => entries.push((name.clone(), wire)),
+      Err(err) => diagnostics.push(program.diagnostic(PathStep::Wire(name), err)),
     }
   }
   for name in program.unreachable_roots() {
-    if let Err(err) = mesh.compile(&name) {
-      let d = program.diagnostic(&name, err);
+    if let Err(err) = mesh.compile(&name, Type::none()) {
+      let d = program.diagnostic(PathStep::Wire(name), err);
+      if !diagnostics.contains(&d) {
+        diagnostics.push(d);
+      }
+    }
+  }
+  for def in &program.lowered.functions {
+    if let Err(err) = mesh.compile_function(&def.name) {
+      let d = program.diagnostic(PathStep::Function(def.name.clone()), err);
       if !diagnostics.contains(&d) {
         diagnostics.push(d);
       }

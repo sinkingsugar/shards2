@@ -1,0 +1,10 @@
+=== prompt
+Reverse the sequence [1 2 3 4 5] into a new sequence and log it (as one value).
+=== expected
+[5 4 3 2 1]
+=== reference
+[1 2 3 4 5] = xs
+[] | Var(out)
+5 | Var(i)
+Repeat({ Dec(i) xs | Take(i) | Push(out) } times: 5)
+out | Log

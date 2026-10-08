@@ -19,15 +19,36 @@ Almost every 1.x test script also uses tables. Lowering source onto a model with
 
 | Variant | Payload | Notes |
 |---|---|---|
-| `Float2` | `[f64; 2]` | 1.x layout: two 64-bit floats. |
-| `Float4` | `[f32; 4]` | 1.x layout: four 32-bit floats (`Float3` stays `[f32; 3]`). |
-| `Table` | `Arc<BTreeMap<Arc<str>, Var>>` | String keys only, in key order. |
+| `Float2` | `Float2([f32; 2])` | Changed from `[f64; 2]` in golden path M6: all float vectors are f32 (1.x's `Float2` was two f64). |
+| `Float3` | `Float3([f32; 3])` | |
+| `Float4` | `Float4([f32; 4])` | 1.x layout: four 32-bit floats; the wrapper is 16-aligned. |
+| `Table` | `Table` (opaque) | String keys only, in key order. Hosts use its accessors ([embedding.md](embedding.md) §2). |
+
+The vector payloads are newtypes that deref to their array (`v[0]`, `v.iter()`, `v.map(..)`), with `From` in both directions and `Var::float2(x, y)` constructors; a vector result is computed in f64 and rounded to f32 once. `Var` is 32 bytes with a `u8` tag at offset 0 (RFC 2195 layout), aligned to 16 on every target (what `Float4` needs; alignment 32 was measured within noise in time and reversed for its size cost in every frame, instruction and step holding a value, see [`bench/values`](../bench/values/README.md)); `Float4` sits at offset 16. `Option<Var>` and `Operand` use the tag's spare values and stay 32 bytes; `Step` and `Flow` carry a value and a tag and are 48. `tests/values.rs` pins the size, alignment and offset.
+
+### 2.1 Table storage (golden path §7.3)
+
+```rust
+pub struct Table(TableRepr);
+enum TableRepr {
+  Struct { shape: Shape, slots: Arc<[Var]> }, // keys known at compose
+  Map(Arc<Vec<(Arc<str>, Var)>>),           // sorted, binary search
+}
+```
+
+- **`Shape`** is an interned sorted key list in the type registry (`Shape::new(keys)`, `keys()`, `index_of(key)`, `registered()`); equal key sets intern to one handle, so comparing shapes is comparing handles. A fixed table type carries its shape (`TableType::shape`).
+- **Struct at runtime for every fixed table type.** Argument literals are converted when they are decoded (`Var::into_struct_tables`, nested tables included), `Table.Make` builds a struct table of its compose-time shape, and `Take` with a literal key on a fixed table compiles to an indexed read (`TakeCode::Slot`, the VM's `take-slot`). A map table that a fixed type admits has exactly the type's keys, so its sorted entries are the slots and the indexed read is valid on both representations.
+- **Map for everything else:** open tables, and values hosts build with `TableBuilder`, `collect` or `Var::table` (the builder keeps a sorted vector; inserting in key order appends). Hosts that pass one shape many times can build struct tables with `Table::with_shape(shape, values)` or convert once with `into_struct`; neither is applied at the mesh boundary, since interning per value would grow the registry with unbounded key sets.
+- **Admission** (`Type::admits`) of a struct value by a fixed type compares the shape handles first (no key lookups), then checks every slot's type; the slot check runs in every build, since `set_var` and `spawn` admit host values with it (a review finding against the plan's "slot checks behind `output-checks`"). A map value is checked key by key.
+- **Equality, hashing, printing, iteration and `type_of`** are the same for equal contents in either representation (`tests/values.rs` pairs them). Copy-on-write: a same-shape constructor overwrites slots it uniquely owns; `into_builder` takes unique map storage and copies shared storage.
+
+Measured ([`bench/values`](../bench/values/README.md), release, Apple M-series): building a 16-key record from locals and reading one field went from 614 ns and 4 allocations to 123 ns and 1; a literal-key read on a retained record from 80 ns to 42 ns; deriving a changed 64-key host table from 487 ns to 246 ns.
 
 Decisions:
 
 - **Table keys are strings.** 1.x allows any value as a key; nothing in the scripts we target needs that, and string keys keep tables cheap to hash, compare and print. Non-string keys can be added later as a separate key kind without changing string-keyed code.
-- **Key order is sorted.** A `BTreeMap` gives deterministic iteration, printing, equality and hashing, so tables can appear in parameter literals, which are part of the compose cache key. 1.x insertion order is not preserved; scripts that depend on it are out of scope.
-- **Copy on write.** Like `Seq`, a table is shared behind an `Arc`; a shard that changes it clones only when shared (`Arc::make_mut`).
+- **Key order is sorted.** Both representations iterate in key order, giving deterministic iteration, printing, equality and hashing, so tables can appear in parameter literals, which are part of the compose cache key. 1.x insertion order is not preserved; scripts that depend on it are out of scope.
+- **Copy on write.** Like `Seq`, a table is shared behind an `Arc`; a shard that changes it copies only when shared.
 - **Identity equality** (bitwise floats) stays the rule for `PartialEq`/`Hash`, as for the other variants. The language's `Is` is a separate comparison.
 - Integer vectors, `Color`, `Bytes` and objects remain deferred until a ported script needs them.
 
@@ -106,17 +127,15 @@ Agreed 2026-10-05. 1.x refused `Int` with `Float` in arithmetic and comparisons,
   - Vectors of one size work per component; different sizes are a compose error.
   - Compose computes the result type from the two operands.
 - **Comparisons** (`IsLess`, `IsMore`, `IsMoreEqual`, `IsLessEqual`) take Int and Float mixed, compared by value. `Is`, `IsNot` and `IsAny` treat `1` and `1.0` as equal.
-- **Not changed:** variables keep their type, so a Float variable does not accept an Int through `Set`/`Update`, and parameter literals still follow the declared types.
+- **Not changed:** variables keep their type, so a Float variable does not accept an Int through `Update`, and parameter literals still follow the declared types.
 
-## 7. Open decisions: table storage and value sets
+## 7. Table storage (decided) and value sets
 
-Raised in review (2026-10-05) against 1.x, whose tables are a `flat_map` over a `stable_vector` so `cloneVar` could copy into an existing destination without allocating.
+Raised in review (2026-10-05) against 1.x, whose tables are a `flat_map` over a `stable_vector` so `cloneVar` could copy into an existing destination without allocating. Decided in golden path M6 (§2.1 above, [`bench/values`](../bench/values/README.md)):
 
 - **Copy semantics stay copy-on-write.** Passing a table or assigning it only bumps a reference count; 1.x's main reason for `cloneVar` does not exist here.
-- **Storage is a prototype choice.** The likely change is a sorted flat vector (`Arc<Vec<(Arc<str>, Var)>>`): one allocation to build, binary search to read, same ordering, equality and hashing. Two further gains to measure:
-  - a shard that rebuilds a table every tick (`Table.Make`) reusing its previous output when nobody else holds it (`Arc::get_mut`), which is 1.x's allocation-free steady state without copy semantics;
-  - `Take` on a fixed table resolving the key to an index at compose.
-- **Decide with a benchmark:** small fixed records, repeated same-shape updates, retained snapshots followed by mutation, and growing dynamic tables, comparing time and allocations, `BTreeMap` against a flat vector. The final `Var` layout (contract §9) is decided alongside.
+- **Storage:** struct tables (interned shape, one slot per key) for fixed types, a sorted flat vector for the rest; `BTreeMap` is gone. A same-shape constructor segment overwrites the slots it uniquely owns (1.x's allocation-free steady state without copy semantics), and `Take` with a literal key resolves to a slot at compose.
+- **The benchmark** (small fixed records, same-shape rebuilds, retained snapshots followed by a rebuild, growing dynamic tables; time and allocations) is `crates/shards-core/examples/bench_tables.rs`; its before/after numbers are recorded once. The `Var` layout (32 bytes, §2) was decided alongside.
 - **Stable references to table entries** (a 1.x requirement) are not needed by value reads or compose-resolved field access; do not add them without a use.
 - **A runtime set value** (removed from 1.x in 2024) waits for a ported script that needs one. Its membership rules must be settled first: whether `1` and `1.0` are one element, how NaN behaves, and iteration order. `Var`'s bitwise identity equality is deliberately not the language's equality, so it cannot be used as is.
 

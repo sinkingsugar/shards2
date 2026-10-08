@@ -2,7 +2,7 @@
 
 > **Source:** copied from [`fragcolor-xyz/shards`](https://github.com/fragcolor-xyz/shards) at `2127b074e` (`docs/shards-2-compose-split.md`). This repo's copy is canonical from here on. File paths such as `shards/core/...` refer to the 1.x repo.
 
-**Status:** Validated by the prototype in `crates/shards-core` (2026-10-04); see §5 for the results. The stackless scheduler is the default and the stackful one is maintained alongside it ([`stackless-experiment.md`](stackless-experiment.md)). Top engineering priority.
+**Status:** Validated by the prototype in `crates/shards-core` (2026-10-04); see §5 for the results. The runtime has one scheduler, the directly resumable engine of golden path M4; the stackful prototype scheduler was deleted after the M4 gate ([`stackless-experiment.md`](stackless-experiment.md)). Top engineering priority.
 **Audience:** Core team / contributors
 **Scope:** The core design for Shards 2.0, a new Rust runtime in a new repo. Compose output becomes a shared, read-only artifact, separate from the small runtime state each instance owns. Also covers what carries over from 1.x (§3.6) and how to validate the design before porting (§5).
 
@@ -181,7 +181,7 @@ Carried over and adapted, not rewritten:
 - **C++ libraries** (§3.5): consumed through binding crates.
 - **Tests and samples:** the conformance suite (§5), converted mechanically if the syntax changes.
 
-**Scope guard.** (The prototype milestone is complete; the guard now applies to porting: port incrementally, and keep both schedulers passing.) A clean rewrite invites every feature ever wanted, which is how second systems fail to ship. The first milestone in the new repo is the narrow prototype in §5, before any gfx, physics or AI porting.
+**Scope guard.** (The prototype milestone is complete; the guard now applies to porting: port incrementally, and keep the suite passing natively, on WASI and on ESP-IDF.) A clean rewrite invites every feature ever wanted, which is how second systems fail to ship. The first milestone in the new repo is the narrow prototype in §5, before any gfx, physics or AI porting.
 
 ## 4. Open questions
 

@@ -1,4 +1,4 @@
-//! Loading, checking and running a source program on either scheduler.
+//! Loading, checking and running a source program on a mesh.
 //!
 //! `check` reports every problem it can, located in the source: syntax
 //! problems first (lowering a broken tree only cascades), then lowering and
@@ -9,62 +9,14 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use shards_core::diagnostic::{Diagnostic, Phase, json_str};
-use shards_core::{Catalog, Error, InstanceId, Outcome, Type, Var, WireDef};
+use shards_core::diagnostic::{PathStep, path_json};
+use shards_core::signature::{Analysis, Occurrence};
+use shards_core::{Catalog, Error, InstanceId, Mesh, Outcome, Type, Var};
 
 use crate::lower::{Lowered, ROOT_WIRE, lower};
 use crate::parser::parse;
 use crate::problem::locate;
 use crate::source::Source;
-
-/// A scheduler's mesh, as the frontend drives it. Implemented for both.
-pub trait Host {
-  type Wire;
-  fn create() -> Self;
-  fn add_wire(&mut self, def: WireDef);
-  fn compile(&mut self, name: &str) -> shards_core::Result<Self::Wire>;
-  fn spawn(&mut self, wire: &Self::Wire) -> shards_core::Result<InstanceId>;
-  fn tick(&mut self) -> usize;
-  fn running(&self) -> usize;
-  fn take_outcome(&mut self, id: InstanceId) -> Option<Outcome>;
-  /// Removes every finished record in one pass: id, wire, outcome.
-  fn take_finished(&mut self) -> Vec<(InstanceId, String, Outcome)>;
-}
-
-macro_rules! host {
-  ($mesh:ty, $backend:ty) => {
-    impl Host for $mesh {
-      type Wire = std::sync::Arc<shards_core::CompiledWire<$backend>>;
-      fn create() -> Self {
-        <$mesh>::new()
-      }
-      fn add_wire(&mut self, def: WireDef) {
-        <$mesh>::add_wire(self, def)
-      }
-      fn compile(&mut self, name: &str) -> shards_core::Result<Self::Wire> {
-        <$mesh>::compile(self, name, Type::none())
-      }
-      fn spawn(&mut self, wire: &Self::Wire) -> shards_core::Result<InstanceId> {
-        <$mesh>::spawn(self, wire, Var::None)
-      }
-      fn tick(&mut self) -> usize {
-        <$mesh>::tick(self)
-      }
-      fn running(&self) -> usize {
-        <$mesh>::running(self)
-      }
-      fn take_outcome(&mut self, id: InstanceId) -> Option<Outcome> {
-        <$mesh>::take_outcome(self, id)
-      }
-      fn take_finished(&mut self) -> Vec<(InstanceId, String, Outcome)> {
-        <$mesh>::take_finished(self)
-      }
-    }
-  };
-}
-
-host!(shards_core::Mesh, shards_core::Stackless);
-#[cfg(stackful)]
-host!(shards_core::StackfulMesh, shards_core::Stackful);
 
 /// A source program, parsed and lowered.
 pub struct Program {
@@ -76,6 +28,78 @@ pub struct Program {
 pub struct CheckReport {
   pub file: String,
   pub diagnostics: Vec<Diagnostic>,
+  /// Successful root composes, including nested occurrences. Failed roots
+  /// report diagnostics rather than presenting a partial analysis as complete.
+  pub wires: Vec<WireAnalysis>,
+  /// Every declared function that composed, with its signature (inferred
+  /// effects and mesh access included) and its declaration's location.
+  pub functions: Vec<FunctionReport>,
+}
+
+pub struct FunctionReport {
+  pub signature: shards_core::signature::Signature<'static>,
+  pub line: Option<u32>,
+  pub column: Option<u32>,
+}
+
+impl FunctionReport {
+  fn to_json(&self) -> String {
+    let mut fields = vec![format!("\"signature\":{}", self.signature.to_json())];
+    if let (Some(line), Some(column)) = (self.line, self.column) {
+      fields.push(format!("\"line\":{line},\"column\":{column}"));
+    }
+    format!("{{{}}}", fields.join(","))
+  }
+}
+
+pub struct WireAnalysis {
+  pub name: String,
+  pub analysis: Analysis,
+  pub occurrences: Vec<LocatedOccurrence>,
+}
+
+pub struct LocatedOccurrence {
+  pub occurrence: Occurrence,
+  pub span: Option<crate::Span>,
+  pub line: Option<u32>,
+  pub column: Option<u32>,
+}
+
+impl WireAnalysis {
+  fn to_json(&self) -> String {
+    let occurrences = self
+      .occurrences
+      .iter()
+      .map(|o| {
+        let mut fields = vec![
+          format!("\"path\":{}", path_json(&o.occurrence.path)),
+          format!("\"input\":{}", json_str(&o.occurrence.input.to_string())),
+          format!("\"output\":{}", json_str(&o.occurrence.output.to_string())),
+          format!("\"effects\":{}", o.occurrence.effects.to_json()),
+          format!("\"lifetime\":{}", json_str(o.occurrence.lifetime.name())),
+        ];
+        if let Some(span) = o.span {
+          fields.push(format!(
+            "\"span\":{{\"start\":{},\"end\":{}}}",
+            span.start, span.end
+          ));
+        }
+        if let (Some(line), Some(column)) = (o.line, o.column) {
+          fields.push(format!("\"line\":{line},\"column\":{column}"));
+        }
+        format!("{{{}}}", fields.join(","))
+      })
+      .collect::<Vec<_>>()
+      .join(",");
+    format!(
+      "{{\"wire\":{},\"effects\":{},\"lifetime\":{},\"uses\":{},\"mutates\":{},\"occurrences\":[{occurrences}]}}",
+      json_str(&self.name),
+      self.analysis.effects.to_json(),
+      json_str(self.analysis.lifetime.name()),
+      Analysis::mesh_json(&self.analysis.uses),
+      Analysis::mesh_json(&self.analysis.mutates)
+    )
+  }
 }
 
 impl CheckReport {
@@ -86,10 +110,22 @@ impl CheckReport {
   pub fn to_json(&self) -> String {
     let diagnostics: Vec<String> = self.diagnostics.iter().map(Diagnostic::to_json).collect();
     format!(
-      "{{\"ok\":{},\"file\":{},\"diagnostics\":[{}]}}",
+      "{{\"ok\":{},\"file\":{},\"diagnostics\":[{}],\"wires\":[{}],\"functions\":[{}]}}",
       self.ok(),
       json_str(&self.file),
-      diagnostics.join(",")
+      diagnostics.join(","),
+      self
+        .wires
+        .iter()
+        .map(WireAnalysis::to_json)
+        .collect::<Vec<_>>()
+        .join(","),
+      self
+        .functions
+        .iter()
+        .map(FunctionReport::to_json)
+        .collect::<Vec<_>>()
+        .join(",")
     )
   }
 }
@@ -135,8 +171,9 @@ impl Program {
     }
   }
 
-  /// A compose error as a located diagnostic.
-  pub(crate) fn diagnostic(&self, wire: &str, err: Error) -> Diagnostic {
+  /// A compose error as a located diagnostic; `root` is the wire or
+  /// function it was composed for, used when the error names no position.
+  pub(crate) fn diagnostic(&self, root: PathStep, err: Error) -> Diagnostic {
     let mut d = match err {
       Error::Diagnostic(d) => *d,
       other => Diagnostic::new(
@@ -148,13 +185,22 @@ impl Program {
     };
     let span = self.lowered.map.locate(&d).or_else(|| {
       let mut probe = Diagnostic::new(Phase::Compose, "", "", "");
-      probe.path = vec![shards_core::diagnostic::PathStep::Wire(wire.to_string())];
+      probe.path = vec![root];
       self.lowered.map.locate(&probe)
     });
     if let Some(span) = span {
       locate(&mut d, &self.source, span);
     } else {
       d.file = Some(self.source.name.clone());
+    }
+    if let Some(related) = &mut d.related {
+      let mut probe = Diagnostic::new(Phase::Compose, "", "", "");
+      probe.path = related.path.clone();
+      if let Some(span) = self.lowered.map.locate(&probe) {
+        let (line, column) = self.source.line_col(span.start);
+        related.line = Some(line);
+        related.column = Some(column);
+      }
     }
     // `x-1` is one name in Shards; say so when it is the unknown variable.
     if d.code == "unknown-variable"
@@ -233,40 +279,124 @@ impl Program {
 
   /// Composes every wire: the entries (wires they reach through `Do` and
   /// `Spawn` compose with them), then one root per unreachable group.
-  pub fn compose<H: Host>(&self) -> Vec<Diagnostic> {
-    let mut mesh = H::create();
-    for def in &self.lowered.wires {
-      mesh.add_wire(def.clone());
-    }
-    let mut out: Vec<Diagnostic> = Vec::new();
-    for wire in self.entries().into_iter().chain(self.unreachable_roots()) {
-      if let Err(err) = mesh.compile(&wire) {
-        let d = self.diagnostic(&wire, err);
-        if !out.contains(&d) {
-          out.push(d);
-        }
-      }
-    }
-    out
+  /// Returns diagnostics without materializing tooling occurrence reports;
+  /// use `analyze` when those source-located reports are needed.
+  pub fn compose(&self) -> Vec<Diagnostic> {
+    self.compose_report(false).diagnostics
   }
 
-  /// Runs the program on `H`: the entry wires, ticked at the `@run` rate
-  /// (as fast as possible without one) until every instance finishes or
-  /// the `Iterations` limit is reached.
-  pub fn run<H: Host>(&self) -> Result<RunReport, Vec<Diagnostic>> {
-    let mut mesh = H::create();
+  pub fn analyze(&self) -> CheckReport {
+    self.compose_report(true)
+  }
+
+  fn compose_report(&self, include_analysis: bool) -> CheckReport {
+    let mut mesh = self.mesh();
+    let mut out: Vec<Diagnostic> = Vec::new();
+    let mut wires = Vec::new();
+    for wire in self.entries().into_iter().chain(self.unreachable_roots()) {
+      match mesh.compile(&wire, Type::none()) {
+        Err(err) => {
+          let d = self.diagnostic(PathStep::Wire(wire.clone()), err);
+          if !out.contains(&d) {
+            out.push(d);
+          }
+        }
+        Ok(compiled) if include_analysis => {
+          let analysis = compiled.flow.analysis.clone();
+          let occurrences = analysis
+            .occurrences
+            .iter()
+            .map(|mut occurrence| {
+              occurrence.path.insert(0, PathStep::Wire(wire.clone()));
+              let mut d = Diagnostic::new(Phase::Compose, "", "", "");
+              d.path = occurrence.path.clone();
+              let span = self.lowered.map.locate(&d);
+              let position = span.map(|s| self.source.line_col(s.start));
+              LocatedOccurrence {
+                occurrence,
+                span,
+                line: position.map(|p| p.0),
+                column: position.map(|p| p.1),
+              }
+            })
+            .collect();
+          wires.push(WireAnalysis {
+            name: wire,
+            analysis,
+            occurrences,
+          });
+        }
+        Ok(_) => {}
+      }
+    }
+    // Every function is checked, called or not, against its declared input.
+    let mut functions = Vec::new();
+    for def in &self.lowered.functions {
+      match mesh.compile_function(&def.name) {
+        Err(err) => {
+          let d = self.diagnostic(PathStep::Function(def.name.clone()), err);
+          if !out.contains(&d) {
+            out.push(d);
+          }
+        }
+        Ok(compiled) if include_analysis => {
+          let mut probe = Diagnostic::new(Phase::Compose, "", "", "");
+          probe.path = vec![PathStep::Function(def.name.clone())];
+          let position = self
+            .lowered
+            .map
+            .locate(&probe)
+            .map(|s| self.source.line_col(s.start));
+          functions.push(FunctionReport {
+            signature: compiled.signature(),
+            line: position.map(|p| p.0),
+            column: position.map(|p| p.1),
+          });
+        }
+        Ok(_) => {}
+      }
+    }
+    CheckReport {
+      file: self.source.name.clone(),
+      diagnostics: out,
+      wires,
+      functions,
+    }
+  }
+
+  /// A fresh mesh with the program's wires and functions declared.
+  pub(crate) fn mesh(&self) -> Mesh {
+    let mut mesh = Mesh::new();
+    self.declare_on(&mut mesh);
+    mesh
+  }
+
+  /// Declares the program's wires and functions on `mesh`.
+  pub(crate) fn declare_on(&self, mesh: &mut Mesh) {
     for def in &self.lowered.wires {
       mesh.add_wire(def.clone());
     }
-    let mut instances = Vec::new();
+    for def in &self.lowered.functions {
+      mesh.add_function(def.clone());
+    }
+  }
+
+  /// Runs the program on a fresh mesh: the entry wires, ticked at the
+  /// `@run` rate (as fast as possible without one) until every instance
+  /// finishes or the `iterations` limit is reached.
+  pub fn run(&self) -> Result<RunReport, Vec<Diagnostic>> {
+    let mut mesh = self.mesh();
+    let entries = self.entries();
+    mesh.reserve_instances(entries.len());
+    let mut instances = Vec::with_capacity(entries.len());
     let mut errors = Vec::new();
-    for wire in self.entries() {
-      match mesh.compile(&wire) {
-        Ok(compiled) => match mesh.spawn(&compiled) {
+    for wire in entries {
+      match mesh.compile(&wire, Type::none()) {
+        Ok(compiled) => match mesh.spawn(&compiled, Var::None) {
           Ok(id) => instances.push((wire, id)),
-          Err(err) => errors.push(self.diagnostic(&wire, err)),
+          Err(err) => errors.push(self.diagnostic(PathStep::Wire(wire.clone()), err)),
         },
-        Err(err) => errors.push(self.diagnostic(&wire, err)),
+        Err(err) => errors.push(self.diagnostic(PathStep::Wire(wire.clone()), err)),
       }
     }
     if !errors.is_empty() {
@@ -325,7 +455,7 @@ impl Program {
 }
 
 /// What a run did: ticks, and each entry wire's outcome (`None`: still
-/// running when the `Iterations` limit stopped the mesh).
+/// running when the `iterations` limit stopped the mesh).
 #[derive(Debug)]
 pub struct RunReport {
   pub ticks: i64,
@@ -345,18 +475,16 @@ impl RunReport {
   }
 }
 
-/// Checks a source: syntax, lowering and compose, on scheduler `H`.
-pub fn check<H: Host>(
-  source: Source,
-  catalog: &Catalog,
-  defines: &HashMap<String, String>,
-) -> CheckReport {
+/// Checks a source: syntax, lowering and compose.
+pub fn check(source: Source, catalog: &Catalog, defines: &HashMap<String, String>) -> CheckReport {
   let file = source.name.clone();
   match Program::load(source, catalog, defines) {
-    Err((_, diagnostics)) => CheckReport { file, diagnostics },
-    Ok(program) => CheckReport {
+    Err((_, diagnostics)) => CheckReport {
       file,
-      diagnostics: program.compose::<H>(),
+      diagnostics,
+      wires: Vec::new(),
+      functions: Vec::new(),
     },
+    Ok(program) => program.analyze(),
   }
 }

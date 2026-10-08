@@ -1,0 +1,9 @@
+=== prompt
+Compute the sum of the integers from 1 to 100 with a loop (not a closed formula) and log it.
+=== expected
+5050
+=== reference
+0 | Var(i)
+0 | Var(total)
+Repeat({ Inc(i) total | Math.Add(i) | Update(total) } times: 100)
+total | Log

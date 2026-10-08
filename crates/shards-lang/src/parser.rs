@@ -162,6 +162,9 @@ impl<'a> Parser<'a> {
       }
     };
     self.open.pop();
+    // Completed syntax lists are immutable; spare capacity otherwise compounds
+    // across every small nested parameter/statement list.
+    items.shrink_to_fit();
     (items, Span::new(open_span.start, end))
   }
 
@@ -193,6 +196,7 @@ impl<'a> Parser<'a> {
         self.bump();
       }
     }
+    out.shrink_to_fit();
     out
   }
 
@@ -227,11 +231,7 @@ impl<'a> Parser<'a> {
                 other.describe()
               ),
             )
-            .help(format!(
-              "`{} x` assigns the input to x (`{}(x)`)",
-              op.text(),
-              op.shard()
-            )),
+            .help("`value = x` binds the immutable name x to the value"),
           );
           None
         }
@@ -269,6 +269,7 @@ impl<'a> Parser<'a> {
         }
       }
     }
+    blocks.shrink_to_fit();
     Some(Pipe { blocks, span })
   }
 
@@ -546,7 +547,7 @@ impl<'a> Parser<'a> {
   fn param(&mut self) -> Option<Param> {
     let t = self.peek().clone();
     let name = match (&t.tok, &self.peek_at(1).tok) {
-      (Tok::Upper(n), Tok::Colon) => {
+      (Tok::Ident(n), Tok::Colon) => {
         let n = n.clone();
         self.bump();
         self.bump();
@@ -555,17 +556,17 @@ impl<'a> Parser<'a> {
           span: t.span,
         })
       }
-      (Tok::Ident(n), Tok::Colon) => {
-        // A lowercase parameter name: parameters are capitalized.
+      (Tok::Upper(n), Tok::Colon) => {
+        // Uppercase names a shard; a label names a value, so it is lowercase.
         let n = n.clone();
         self.bump();
         self.bump();
-        let fixed = capitalize(&n);
+        let fixed = n.to_lowercase();
         self.problem(
           Problem::syntax(
             t.span,
             "parameter-name",
-            format!("parameter names start with an uppercase letter: `{fixed}:`"),
+            format!("parameter labels are lowercase: `{fixed}:`"),
           )
           .fix(fixed.clone()),
         );
@@ -576,7 +577,7 @@ impl<'a> Parser<'a> {
       }
       _ => None,
     };
-    // `Times: Action: ...`: the next thing is another parameter name.
+    // `times: action: ...`: the next thing is another parameter name.
     let next_is_name =
       matches!(self.peek().tok, Tok::Upper(_) | Tok::Ident(_)) && self.peek_at(1).tok == Tok::Colon;
     if name.is_some() && (Self::is_closer(&self.peek().tok) || next_is_name) {
@@ -806,7 +807,8 @@ impl<'a> Parser<'a> {
 /// How deeply `[`, `{` and `(` may nest. Real scripts stay far below; the
 /// limit keeps generated or hostile input from overflowing the parser's or
 /// lowering's stack. Compose separately limits flow nesting
-/// (`shards_core::compose::MAX_FLOW_DEPTH`), which also counts `Do`.
+/// (`shards_core::compose::MAX_FLOW_DEPTH`), which also counts function
+/// bodies and spawned wires.
 pub const MAX_DEPTH: usize = 64;
 
 /// The index of the `}` matching the `{` at `open`, skipping strings.
@@ -833,12 +835,4 @@ fn match_brace(bytes: &[u8], open: usize, end: usize) -> Option<usize> {
     i += 1;
   }
   None
-}
-
-fn capitalize(s: &str) -> String {
-  let mut c = s.chars();
-  match c.next() {
-    Some(f) => f.to_uppercase().chain(c).collect(),
-    None => String::new(),
-  }
 }

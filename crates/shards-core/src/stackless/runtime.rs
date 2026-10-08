@@ -743,10 +743,11 @@ fn step(
           *value = Var::None;
         }
       }
-      if let Some(wire) = instance.next_body.take()
-        && let Err(err) = rebase(instance, wire)
-      {
-        finish(instance, Outcome::Failed(err));
+      if instance.next_body.is_some() {
+        let wire = instance.next_body.take().expect("checked");
+        if let Err(err) = rebase(instance, wire) {
+          finish(instance, Outcome::Failed(err));
+        }
       }
       return;
     }

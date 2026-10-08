@@ -211,6 +211,28 @@ impl Frame {
   fn locals_mut(&mut self) -> &mut Vec<Var> {
     &mut self.invocation.as_mut().expect("function frame").locals
   }
+
+  /// The exit of the invocation a function frame runs, returned or failed:
+  /// the locals that do not persist are unset now, not at the next entry,
+  /// so no input, argument or local value outlives the call (a collection
+  /// the caller passed in is uniquely owned by the caller again).
+  fn release_locals(&mut self) {
+    let Code::Function(body) = &self.code else {
+      unreachable!("an invocation's frame holds its function")
+    };
+    let invocation = self.invocation.as_mut().expect("function frame");
+    if body.keeps.is_empty() {
+      for local in invocation.locals.iter_mut() {
+        *local = Var::None;
+      }
+    } else {
+      for (slot, local) in invocation.locals.iter_mut().enumerate() {
+        if !body.persistent(slot) {
+          *local = Var::None;
+        }
+      }
+    }
+  }
 }
 
 /// The VM form of a call site with a kept frame, when it has one: a
@@ -327,9 +349,9 @@ pub(crate) fn rebasable(old: &CompiledFlow, new: &CompiledFlow) -> bool {
   true
 }
 
-/// `flow`'s code ended: the values of its hidden slots end too. At the end
-/// of the code its `Clear`s already did this; a failure, `Stop`, `Return`
-/// or `Restart` skipped the ones after it, and ends the whole flow.
+/// `flow`'s code ended other than at its end (a failure, `Stop`, `Return`
+/// or `Restart`), skipping the `Clear`s after that point: the values of its
+/// hidden slots end here, since the whole flow ends.
 fn release_slots(flow: &CompiledFlow, locals: &mut [Var]) {
   for slot in flow.released_slots() {
     locals[*slot as usize] = Var::None;
@@ -856,33 +878,14 @@ impl Engine {
       && let Err(err) = self.revive_invocation(child, ctx)
     {
       // Not entered: the arguments just bound end here too.
-      self.release_locals(child);
+      self
+        .frames
+        .get_mut(child)
+        .expect("kept call frame")
+        .release_locals();
       return Err(err);
     }
     Ok(())
-  }
-
-  /// The exit of an invocation on a kept frame, returned or failed: the
-  /// locals that do not persist are unset now, not at the next entry, so
-  /// no input, argument or local value outlives the call (a collection the
-  /// caller passed in is uniquely owned by the caller again).
-  fn release_locals(&mut self, child: Handle) {
-    let frame = self.frames.get_mut(child).expect("kept call frame");
-    let Code::Function(body) = &frame.code else {
-      unreachable!("a call's frame holds its function")
-    };
-    let invocation = frame.invocation.as_mut().expect("function frame");
-    if body.keeps.is_empty() {
-      for local in invocation.locals.iter_mut() {
-        *local = Var::None;
-      }
-    } else {
-      for (slot, local) in invocation.locals.iter_mut().enumerate() {
-        if !body.persistent(slot) {
-          *local = Var::None;
-        }
-      }
-    }
   }
 
   /// A stateful call site adopting a new body (golden path §11): the new
@@ -1154,11 +1157,10 @@ impl Engine {
     };
     // A completed stateless call: a recursive site releases its frames (a
     // group's depth varies per call); any other site keeps them for the
-    // next call, releases the invocation's values and resets what lives
-    // for one invocation.
+    // next call and resets what lives for one invocation (the invocation's
+    // values were released as its frame completed).
     let mut release = Vec::new();
     let mut reset = None;
-    let mut exited = None;
     // For a call being entered: whether the callee ignores its input (so the
     // enter path asks the node nothing).
     let mut call_entry: Option<bool> = None;
@@ -1197,12 +1199,7 @@ impl Engine {
         c.reset();
         match stateless_call {
           Some(true) => release = std::mem::take(&mut c.children),
-          _ if c.is_call => {
-            exited = c.children.first().copied();
-            if c.resets {
-              reset = exited;
-            }
-          }
+          Some(false) if c.resets => reset = c.children.first().copied(),
           _ => {}
         }
       }
@@ -1279,10 +1276,17 @@ impl Engine {
         Next::Continue
       }
       Request::Complete(result) => {
-        release_slots(flow, ctx.locals);
         f.pc = 0;
         f.value = Var::None;
         let leaving_function = matches!(f.code, Code::Function(_));
+        // Every exit of an invocation passes here, its frame in hand.
+        if leaving_function {
+          f.release_locals();
+        } else if !matches!(result, Ok(Step::Next(_))) {
+          // Ended other than at the end of its code (which ran its
+          // `Clear`s): its hidden slots' values end here.
+          release_slots(flow, ctx.locals);
+        }
         let own_scope = f.scope;
         self.current = f.parent.take();
         match self.current {
@@ -1313,9 +1317,6 @@ impl Engine {
     };
     for child in release {
       self.cleanup_tree(child, &mut cleanup);
-    }
-    if let Some(child) = exited {
-      self.release_locals(child);
     }
     if let Some(child) = reset {
       self.reset_invocation(child, &mut cleanup);

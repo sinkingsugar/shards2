@@ -778,12 +778,9 @@ pub(crate) fn run<C: VmCalls>(
         }
         Op::Pass => {}
         Op::Clear(b) => {
-          let target = frames.slot(*b);
-          if std::ptr::eq(value, target) {
-            scratch = std::mem::replace(&mut *target, Var::None);
+          if let Some(moved) = clear_slot(frames.slot(*b), value) {
+            scratch = moved;
             value = &scratch;
-          } else {
-            *target = Var::None;
           }
         }
         Op::VmCall => match vm_call_op(calls, index, value, &frames)? {
@@ -919,6 +916,26 @@ unsafe fn vm_call_op<C: VmCalls>(
       *local = Var::None;
     }
     Ok(Some(result?.1))
+  }
+}
+
+/// `Op::Clear`, out of line and cold so the interpreter loop's layout does
+/// not depend on it (inline, its arm cost unrelated loops 0.25 ns per
+/// iteration through block order and register choice): unsets `target`,
+/// returning its value when the accumulator (`value`, only compared) reads
+/// it, for the caller to move into its scratch.
+///
+/// SAFETY: `target` is a checked frame slot, valid for writes.
+#[cold]
+#[inline(never)]
+unsafe fn clear_slot(target: *mut Var, value: *const Var) -> Option<Var> {
+  unsafe {
+    if std::ptr::eq(value, target) {
+      Some(std::mem::replace(&mut *target, Var::None))
+    } else {
+      *target = Var::None;
+      None
+    }
   }
 }
 

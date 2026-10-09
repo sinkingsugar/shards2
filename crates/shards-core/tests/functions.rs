@@ -1486,14 +1486,16 @@ fn an_evaluation_reaching_mesh_access_is_not_compose_time() {
 #[test]
 fn evaluated_floats_keep_their_bits_and_print_back() {
   use shards_core::shards::math::{DIVIDE, MULTIPLY};
-  let zero = std::hint::black_box(0.0f64);
+  // The divisor is opaque so the NaN comes from the same division the
+  // shard runs, with the target's NaN bits.
+  let (zero, divisor) = std::hint::black_box((0.0f64, 0.0f64));
   for (flow, expected) in [
     (
       vec![
         konst(Var::Float(0.0)),
         ShardDef::new(&DIVIDE, vec![val(Var::Float(0.0))]),
       ],
-      zero / zero,
+      zero / divisor,
     ),
     (
       vec![

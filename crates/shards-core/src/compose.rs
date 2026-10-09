@@ -161,7 +161,9 @@ struct Flat {
   /// `Lowered::inlined` and `Lowered::released_slots`.
   inlined: Vec<(u32, u32)>,
   released_slots: Vec<u32>,
-  /// `CompiledFlow::origins`, and the entry of the shard being added.
+  /// `CompiledFlow::origins`, and the entry of the shard being added,
+  /// when `record` (`ComposeCache::record_origins`).
+  record: bool,
   origins: Vec<u32>,
   steps: Vec<(OriginStep, u32)>,
   current: u32,
@@ -174,7 +176,11 @@ impl Flat {
   }
 
   /// Starts the instructions of shard `index` of this flow.
-  fn shard(&mut self, index: usize, name: OriginName) {
+  fn shard(&mut self, index: usize, name: impl FnOnce() -> OriginName) {
+    if !self.record {
+      return;
+    }
+    let name = name();
     self.current = self.step(
       OriginStep::Shard {
         index: u32::try_from(index).expect("shard index fits u32"),
@@ -192,7 +198,9 @@ impl Flat {
 
   /// A node of this flow with its one instruction.
   fn node(&mut self, node: Arc<dyn CompiledNode>, name: &'static str, output: Type) {
-    self.origins.push(self.current);
+    if self.record {
+      self.origins.push(self.current);
+    }
     self
       .pc_nodes
       .push(u32::try_from(self.nodes.len()).expect("node count fits u32"));
@@ -206,7 +214,9 @@ impl Flat {
   /// `target`).
   fn op(&mut self, op: crate::inline::Op, output: Type) -> u32 {
     let at = self.here();
-    self.origins.push(self.current);
+    if self.record {
+      self.origins.push(self.current);
+    }
     self.pc_nodes.push(crate::flow::NO_NODE);
     self.code.push(crate::inline::Instruction::new(
       Some(crate::inline::InlineOp(op)),
@@ -236,16 +246,22 @@ impl Flat {
     self
       .released_slots
       .extend(flow.released_slots().iter().copied());
-    self.append_rebased(flow, 0, &flow.origins.prefix);
+    let prefix = flow.origins.as_ref().map_or(&[][..], |o| &o.prefix[..]);
+    self.append_rebased(flow, 0, prefix);
   }
 
   /// Appends an inlined callee's body: like `append`, with every local slot
   /// the code addresses moved up by `slots` (the callee's frame lives at
   /// that offset in the caller's); all its nodes count as one inlined call.
-  fn inline(&mut self, flow: &CompiledFlow, slots: usize, function: Arc<str>) {
+  fn inline(&mut self, flow: &CompiledFlow, slots: usize, function: impl FnOnce() -> Arc<str>) {
     let len = u32::try_from(flow.nodes.len()).expect("node count fits u32");
     self.inlined.push((self.node_base(), len));
-    self.append_rebased(flow, slots, &[OriginStep::Function(function)]);
+    let prefix = if self.record {
+      vec![OriginStep::Function(function())]
+    } else {
+      Vec::new()
+    };
+    self.append_rebased(flow, slots, &prefix);
   }
 
   /// Ends the value of a hidden slot holding a value of type `ty` here
@@ -272,22 +288,27 @@ impl Flat {
   /// Appends `flow`'s code; its origins hang below the current shard,
   /// through `prefix` (the parameter holding it, or the function inlined).
   fn append_rebased(&mut self, flow: &CompiledFlow, slots: usize, prefix: &[OriginStep]) {
-    let mut root = self.current;
-    for step in prefix {
-      root = self.step(step.clone(), root);
+    if self.record {
+      let mut root = self.current;
+      for step in prefix {
+        root = self.step(step.clone(), root);
+      }
+      let steps = u32::try_from(self.steps.len()).expect("origin count fits u32");
+      let rebase = |at: u32| if at == NO_ORIGIN { root } else { at + steps };
+      match &flow.origins {
+        Some(origins) => {
+          self.steps.extend(
+            origins
+              .steps
+              .iter()
+              .map(|(step, parent)| (step.clone(), rebase(*parent))),
+          );
+          self.origins.extend(origins.at.iter().map(|at| rebase(*at)));
+        }
+        // Composed without origins: located at the shard that brought it.
+        None => self.origins.extend(flow.code.iter().map(|_| root)),
+      }
     }
-    let steps = u32::try_from(self.steps.len()).expect("origin count fits u32");
-    let rebase = |at: u32| if at == NO_ORIGIN { root } else { at + steps };
-    self.steps.extend(
-      flow
-        .origins
-        .steps
-        .iter()
-        .map(|(step, parent)| (step.clone(), rebase(*parent))),
-    );
-    self
-      .origins
-      .extend(flow.origins.at.iter().map(|at| rebase(*at)));
     let base = self.here();
     let node_base = self.node_base();
     for (instruction, node) in flow.code.iter().zip(&flow.pc_nodes) {
@@ -795,7 +816,7 @@ impl ComposeCtx<'_> {
         } else if !c.args.is_empty() {
           flat.op(Op::get(input_slot), input);
         }
-        flat.inline(&body.flow, base, Arc::from(fdef.name.as_str()));
+        flat.inline(&body.flow, base, || Arc::from(fdef.name.as_str()));
         // The call's values end with it: every slot it used that may hold
         // a heap value is cleared, unless the callee's own code already
         // ended it last (a call inlined into the callee, whose slots then
@@ -996,10 +1017,10 @@ impl ComposeCtx<'_> {
     self.depth -= 1;
     self.diagnostic_path.truncate(path_len);
     result.map(|mut compiled| {
-      if let Some((param, item)) = held {
+      if let (Some((param, item)), Some(origins)) = (held, &mut compiled.origins) {
         let mut prefix = vec![OriginStep::Param(param)];
         prefix.extend(item.map(|i| OriginStep::Item(u32::try_from(i).expect("item fits u32"))));
-        compiled.origins.prefix = prefix.into_boxed_slice();
+        origins.prefix = prefix.into_boxed_slice();
       }
       compiled
     })
@@ -1015,8 +1036,9 @@ impl ComposeCtx<'_> {
       pc_nodes: Vec::with_capacity(flow.len()),
       inlined: Vec::new(),
       released_slots: Vec::new(),
-      origins: Vec::with_capacity(flow.len()),
-      steps: Vec::with_capacity(flow.len()),
+      record: self.cache.record_origins,
+      origins: Vec::new(),
+      steps: Vec::new(),
       current: NO_ORIGIN,
     };
     let mut ty = input;
@@ -1129,13 +1151,10 @@ impl ComposeCtx<'_> {
           name: def.name().into(),
         }],
       );
-      flat.shard(
-        index,
-        match &def.function {
-          Some(name) => OriginName::Call(name.clone()),
-          None => OriginName::Shard(def.ty.name()),
-        },
-      );
+      flat.shard(index, || match &def.function {
+        Some(name) => OriginName::Call(name.clone()),
+        None => OriginName::Shard(def.ty.name()),
+      });
       if !self.flatten(&composed.compiled, node_input, &mut flat) {
         flat.node(composed.compiled, def.ty.name(), composed.output);
       }
@@ -1152,6 +1171,7 @@ impl ComposeCtx<'_> {
       pc_nodes,
       inlined,
       mut released_slots,
+      record,
       origins,
       steps,
       ..
@@ -1173,10 +1193,12 @@ impl ComposeCtx<'_> {
           released_slots,
         })
       }),
-      origins: Box::new(crate::flow::Origins {
-        at: origins.into_boxed_slice(),
-        steps: steps.into_boxed_slice(),
-        prefix: Box::default(),
+      origins: record.then(|| {
+        Box::new(crate::flow::Origins {
+          at: origins.into_boxed_slice(),
+          steps: steps.into_boxed_slice(),
+          prefix: Box::default(),
+        })
       }),
     })
   }
@@ -1804,6 +1826,9 @@ pub struct ComposeCache {
   /// many names `composing` held when it started. A function among those
   /// holds the evaluation in its body (`compose-time-cycle`).
   eval_floors: Vec<usize>,
+  /// Flows composed through this cache record where each instruction comes
+  /// from (`CompiledFlow::origins`): a cache made to locate a failure.
+  pub(crate) record_origins: bool,
 }
 
 impl Default for ComposeCache {
@@ -1824,6 +1849,16 @@ impl ComposeCache {
       group: None,
       evaluations: HashMap::new(),
       eval_floors: Vec::new(),
+      record_origins: false,
+    }
+  }
+
+  /// A fresh cache whose flows record their origins, to compose a failed
+  /// evaluation again and locate the failure (`compose/evaluate.rs`).
+  pub(crate) fn locating() -> ComposeCache {
+    ComposeCache {
+      record_origins: true,
+      ..ComposeCache::default()
     }
   }
 

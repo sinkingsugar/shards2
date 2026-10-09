@@ -149,59 +149,18 @@ impl ComposeCtx<'_> {
     flow: &[ShardDef],
     limits: EvalLimits,
   ) -> Result<(Var, Vec<Dep>, EvalUsage)> {
-    // Boxed like every compose context: compose recurses per level.
-    let mut ctx = Box::new(ComposeCtx {
-      analysis: Analysis::default(),
-      input: Type::none(),
-      locals: FrameLayout::default(),
-      env: self.env,
-      cache: &mut *self.cache,
-      composing: &mut *self.composing,
-      deps: Vec::new(),
-      restart_deps: Vec::new(),
-      functions: HashMap::new(),
-      diagnostic_path: Vec::new(),
-      local_paths: Vec::new(),
-      current_args: None,
-      initialized: Vec::new(),
-      failed_child: None,
-      depth: self.depth + 1,
-      blocks: 0,
-      owner: Owner::Eval,
-      keeps: Vec::new(),
-      lazy_refs: Vec::new(),
-      inline_depth: 0,
-    });
-    let compiled = ctx.compose_flow_unscoped(flow, Type::none())?;
-    if let Some(err) = not_compose_time(&compiled.analysis) {
-      return Err(err);
-    }
-    let ComposeCtx {
-      locals,
-      deps,
-      functions,
-      keeps,
-      ..
-    } = *ctx;
-    let output = compiled.output;
-    let wire = Arc::new(CompiledWire {
-      name: "#()".into(),
-      looped: false,
-      input: Type::none(),
-      flow: compiled,
-      locals,
-      deps: Vec::new(),
-      definition: Arc::new(WireDef {
-        name: "#()".into(),
-        looped: false,
-        flow: Vec::new(),
-      }),
-      restart_deps: Vec::new(),
-      functions,
-      keeps,
-    });
+    let (wire, deps) = pipeline(self.env, self.cache, self.composing, self.depth + 1, flow)?;
+    let output = wire.flow.output;
     let meter = Meter::new(limits);
-    let value = run(wire, &meter)?;
+    let value = match run(wire, &meter) {
+      Err(Error::Diagnostic(mut d))
+        if d.code == "compose-time-error" && !self.cache.record_origins =>
+      {
+        locate(&mut d, self.locate(flow, limits));
+        return Err(Error::Diagnostic(d));
+      }
+      result => result?,
+    };
     let Some(bytes) = text_size(&value, limits.output_bytes) else {
       return Err(budget(format!(
         "the result is larger than the output limit of {} bytes",
@@ -216,6 +175,101 @@ impl ComposeCtx<'_> {
     }
     Ok((value, deps, meter.usage(bytes)))
   }
+
+  /// Where a failed evaluation of `flow` failed: composed again in a fresh
+  /// cache whose flows record their origins, and run again recording each
+  /// level the failure passes (both cold: a failure only). An evaluation
+  /// is deterministic, so it fails at the same shard; if it somehow does
+  /// not, the path is empty and the failure stays located at the `#( )`.
+  #[cold]
+  fn locate(&self, flow: &[ShardDef], limits: EvalLimits) -> Vec<PathStep> {
+    let mut cache = ComposeCache::locating();
+    let mut composing = Vec::new();
+    let Ok((wire, _)) = pipeline(self.env, &mut cache, &mut composing, self.depth + 1, flow) else {
+      return Vec::new();
+    };
+    let meter = Meter::locating(limits);
+    match run(wire, &meter) {
+      Err(_) => crate::stackless::failure_path(&meter),
+      Ok(_) => Vec::new(),
+    }
+  }
+}
+
+/// `flow` composed as its own pipeline through `cache`, checked to be
+/// eligible: the wire to run, and what composing it read.
+fn pipeline(
+  env: &ComposeEnv<'_>,
+  cache: &mut ComposeCache,
+  composing: &mut Vec<String>,
+  depth: usize,
+  flow: &[ShardDef],
+) -> Result<(Arc<CompiledWire>, Vec<Dep>)> {
+  // Boxed like every compose context: compose recurses per level.
+  let mut ctx = Box::new(ComposeCtx {
+    analysis: Analysis::default(),
+    input: Type::none(),
+    locals: FrameLayout::default(),
+    env,
+    cache,
+    composing,
+    deps: Vec::new(),
+    restart_deps: Vec::new(),
+    functions: HashMap::new(),
+    diagnostic_path: Vec::new(),
+    local_paths: Vec::new(),
+    current_args: None,
+    initialized: Vec::new(),
+    failed_child: None,
+    depth,
+    blocks: 0,
+    owner: Owner::Eval,
+    keeps: Vec::new(),
+    lazy_refs: Vec::new(),
+    inline_depth: 0,
+  });
+  let compiled = ctx.compose_flow_unscoped(flow, Type::none())?;
+  if let Some(err) = not_compose_time(&compiled.analysis) {
+    return Err(err);
+  }
+  let ComposeCtx {
+    locals,
+    deps,
+    functions,
+    keeps,
+    ..
+  } = *ctx;
+  let wire = Arc::new(CompiledWire {
+    name: "#()".into(),
+    looped: false,
+    input: Type::none(),
+    flow: compiled,
+    locals,
+    deps: Vec::new(),
+    definition: Arc::new(WireDef {
+      name: "#()".into(),
+      looped: false,
+      flow: Vec::new(),
+    }),
+    restart_deps: Vec::new(),
+    functions,
+    keeps,
+  });
+  Ok((wire, deps))
+}
+
+/// Locates a `compose-time-error` at the shard `path` leads to, inside the
+/// pipeline (`PathStep::Evaluation` and the site are prefixed as it
+/// propagates).
+fn locate(d: &mut Diagnostic, path: Vec<PathStep>) {
+  if let Some(PathStep::Shard { name, .. }) = path
+    .iter()
+    .rev()
+    .find(|s| matches!(s, PathStep::Shard { .. }))
+  {
+    d.shard = Some(name.clone());
+  }
+  d.path = path;
 }
 
 /// Runs the composed pipeline to its end on the engine: one temporary
@@ -244,11 +298,7 @@ fn run(wire: Arc<CompiledWire>, meter: &Meter) -> Result<Var> {
     };
     engine.activate(&mut ctx, &Var::None)
   }));
-  // Where it failed, inside the pipeline (read only on failure).
-  let path = match &result {
-    Ok(Err(_)) => crate::stackless::failure_path(meter),
-    _ => Vec::new(),
-  };
+
   let cleanup = catch_unwind(AssertUnwindSafe(|| {
     engine.cleanup(&mut CleanupCtx { instance });
   }));
@@ -278,35 +328,12 @@ fn run(wire: Arc<CompiledWire>, meter: &Meter) -> Result<Var> {
       meter.limits().depth,
       d.message
     ))),
-    Err(err) => Err(failure_at(
-      match err {
-        Error::Activation(message) | Error::Compose(message) => message,
-        Error::Diagnostic(d) => d.to_string(),
-        Error::Cancelled => "cancelled".into(),
-      },
-      path,
-    )),
+    Err(err) => Err(failure(match err {
+      Error::Activation(message) | Error::Compose(message) => message,
+      Error::Diagnostic(d) => d.to_string(),
+      Error::Cancelled => "cancelled".into(),
+    })),
   }
-}
-
-/// A runtime failure inside the evaluation, located at the shard that
-/// failed: `path` leads there from the pipeline (through the composites,
-/// parameters and functions it ran in).
-#[cold]
-fn failure_at(message: String, path: Vec<PathStep>) -> Error {
-  let mut d = compose_diagnostic(
-    "compose-time-error",
-    format!("the evaluation failed: {message}"),
-  );
-  if let Some(PathStep::Shard { name, .. }) = path
-    .iter()
-    .rev()
-    .find(|s| matches!(s, PathStep::Shard { .. }))
-  {
-    d = d.shard(name);
-  }
-  d.path = path;
-  Error::Diagnostic(Box::new(d))
 }
 
 /// A runtime failure inside the evaluation (`compose-time-error`).
@@ -416,18 +443,22 @@ mod tests {
       seq(),
       take(val(Var::Int(9))),
     ];
-    let mut mesh = crate::Mesh::new();
+    // Composed as a failed evaluation is located: its flows record origins.
+    let mut mesh = crate::Mesh::with_cache(ComposeCache::locating());
     mesh.add_wire(WireDef {
       name: "w".into(),
       looped: false,
       flow,
     });
     let wire = mesh.compile("w", Type::none()).expect("composes");
-    let err = run(wire, &Meter::new(EvalLimits::default())).expect_err("fails");
-    let d = err.diagnostic().expect("a diagnostic");
-    assert_eq!(d.code, "compose-time-error");
+    let meter = Meter::locating(EvalLimits::default());
+    let err = run(wire, &meter).expect_err("fails");
     assert_eq!(
-      d.path,
+      err.diagnostic().expect("a diagnostic").code,
+      "compose-time-error"
+    );
+    assert_eq!(
+      crate::stackless::failure_path(&meter),
       [PathStep::Shard {
         index: 3,
         name: "Take".into()

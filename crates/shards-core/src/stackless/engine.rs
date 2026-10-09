@@ -7,7 +7,7 @@ use crate::Var;
 use crate::compose::CompiledWire;
 use crate::diagnostic::PathStep;
 use crate::error::{Error, Result};
-use crate::flow::{CompiledFlow, OriginStep};
+use crate::flow::CompiledFlow;
 use crate::function::{CallCompiled, CallTarget, CompiledFunction};
 use crate::instance::{CleanupCtx, InstanceCtx};
 use crate::reload::{FunctionKey, FunctionRegistry};
@@ -381,24 +381,32 @@ fn record(meter: &crate::compose_time::Meter, at: Location) {
 /// parameters and functions it ran in (inlined and flattened code
 /// included). Empty when nothing failed.
 pub(crate) fn failure_path(meter: &crate::compose_time::Meter) -> Vec<PathStep> {
+  let prefix = |flow: &CompiledFlow| -> Vec<PathStep> {
+    flow
+      .origins
+      .as_ref()
+      .map_or_else(Vec::new, |o| o.prefix.iter().map(|s| s.path()).collect())
+  };
   let mut path = Vec::new();
   for Failed(at) in meter.trace.borrow().iter().rev() {
     let (flow, pc) = match at {
       Location::Frame(code, pc) => {
         match code {
           Code::Root(_) => {}
-          Code::Child(..) => path.extend(OriginStep::paths(&code.flow().origins.prefix)),
+          Code::Child(..) => path.extend(prefix(code.flow())),
           Code::Function(f) => path.push(PathStep::Function(f.def.name.clone())),
         }
         (code.flow(), *pc)
       }
       Location::Leaf(node, child, pc) => {
         let flow = child_flow(&node.control().expect("composite"), *child as usize);
-        path.extend(OriginStep::paths(&flow.origins.prefix));
+        path.extend(prefix(flow));
         (flow, *pc)
       }
     };
-    flow.origins.path(pc as usize, &mut path);
+    if let Some(origins) = &flow.origins {
+      origins.path(pc as usize, &mut path);
+    }
   }
   path
 }
@@ -1084,7 +1092,7 @@ impl Engine {
     self.switch_scope(scope, ctx);
     // A compose-time evaluation locates its failures (`failure_path`); the
     // runtime's steps carry none of that code.
-    let result = if ctx.meter.is_some() {
+    let result = if ctx.meter.is_some_and(|m| m.locating) {
       self.steps::<true>(ctx, &mut completed)
     } else {
       self.steps::<false>(ctx, &mut completed)
@@ -1290,7 +1298,7 @@ impl Engine {
         ctx,
         &f.value,
         completed.take(),
-        &flow.nodes[node],
+        (&flow.nodes, node),
       );
       let result = match dispatched {
         Ok(Dispatch::Enter(i)) => Request::Enter(c.children[i]),
@@ -1483,7 +1491,8 @@ fn dispatch<const LOCATE: bool>(
   ctx: &mut ActivationCtx<'_>,
   input: &Var,
   mut completion: Option<Result<Step>>,
-  node: &Arc<dyn CompiledNode>,
+  // The composite's node, read only to locate a failure (`LOCATE`).
+  (nodes, node): (&[Arc<dyn CompiledNode>], usize),
 ) -> Result<Dispatch> {
   loop {
     let child_failed = LOCATE && matches!(completion, Some(Err(_)));
@@ -1520,7 +1529,7 @@ fn dispatch<const LOCATE: bool>(
         if result.is_err() {
           record(
             meter,
-            Location::Leaf(node.clone(), i as u32, at.get() as u32),
+            Location::Leaf(nodes[node].clone(), i as u32, at.get() as u32),
           );
         }
         result

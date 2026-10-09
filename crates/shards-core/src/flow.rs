@@ -28,18 +28,18 @@ pub struct CompiledFlow {
   /// What lowering added beyond the flow's own nodes, when it added
   /// anything (most flows: `None`, one word).
   pub(crate) lowered: Option<Box<Lowered>>,
-  /// Where each instruction comes from in the flow's definition, read only
-  /// to locate a failure: boxed, so the flow the engine reads each step
-  /// stays as small as before.
-  pub(crate) origins: Box<Origins>,
+  /// Where each instruction comes from in the flow's definition, recorded
+  /// only by a compose that locates a failure (`ComposeCache::locating`):
+  /// `None` otherwise, so a flow costs nothing more for it.
+  pub(crate) origins: Option<Box<Origins>>,
 }
 
 /// Where each instruction of a flow comes from in its definition, to
-/// locate a runtime failure (`Engine::failure_path`): per instruction, an
-/// entry in a tree of path steps. The instructions of one shard share its
+/// locate a runtime failure (`stackless::failure_path`): per instruction,
+/// an entry in a tree of path steps. The instructions of one shard share its
 /// entry, and what a flattened composite or an inlined call brought hangs
-/// below the shard that brought it, so a flow holds one entry per shard it
-/// runs, whatever it inlined. Nothing reads it unless something failed.
+/// below the shard that brought it. Recorded only when a failure is being
+/// located, and read only then.
 #[derive(Default)]
 pub(crate) struct Origins {
   /// Per instruction, its entry in `steps` (`NO_ORIGIN`: the flow itself).
@@ -73,7 +73,7 @@ pub(crate) enum OriginName {
 }
 
 impl OriginStep {
-  fn path(&self) -> PathStep {
+  pub(crate) fn path(&self) -> PathStep {
     match self {
       OriginStep::Shard { index, name } => PathStep::Shard {
         index: *index as usize,
@@ -86,11 +86,6 @@ impl OriginStep {
       OriginStep::Item(item) => PathStep::Item(*item as usize),
       OriginStep::Function(name) => PathStep::Function(name.to_string()),
     }
-  }
-
-  /// The path steps of `steps`.
-  pub(crate) fn paths(steps: &[OriginStep]) -> impl Iterator<Item = PathStep> + '_ {
-    steps.iter().map(OriginStep::path)
   }
 }
 

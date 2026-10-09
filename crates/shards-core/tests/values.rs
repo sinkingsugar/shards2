@@ -311,10 +311,14 @@ fn shapes_intern_once() {
 fn values_built_from_one_shared_value_cost_what_they_hold() {
   // 64 levels, each holding the level below twice: 2^64 tables if walked
   // path by path, 64 sequences and one table as held. Conversion, typing,
-  // equality and cache-key hashing each visit what is held.
+  // equality and cache-key hashing each visit what is held. On the device
+  // 16 levels (2^16 paths): every level interns its type and shape in the
+  // registry, which never frees, and the frontend suite after this one
+  // reaches the classic ESP32's lowest free heap.
+  let levels = if cfg!(target_os = "espidf") { 16 } else { 64 };
   let build = |leaf: i64| {
     let mut v = Var::table([("a", Var::Int(leaf))]);
-    for _ in 0..64 {
+    for _ in 0..levels {
       v = Var::Seq(Arc::new(vec![v.clone(), v]));
     }
     v
@@ -322,9 +326,9 @@ fn values_built_from_one_shared_value_cost_what_they_hold() {
   let (v, w) = (build(1), build(1));
   let converted = v.clone().into_struct_tables();
   let mut level = &converted;
-  for depth in 0..64 {
+  for depth in 0..levels {
     let items = level.as_seq().unwrap();
-    if depth < 63 {
+    if depth < levels - 1 {
       let (Var::Seq(first), Var::Seq(second)) = (&items[0], &items[1]) else {
         panic!("a sequence at depth {depth}");
       };
@@ -351,7 +355,7 @@ fn values_built_from_one_shared_value_cost_what_they_hold() {
   // form (a preserving reload compares separately built definitions).
   let tables = |leaf: i64| {
     let mut v = Var::table([("a", Var::Int(leaf))]);
-    for _ in 0..64 {
+    for _ in 0..levels {
       v = Var::table([("a", v.clone()), ("b", v)]);
     }
     v

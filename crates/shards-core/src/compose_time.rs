@@ -97,6 +97,9 @@ pub struct Meter {
   fuel: Cell<u64>,
   depth: Cell<usize>,
   largest: Cell<usize>,
+  /// The evaluation runs again to locate its failure: the activation
+  /// records `trace` (`Engine::steps::<true>`).
+  pub(crate) locating: bool,
   /// Where the failure being propagated passed, innermost first
   /// (`stackless::failure_path`): each frame that fails adds itself as it
   /// completes, and a composite that handles the failure clears it.
@@ -110,7 +113,16 @@ impl Meter {
       fuel: Cell::new(0),
       depth: Cell::new(0),
       largest: Cell::new(0),
+      locating: false,
       trace: Default::default(),
+    }
+  }
+
+  /// A meter for running a failed evaluation again to locate the failure.
+  pub(crate) fn locating(limits: EvalLimits) -> Meter {
+    Meter {
+      locating: true,
+      ..Meter::new(limits)
     }
   }
 

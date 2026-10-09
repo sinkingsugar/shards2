@@ -101,6 +101,9 @@ pub struct Meter {
   /// The evaluation runs again to locate its failure: the activation
   /// records `trace` (`Engine::steps::<true>`).
   pub(crate) locating: bool,
+  /// The instruction the innermost metered VM run is at (`at`), read when
+  /// a run fails.
+  pc: Cell<usize>,
   /// Where the failure being propagated passed, innermost first
   /// (`stackless::failure_path`): each frame that fails adds itself as it
   /// completes, and a composite that handles the failure clears it.
@@ -115,6 +118,7 @@ impl Meter {
       depth: Cell::new(0),
       largest: Cell::new(0),
       locating: false,
+      pc: Cell::new(0),
       trace: Default::default(),
     }
   }
@@ -125,6 +129,17 @@ impl Meter {
       locating: true,
       ..Meter::new(limits)
     }
+  }
+
+  /// The VM is at instruction `pc` (metered runs only).
+  #[inline(always)]
+  pub(crate) fn at(&self, pc: usize) {
+    self.pc.set(pc);
+  }
+
+  /// The instruction the VM was last at.
+  pub(crate) fn pc(&self) -> usize {
+    self.pc.get()
   }
 
   pub(crate) fn limits(&self) -> &EvalLimits {

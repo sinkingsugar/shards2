@@ -1192,7 +1192,14 @@ impl Engine {
     // completion only delivers work already paid for); out of fuel, the
     // frame fails like a failed segment.
     let mut vm_error = match ctx.meter {
-      Some(meter) if completed.is_none() => meter.charge(1).err(),
+      Some(meter) if completed.is_none() => {
+        if LOCATE {
+          // A failure before the VM runs (out of fuel, a constructor)
+          // is at this instruction; a run moves it along.
+          meter.at(index);
+        }
+        meter.charge(1).err()
+      }
       _ => None,
     };
     // The VM runs every instruction it can, leaf or composite, as one
@@ -1268,13 +1275,10 @@ impl Engine {
       usize::MAX
     };
     let result = if let Some(err) = vm_error.take() {
-      // A failing run recorded where (`EngineCalls::failed_in`); a failure
-      // before any run (out of fuel) or in a constructor is recorded here.
+      // The meter holds the instruction the run failed at (`Meter::at`).
       if LOCATE {
         let meter = ctx.meter.expect("a located activation is metered");
-        if meter.trace.borrow().is_empty() {
-          record(meter, Location::Frame(f.code.clone(), index as u32));
-        }
+        record(meter, Location::Frame(f.code.clone(), meter.pc() as u32));
       }
       Request::Complete(Err(err))
     } else if index == flow.code.len() {
@@ -1514,7 +1518,6 @@ fn dispatch<const LOCATE: bool>(
     }
     let result = match ctx.meter {
       Some(meter) if LOCATE => {
-        let at = std::cell::Cell::new(0);
         let result = crate::inline::run(
           &flow.code,
           0,
@@ -1522,14 +1525,14 @@ fn dispatch<const LOCATE: bool>(
           ctx.locals,
           ctx.mesh_frame,
           &crate::inline::Metered {
-            inner: crate::inline::FailedAt(&at),
+            inner: crate::inline::NoCalls,
             meter,
           },
         );
         if result.is_err() {
           record(
             meter,
-            Location::Leaf(nodes[node].clone(), i as u32, at.get() as u32),
+            Location::Leaf(nodes[node].clone(), i as u32, meter.pc() as u32),
           );
         }
         result

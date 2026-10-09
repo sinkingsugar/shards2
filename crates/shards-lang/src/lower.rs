@@ -58,6 +58,7 @@ fn source_step_key(step: &PathStep) -> (u8, usize, &str) {
     PathStep::Param(name) => (2, 0, name),
     PathStep::Item(index) => (3, *index, ""),
     PathStep::Function(name) => (4, 0, name),
+    PathStep::Evaluation => (5, 0, ""),
   }
 }
 
@@ -173,6 +174,14 @@ struct Lowerer<'a> {
   temps: usize,
   /// Declared functions' shapes, known before any call lowers.
   functions: HashMap<String, FnShape>,
+  /// `@const` declarations: the value block, lowered at each read (a `#( )`
+  /// inside it is recorded under the reading occurrence).
+  consts: HashMap<String, Block>,
+  /// Constants being lowered, innermost last (`compose-time-cycle`).
+  const_stack: Vec<String>,
+  /// Constants already lowered once: their problems were reported then,
+  /// and lowering them again at a read reports nothing new.
+  consts_checked: std::collections::HashSet<String>,
 }
 
 /// What lowering needs of a declared function: its parameter names and
@@ -236,6 +245,9 @@ pub fn lower(
     wire: String::new(),
     temps: 0,
     functions: HashMap::new(),
+    consts: HashMap::new(),
+    const_stack: Vec::new(),
+    consts_checked: std::collections::HashSet::new(),
   };
   let mut out = Lowered::default();
   // Function signatures first: a call may precede its declaration, and
@@ -251,6 +263,23 @@ pub fn lower(
       }
     }
   }
+  // Constants next: bodies and wires read them, and a constant may call a
+  // function. Each is checked once here, under its own source-map root.
+  for stmt in &program.statements {
+    if let Some((name, params, block)) = top_level_func(stmt)
+      && name.node == "const"
+    {
+      l.piped_declaration(name, stmt);
+      l.const_decl(block, params);
+    }
+  }
+  let mut names: Vec<String> = l.consts.keys().cloned().collect();
+  names.sort();
+  for name in names {
+    l.wire = format!("@const {name}");
+    l.temps = 0;
+    let _ = l.read_const(&name, &[]);
+  }
   for (index, body, span) in bodies {
     let name = out.functions[index].name.clone();
     l.wire = function_key(&name);
@@ -264,7 +293,7 @@ pub fn lower(
   let mut loose: Vec<&Statement> = Vec::new();
   for stmt in &program.statements {
     match top_level_func(stmt) {
-      Some((name, _, _)) if name.node == "fn" => {}
+      Some((name, _, _)) if name.node == "fn" || name.node == "const" => {}
       Some((name, params, block)) => l.declaration(&mut out, name, params, block, stmt),
       None => loose.push(stmt),
     }
@@ -334,7 +363,7 @@ fn top_level_func(stmt: &Statement) -> Option<(&Name, Option<&Params>, &Block)> 
     BlockKind::Func { name, params }
       if matches!(
         name.node.as_str(),
-        "fn" | "wire" | "mesh" | "schedule" | "run" | "define" | "template"
+        "fn" | "wire" | "mesh" | "schedule" | "run" | "define" | "template" | "const"
       ) =>
     {
       Some((name, params.as_ref(), &pipe.blocks[0]))
@@ -752,7 +781,7 @@ impl Lowerer<'_> {
       }
       let param = match &value.blocks[..] {
         [b] if is_constant(b) && !matches!(b.kind, BlockKind::EmptyBraces) => {
-          let default = self.constant(b)?;
+          let default = self.literal_now(b)?;
           FunctionParam {
             name,
             ty: default.type_of(),
@@ -1180,14 +1209,37 @@ impl Lowerer<'_> {
       // `(a | b)` in a flow runs in place.
       BlockKind::Expr(stmts) => self.statements_into(out, stmts.iter(), prefix),
       BlockKind::Func { name, params: None } => {
-        if let Some(v) = self.define(name) {
+        let at = Self::const_at(prefix, out.len());
+        if let Some(v) = self.read_name(name, &at) {
           self.emit(
             out,
             prefix,
             span,
-            ShardDef::with_args(&CONST, vec![Arg::pos(ParamValue::Value(v))]),
+            ShardDef::with_args(&CONST, vec![Arg::pos(v)]),
           );
         }
+      }
+      BlockKind::Func {
+        name,
+        params: Some(_),
+      } if self.functions.contains_key(&name.node) => {
+        // One way to evaluate at compose time, one way to expand: they
+        // never alias (docs/metaprogramming.md §2.1).
+        self.problem(
+          Problem::construct(
+            span,
+            "generic",
+            "not-a-macro",
+            format!(
+              "`{}` is a function, not a macro: `@` expands macros",
+              name.node
+            ),
+          )
+          .help(format!(
+            "call it as `{0}(...)`, or evaluate it at compose time with `#( {0}(...) )`",
+            name.node
+          )),
+        );
       }
       BlockKind::Func {
         name,
@@ -1210,10 +1262,17 @@ impl Lowerer<'_> {
         span,
         "a flow in braces is a parameter value (`When({...} {...})`); on its own it does nothing",
       ),
-      BlockKind::Eval(_) => self.unsupported(
-        span,
-        "`#(...)` (evaluation while loading) is not supported yet",
-      ),
+      BlockKind::Eval(stmts) => {
+        // Evaluated at compose time; the step is the resulting literal.
+        let at = Self::const_at(prefix, out.len());
+        let flow = self.eval_flow(stmts, &at);
+        self.emit(
+          out,
+          prefix,
+          span,
+          ShardDef::with_args(&CONST, vec![Arg::pos(ParamValue::Eval(flow))]),
+        );
+      }
       BlockKind::Enum(t, v) => {
         self.unsupported(span, format!("enums (`{t}::{v}`) are not supported yet"))
       }
@@ -1276,16 +1335,28 @@ impl Lowerer<'_> {
         self.emit(out, prefix, span, ShardDef::with_args(&TABLE_MAKE, args));
       }
       _ => {
-        if let Some(v) = self.constant(block) {
+        let at = Self::const_at(prefix, out.len());
+        if let Some(v) = self.constant(block, &at) {
           self.emit(
             out,
             prefix,
             span,
-            ShardDef::with_args(&CONST, vec![Arg::pos(ParamValue::Value(v))]),
+            ShardDef::with_args(&CONST, vec![Arg::pos(v)]),
           );
         }
       }
     }
+  }
+
+  /// The occurrence path of the value of a `Const` emitted at `index`.
+  fn const_at(prefix: &[PathStep], index: usize) -> Vec<PathStep> {
+    let mut at = prefix.to_vec();
+    at.push(PathStep::Shard {
+      index,
+      name: CONST.name().to_string(),
+    });
+    at.push(PathStep::Param("value".into()));
+    at
   }
 
   /// A table key as a string; reports non-string and repeated keys.
@@ -1399,7 +1470,9 @@ impl Lowerer<'_> {
         BlockKind::Var { name, path } if path.is_empty() && !snapshot => {
           return Some(ParamValue::Var(name.node.clone()));
         }
-        _ if is_constant(b) => return self.constant(b).map(ParamValue::Value),
+        // A literal holding a `#( )` is hoisted like a computed value: its
+        // place among the builder's arguments is not known yet.
+        _ if is_constant(b) && !self.contains_eval(b) => return self.constant(b, &[]),
         _ => {}
       }
     }
@@ -1431,71 +1504,269 @@ impl Lowerer<'_> {
     (self.problems.len() == before).then_some(ParamValue::Var(name))
   }
 
-  /// `@name`: a script argument, as a string.
-  fn define(&mut self, name: &Name) -> Option<Var> {
-    match self.defines.get(&name.node) {
-      Some(v) => Some(Var::string(v)),
-      None => {
-        let known: Vec<String> = self.defines.keys().cloned().collect();
-        self.problem(
-          Problem::construct(
-            name.span,
-            "generic",
-            "unknown-define",
-            format!("no value for `@{0}`: pass it as `{0}:value`", name.node),
-          )
-          .did_you_mean(closest(&name.node, known, 3)),
+  /// `@name`: a script argument (a string), or a constant. `at` is where
+  /// the value goes (see [`Self::constant`]).
+  fn read_name(&mut self, name: &Name, at: &[PathStep]) -> Option<ParamValue> {
+    if let Some(v) = self.defines.get(&name.node) {
+      return Some(ParamValue::Value(Var::string(v)));
+    }
+    if self.consts.contains_key(&name.node) {
+      if let Some(first) = self.const_stack.iter().position(|c| *c == name.node) {
+        let mut chain = self.const_stack[first..].to_vec();
+        chain.push(name.node.clone());
+        self.problem(Problem::construct(
+          name.span,
+          "generic",
+          "compose-time-cycle",
+          format!(
+            "`@{}` is read while its own value is computed ({})",
+            name.node,
+            chain.join(" -> ")
+          ),
+        ));
+        return None;
+      }
+      return self.read_const(&name.node, at);
+    }
+    let mut known: Vec<String> = self.defines.keys().cloned().collect();
+    known.extend(self.consts.keys().cloned());
+    self.problem(
+      Problem::construct(
+        name.span,
+        "generic",
+        "unknown-define",
+        format!(
+          "no value for `@{0}`: pass it as `{0}:value`, or declare it with `@const({0} value)`",
+          name.node
+        ),
+      )
+      .did_you_mean(closest(&name.node, known, 3)),
+    );
+    None
+  }
+
+  /// A constant's value, lowered where it is read. Its problems are
+  /// reported the first time it is lowered (every constant is lowered once
+  /// before any body), not at every read.
+  fn read_const(&mut self, name: &str, at: &[PathStep]) -> Option<ParamValue> {
+    let block = self.consts.get(name)?.clone();
+    self.const_stack.push(name.to_string());
+    let before = self.problems.len();
+    let value = self.constant(&block, at);
+    self.const_stack.pop();
+    if !self.consts_checked.insert(name.to_string()) {
+      self.problems.truncate(before);
+    }
+    value
+  }
+
+  /// `@const(name value)`: a program-level constant read as `@name`
+  /// (docs/metaprogramming.md §2.1); `value` is a literal or a `#( )`. Its
+  /// name shares the namespace of the script arguments.
+  fn const_decl(&mut self, block: &Block, params: Option<&Params>) {
+    let usage = "`@const(name value)`, where value is a literal or `#( ... )`";
+    let items = params.map(|p| &p.items[..]).unwrap_or(&[]);
+    let name = match items {
+      [n, _] if n.name.is_none() => match &n.value.blocks[..] {
+        [b] => match &b.kind {
+          BlockKind::Var { name, path } if path.is_empty() => Some(name.clone()),
+          _ => None,
+        },
+        _ => None,
+      },
+      _ => None,
+    };
+    let value = match items {
+      [_, v] if v.name.is_none() => match &v.value.blocks[..] {
+        [b] if is_constant(b) => Some(b.clone()),
+        _ => None,
+      },
+      _ => None,
+    };
+    let (Some(name), Some(value)) = (name, value) else {
+      self.problem(Problem::construct(
+        block.span,
+        "generic",
+        "declaration",
+        format!("a constant needs a name and a value: {usage}"),
+      ));
+      return;
+    };
+    if self.defines.contains_key(&name.node) || self.consts.contains_key(&name.node) {
+      self.problem(Problem::construct(
+        name.span,
+        "generic",
+        "duplicate-binding",
+        format!(
+          "`@{}` is already defined{}",
+          name.node,
+          if self.defines.contains_key(&name.node) {
+            " as a script argument"
+          } else {
+            ""
+          }
+        ),
+      ));
+      return;
+    }
+    self.consts.insert(name.node, value);
+  }
+
+  /// The flow of a `#( ... )` whose value goes at `at`: its shards are
+  /// recorded below `at` and [`PathStep::Evaluation`], the path compose
+  /// diagnostics inside the evaluation carry.
+  fn eval_flow(&mut self, stmts: &[Statement], at: &[PathStep]) -> Vec<ShardDef> {
+    let mut prefix = at.to_vec();
+    prefix.push(PathStep::Evaluation);
+    self.statements(stmts.iter(), &prefix)
+  }
+
+  /// Whether a literal holds a `#( )`, directly, in an element, or through
+  /// a constant.
+  fn contains_eval(&self, block: &Block) -> bool {
+    fn walk(l: &Lowerer<'_>, block: &Block, seen: &mut Vec<String>) -> bool {
+      let single = |pipe: &Pipe, seen: &mut Vec<String>| match &pipe.blocks[..] {
+        [b] => walk(l, b, seen),
+        _ => false,
+      };
+      match &block.kind {
+        BlockKind::Eval(_) => true,
+        BlockKind::Func { name, params: None } => match l.consts.get(&name.node) {
+          Some(value) if !seen.contains(&name.node) => {
+            seen.push(name.node.clone());
+            walk(l, value, seen)
+          }
+          // A cycle is reported where it is read.
+          _ => false,
+        },
+        BlockKind::Seq(items) => items.iter().any(|i| single(i, seen)),
+        BlockKind::Table(entries) => entries.iter().any(|(_, v)| single(v, seen)),
+        _ => false,
+      }
+    }
+    walk(self, block, &mut Vec::new())
+  }
+
+  /// A literal value: numbers, strings, `none`, booleans, `@name`, `#( )`,
+  /// and sequences and tables of them. Reports anything else. A literal
+  /// holding a `#( )` is an `Eval` of the pipeline that builds it (its
+  /// elements evaluated in turn); `at` is the occurrence path of the
+  /// argument that holds the value, where those pipelines are recorded.
+  fn constant(&mut self, block: &Block, at: &[PathStep]) -> Option<ParamValue> {
+    let value = |v: Var| Some(ParamValue::Value(v));
+    match &block.kind {
+      BlockKind::Literal(Literal::None) => value(Var::None),
+      BlockKind::Literal(Literal::Bool(b)) => value(Var::Bool(*b)),
+      BlockKind::Literal(Literal::Int(i)) => value(Var::Int(*i)),
+      BlockKind::Literal(Literal::Float(f)) => value(Var::Float(*f)),
+      BlockKind::Literal(Literal::String(s)) => value(Var::string(s)),
+      BlockKind::Func { name, params: None } => self.read_name(name, at),
+      BlockKind::EmptyBraces => value(Var::table(Vec::<(&str, Var)>::new())),
+      BlockKind::Eval(stmts) => Some(ParamValue::Eval(self.eval_flow(stmts, at))),
+      BlockKind::Seq(items) => {
+        let builder = Self::builder_path(at, SEQ_MAKE.name(), "items");
+        let mut values = Vec::with_capacity(items.len());
+        for (k, item) in items.iter().enumerate() {
+          let mut element = builder.clone();
+          element.push(PathStep::Item(k));
+          values.push(self.constant_pipe(item, &element)?);
+        }
+        Some(match Self::all_literal(values) {
+          Ok(vars) => ParamValue::Value(Var::Seq(Arc::new(vars))),
+          Err(values) => ParamValue::Eval(vec![ShardDef::with_args(
+            &SEQ_MAKE,
+            values.into_iter().map(Arg::pos).collect(),
+          )]),
+        })
+      }
+      BlockKind::Table(entries) => {
+        let builder = Self::builder_path(at, TABLE_MAKE.name(), "values");
+        let mut keys: Vec<String> = Vec::with_capacity(entries.len());
+        let mut values = Vec::with_capacity(entries.len());
+        for (k, (key, item)) in entries.iter().enumerate() {
+          let key = self.table_key(key, &keys)?;
+          keys.push(key);
+          let mut element = builder.clone();
+          element.push(PathStep::Item(k));
+          values.push(self.constant_pipe(item, &element)?);
+        }
+        Some(match Self::all_literal(values) {
+          Ok(vars) => ParamValue::Value(Var::table(keys.into_iter().zip(vars))),
+          Err(values) => {
+            let keys = Var::Seq(Arc::new(keys.iter().map(|k| Var::string(k)).collect()));
+            let args = std::iter::once(ParamValue::Value(keys))
+              .chain(values)
+              .map(Arg::pos)
+              .collect();
+            ParamValue::Eval(vec![ShardDef::with_args(&TABLE_MAKE, args)])
+          }
+        })
+      }
+      _ => {
+        self.unsupported(block.span, "expected a literal value here");
+        None
+      }
+    }
+  }
+
+  /// Where the builder of a literal holding a `#( )` records its element
+  /// `k`: below `at`, the evaluation, its one builder shard and `param`.
+  fn builder_path(at: &[PathStep], builder: &str, param: &str) -> Vec<PathStep> {
+    let mut path = at.to_vec();
+    path.extend([
+      PathStep::Evaluation,
+      PathStep::Shard {
+        index: 0,
+        name: builder.to_string(),
+      },
+      PathStep::Param(param.to_string()),
+    ]);
+    path
+  }
+
+  /// The elements' values when all are literal, else the elements as they
+  /// are (for a builder shard evaluated at compose time).
+  fn all_literal(values: Vec<ParamValue>) -> Result<Vec<Var>, Vec<ParamValue>> {
+    if !values.iter().all(|v| matches!(v, ParamValue::Value(_))) {
+      return Err(values);
+    }
+    Ok(
+      values
+        .into_iter()
+        .map(|v| match v {
+          ParamValue::Value(v) => v,
+          _ => unreachable!("checked"),
+        })
+        .collect(),
+    )
+  }
+
+  fn constant_pipe(&mut self, pipe: &Pipe, at: &[PathStep]) -> Option<ParamValue> {
+    match &pipe.blocks[..] {
+      [b] => self.constant(b, at),
+      _ => {
+        self.unsupported(
+          pipe.span,
+          "computed elements in sequences and tables (`[a | F]`) are not supported yet; compute them into variables first, or at compose time with `#( ... )`",
         );
         None
       }
     }
   }
 
-  /// A literal value: numbers, strings, `none`, booleans, `@name`, and
-  /// sequences and tables of them. Reports anything else.
-  fn constant(&mut self, block: &Block) -> Option<Var> {
-    Some(match &block.kind {
-      BlockKind::Literal(Literal::None) => Var::None,
-      BlockKind::Literal(Literal::Bool(b)) => Var::Bool(*b),
-      BlockKind::Literal(Literal::Int(i)) => Var::Int(*i),
-      BlockKind::Literal(Literal::Float(f)) => Var::Float(*f),
-      BlockKind::Literal(Literal::String(s)) => Var::string(s),
-      BlockKind::Func { name, params: None } => self.define(name)?,
-      BlockKind::EmptyBraces => Var::table(Vec::<(&str, Var)>::new()),
-      BlockKind::Seq(items) => {
-        let mut values = Vec::with_capacity(items.len());
-        for item in items {
-          values.push(self.constant_pipe(item)?);
-        }
-        Var::Seq(Arc::new(values))
-      }
-      BlockKind::Table(entries) => {
-        let mut values: Vec<(String, Var)> = Vec::with_capacity(entries.len());
-        let mut seen: Vec<String> = Vec::new();
-        for (key, value) in entries {
-          let key = self.table_key(key, &seen)?;
-          seen.push(key.clone());
-          values.push((key, self.constant_pipe(value)?));
-        }
-        Var::table(values)
-      }
-      _ => {
-        self.unsupported(block.span, "expected a literal value here");
-        return None;
-      }
-    })
-  }
-
-  fn constant_pipe(&mut self, pipe: &Pipe) -> Option<Var> {
-    match &pipe.blocks[..] {
-      [b] => self.constant(b),
-      _ => {
-        self.unsupported(
-          pipe.span,
-          "computed elements in sequences and tables (`[a | F]`) are not supported yet; compute them into variables first",
-        );
-        None
-      }
+  /// A literal that must be known while lowering (a case value, a
+  /// parameter's default): a `#( )` is not supported there.
+  fn literal_now(&mut self, block: &Block) -> Option<Var> {
+    if self.contains_eval(block) {
+      self.unsupported(
+        block.span,
+        "this value must be a plain literal: `#( )`, and constants computed with it, are not supported here",
+      );
+      return None;
+    }
+    match self.constant(block, &[])? {
+      ParamValue::Value(v) => Some(v),
+      _ => unreachable!("no evaluation inside"),
     }
   }
 
@@ -1784,10 +2055,10 @@ impl Lowerer<'_> {
         }
       }
       _ if is_constant(b) && (accepts(Forms::LITERAL) || !flow_accepted) => {
-        self.constant(b).map(ParamValue::Value)
+        self.constant(b, nested)
       }
       _ if flow_accepted => as_flow(self),
-      _ => self.constant(b).map(ParamValue::Value),
+      _ => self.constant(b, nested),
     }
   }
 }
@@ -1807,7 +2078,7 @@ impl Lowerer<'_> {
     let mut cases = Vec::with_capacity(items.len() / 2);
     for (k, pair) in items.chunks(2).enumerate() {
       let value = match &pair[0].blocks[..] {
-        [b] if is_constant(b) => self.constant(b)?,
+        [b] if is_constant(b) => self.literal_now(b)?,
         _ => {
           self.problem(Problem::construct(
             pair[0].span,
@@ -1863,12 +2134,15 @@ fn split_params(params: &Params) -> (Vec<&Pipe>, Vec<(&Name, &Pipe)>) {
   (positional, named)
 }
 
-/// Whether a block is a literal value: a literal, `@name`, `{}`, or a
-/// sequence or table of them.
+/// Whether a block is a literal value: a literal, `@name`, `{}`, `#( )`
+/// (evaluated at compose time), or a sequence or table of them.
 fn is_constant(block: &Block) -> bool {
   let single = |pipe: &Pipe| matches!(&pipe.blocks[..], [b] if is_constant(b));
   match &block.kind {
-    BlockKind::Literal(_) | BlockKind::EmptyBraces | BlockKind::Func { params: None, .. } => true,
+    BlockKind::Literal(_)
+    | BlockKind::EmptyBraces
+    | BlockKind::Func { params: None, .. }
+    | BlockKind::Eval(_) => true,
     BlockKind::Seq(items) => items.iter().all(single),
     BlockKind::Table(entries) => entries.iter().all(|(_, v)| single(v)),
     _ => false,

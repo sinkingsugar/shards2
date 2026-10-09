@@ -52,6 +52,13 @@ pub trait LeafCtx: Frames {
   /// The instance's loop iteration: 0, then one more each time a looped
   /// wire starts again (or a Restart).
   fn iteration(&self) -> u64;
+  /// The meter of a compose-time evaluation (docs/metaprogramming.md
+  /// §2.1), `None` at run time. A shard on the compose-time list charges it
+  /// for work that is not constant, and checks the value limit before it
+  /// allocates.
+  fn meter(&self) -> Option<&crate::compose_time::Meter> {
+    None
+  }
 }
 
 /// How a mesh treats instances waiting on an async operation.

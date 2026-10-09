@@ -72,6 +72,20 @@ A function is declared at the top level with its signature and called like a sha
 - Mesh variables (declared by the host) are visible in a function only when listed in `uses: [name]` (reads) and `mutates: [name]` (writes).
 - A function may call itself, directly or through other functions (a stateful one may not); the depth of nested calls is limited by the host.
 
+## Compose-time values
+
+`#( ... )` runs a pipeline once, while the program is checked, and stands for its result as if the literal had been written by hand. It can go wherever a literal can, including parameters that take only literals.
+
+```shards
+@fn(Square input: Int output: Int params: {} { = x  x | Math.Multiply(x) })
+@const(size #( 4 | Square ))                 // a named constant, read as @size
+#( 3 | Square ) | Log                        // logs 9
+@size | Log("size")                          // logs size: 16
+```
+
+- The pipeline starts with no input and may use literals, constants and functions, but not runtime variables, `Log`, `Keep`, `Pause`, `Time.Now` or other shards with side effects.
+- `@const(name value)` takes a literal or a `#( ... )`.
+
 ## Wires, meshes and scheduling
 
 Without `@run`, code at the top level runs once, as the wire `root`. With `@run`, the top level only declares: put code in wires and schedule them. Named wires are declared with `@wire` and spawned (`Spawn`) or scheduled on a mesh.

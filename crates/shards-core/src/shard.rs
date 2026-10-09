@@ -38,6 +38,10 @@ pub enum ParamValue {
   Flow(Vec<ShardDef>),
   /// Value-flow pairs (`Match`); a `None` value matches anything.
   Cases(Vec<(Var, Vec<ShardDef>)>),
+  /// A pipeline evaluated at compose time (`#( ... )`,
+  /// docs/metaprogramming.md §2): compose runs it with no input and passes
+  /// its value on as a `Value`, wherever a literal is accepted.
+  Eval(Vec<ShardDef>),
 }
 
 /// Result of a successful compose.
@@ -102,6 +106,8 @@ pub struct ActivationCtx<'a> {
   /// The loop iteration ([`LeafCtx::iteration`]).
   pub(crate) iteration: u64,
   pub(crate) max_call_depth: usize,
+  /// The meter of a compose-time evaluation; `None` at run time.
+  pub(crate) meter: Option<&'a crate::compose_time::Meter>,
 }
 
 impl ActivationCtx<'_> {
@@ -166,6 +172,10 @@ impl LeafCtx for ActivationCtx<'_> {
 
   fn iteration(&self) -> u64 {
     self.iteration
+  }
+
+  fn meter(&self) -> Option<&crate::compose_time::Meter> {
+    self.meter
   }
 }
 

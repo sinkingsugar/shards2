@@ -20,6 +20,7 @@ This repository should be usable without previous chat history or private agent 
 ## Read first
 
 - `docs/golden-path.md`: the approved plan for the current work (functions, scope, the stackless engine, values). It is the contract for milestones M0 to M7 and overrides older statements in the documents below where they conflict.
+- `docs/metaprogramming.md`: the contract for M8 to M10 (compose-time evaluation, flow parameters, code as data and hygienic macros).
 - `docs/shards-2-compose-split.md`: the design and the source of truth for the core model. Read it before changing core code.
 - `docs/prototype-shard-contract.md`: the shard contract (the decisions that replace 1.x's `shards.h`).
 - `docs/stackless-experiment.md`: the scheduler experiment and decision (historical: stackful is gone), the shared shard APIs, and the matched benchmarks against 1.x.

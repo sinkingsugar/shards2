@@ -9,6 +9,7 @@ use std::time::Instant;
 
 use super::leaf::{LeafShard, leaf_type};
 use super::*;
+use crate::compose_time::Meter;
 use crate::instance::{InstanceCtx, LeafCtx};
 use crate::shard::Flow;
 
@@ -303,8 +304,13 @@ impl<S: EqualitySpec> LeafShard for Equality<S> {
   }
 
   fn activate(op: &Operand, _: &mut (), ctx: &mut impl LeafCtx, input: &Var) -> Result<Flow> {
+    let operand = op.get(ctx);
+    if let Some(meter) = ctx.meter() {
+      meter.traverse(input)?;
+      meter.traverse(&operand)?;
+    }
     Ok(Flow::Next(Var::Bool(
-      values_equal(input, &op.get(ctx)) == S::EQUAL,
+      values_equal(input, &operand) == S::EQUAL,
     )))
   }
 }
@@ -458,7 +464,12 @@ impl LeafShard for IsAny {
   }
 
   fn activate(op: &Operand, _: &mut (), ctx: &mut impl LeafCtx, input: &Var) -> Result<Flow> {
-    let Var::Seq(items) = op.get(ctx) else {
+    let values = op.get(ctx);
+    if let Some(meter) = ctx.meter() {
+      meter.traverse(input)?;
+      meter.traverse(&values)?;
+    }
+    let Var::Seq(items) = values else {
       return Err(Error::Activation("IsAny: Values is not a sequence".into()));
     };
     Ok(Flow::Next(Var::Bool(
@@ -526,7 +537,10 @@ impl LeafShard for ParseInt {
     Ok(())
   }
 
-  fn activate(base: &u32, _: &mut (), _: &mut impl LeafCtx, input: &Var) -> Result<Flow> {
+  fn activate(base: &u32, _: &mut (), ctx: &mut impl LeafCtx, input: &Var) -> Result<Flow> {
+    if let Some(meter) = ctx.meter() {
+      meter_bytes(input, meter)?;
+    }
     let Var::String(s) = input else {
       return Err(Error::Activation("ParseInt: input is not a string".into()));
     };
@@ -544,6 +558,19 @@ pub trait PureOp: 'static {
   /// The output type for an input type, or the accepted input types.
   fn output(input: Type) -> std::result::Result<Type, &'static [TypeName]>;
   fn apply(input: &Var) -> Result<Var>;
+  /// In a compose-time evaluation, charges the work `apply` does beyond
+  /// constant (`compose_time`'s list): by default none.
+  fn meter(_input: &Var, _meter: &Meter) -> Result<()> {
+    Ok(())
+  }
+}
+
+/// A string's bytes, charged as the work of reading it through.
+fn meter_bytes(input: &Var, meter: &Meter) -> Result<()> {
+  if let Var::String(s) = input {
+    meter.charge((s.len() / crate::compose_time::TRAVERSAL_BYTES) as u64)?;
+  }
+  Ok(())
 }
 
 pub struct Pure<P>(std::marker::PhantomData<P>);
@@ -568,7 +595,10 @@ impl<P: PureOp> LeafShard for Pure<P> {
     Ok(())
   }
 
-  fn activate(_: &(), _: &mut (), _: &mut impl LeafCtx, input: &Var) -> Result<Flow> {
+  fn activate(_: &(), _: &mut (), ctx: &mut impl LeafCtx, input: &Var) -> Result<Flow> {
+    if let Some(meter) = ctx.meter() {
+      P::meter(input, meter)?;
+    }
     P::apply(input).map(Flow::Next)
   }
 }
@@ -637,6 +667,9 @@ impl PureOp for CountOp {
       Var::String(s) => s.chars().count() as i64,
       _ => return Err(fail("Count", "input type mismatch")),
     }))
+  }
+  fn meter(input: &Var, meter: &Meter) -> Result<()> {
+    meter_bytes(input, meter)
   }
 }
 
@@ -739,6 +772,13 @@ impl PureOp for ToStringOp {
       other => Var::string(&other.text()),
     })
   }
+  fn meter(input: &Var, meter: &Meter) -> Result<()> {
+    if !matches!(input, Var::String(_)) {
+      let bytes = meter.traverse(input)?;
+      meter.allocate(bytes)?;
+    }
+    Ok(())
+  }
 }
 
 const SCALARS: &[TypeName] = &[
@@ -783,6 +823,9 @@ impl PureOp for ToIntOp {
       _ => return Err(fail("ToInt", "input type mismatch")),
     }))
   }
+  fn meter(input: &Var, meter: &Meter) -> Result<()> {
+    meter_bytes(input, meter)
+  }
 }
 
 pub struct ToFloatOp;
@@ -808,6 +851,9 @@ impl PureOp for ToFloatOp {
         .map_err(|_| fail("ToFloat", &format!("{s:?} is not a Float")))?,
       _ => return Err(fail("ToFloat", "input type mismatch")),
     }))
+  }
+  fn meter(input: &Var, meter: &Meter) -> Result<()> {
+    meter_bytes(input, meter)
   }
 }
 
@@ -835,6 +881,9 @@ impl PureOp for ParseFloatOp {
       _ => Err(fail("ParseFloat", "input is not a string")),
     }
   }
+  fn meter(input: &Var, meter: &Meter) -> Result<()> {
+    meter_bytes(input, meter)
+  }
 }
 
 pub struct ToHexOp;
@@ -857,6 +906,12 @@ impl PureOp for ToHexOp {
       Var::String(s) => s.bytes().map(|b| format!("{b:02x}")).collect(),
       _ => return Err(fail("ToHex", "input type mismatch")),
     }))
+  }
+  fn meter(input: &Var, meter: &Meter) -> Result<()> {
+    if let Var::String(s) = input {
+      meter.allocate(2 * s.len())?;
+    }
+    Ok(())
   }
 }
 
@@ -994,6 +1049,15 @@ impl<K: ExpectKind> PureOp for Expect<K> {
       }
       _ => Err(K::TARGETS),
     }
+  }
+  fn meter(input: &Var, meter: &Meter) -> Result<()> {
+    // The check reads the elements or entries, not what they hold.
+    let len = match input {
+      Var::Seq(items) => items.len(),
+      Var::Table(table) => table.len(),
+      _ => 0,
+    };
+    meter.charge(len as u64)
   }
   fn apply(input: &Var) -> Result<Var> {
     // Checked on the value: interning its type on every activation would

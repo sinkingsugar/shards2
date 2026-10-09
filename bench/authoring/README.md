@@ -4,7 +4,7 @@ Spec: [docs/golden-path.md §8](../../docs/golden-path.md). It measures how well
 
 ## Pieces
 
-- `tasks/*.task`: tasks, each with a `prompt`, the `expected` log lines and a hidden `reference` solution. `cargo test -p authoring-eval` runs every reference in-process and requires exactly the expected log, so the tasks stay solvable as the language changes. Tasks 01–38 are the original baseline; 39 requires recursive tree folding (M7); 40 and 41 add batch parsing with resets and inventory validation with multiple rejection paths.
+- `tasks/*.task`: tasks, each with a `prompt`, the `expected` log lines and a hidden `reference` solution. `cargo test -p authoring-eval` runs every reference in-process and requires exactly the expected log, so the tasks stay solvable as the language changes. Tasks 01–38 are the original baseline; 39 requires recursive tree folding (M7); 40 and 41 add batch parsing with resets and inventory validation with multiple rejection paths; 42 needs a compose-time value (M8, a literal-only parameter computed with `#( )`).
 - `reference/<variant>.md`: the language primer for a syntax variant. The model gets the primer followed by `shards2 catalog` and `shards2 describe` for every shard (`authoring-eval reference` prints it). `current` is the pre-M2 syntax; keep it after M2. `functions` is the M2 plus M5 syntax (assignment forms, lowercase labels, `Keep`, exhaustive `Match`, `@fn`). Results compare the complete reference and runtime snapshots; catalog and behavior changes mean they do not isolate syntax alone.
 - `control/*.shs`: pre-M2 reference solutions for the harder shared tasks, using the same prompts and expected logs as the current tasks. They are validated with the control runtime, not the current syntax.
 - `src/main.rs`: the runner. It shells out to a model command; there is no embedded API client.
@@ -44,7 +44,7 @@ for reference in sorted(Path("bench/authoring/control").glob("*.shs")):
 PY
 ```
 
-Build the control binaries and run its `authoring-eval verify` before spending model quota. It has 40 tasks; the current tree has 41. Report task 39 separately as a new capability. Task 25's prompt also changed from a reusable routine to a function with parameters: exclude it from the matched-prompt aggregate, leaving 39 shared tasks (01–24, 26–38, 40–41). Keep the harder shared tasks visible separately from the nearly saturated original set. Record the runtime commits, task/reference hashes, model ID, CLI version, trials and command with real results. Reference validation does not count as a model eval run.
+Build the control binaries and run its `authoring-eval verify` before spending model quota. It has 40 tasks; the current tree has 42. Report tasks 39 and 42 separately as new capabilities. Task 25's prompt also changed from a reusable routine to a function with parameters: exclude it from the matched-prompt aggregate, leaving 39 shared tasks (01–24, 26–38, 40–41). Keep the harder shared tasks visible separately from the nearly saturated original set. Record the runtime commits, task/reference hashes, model ID, CLI version, trials and command with real results. Reference validation does not count as a model eval run.
 
 ## Results
 

@@ -60,6 +60,7 @@ pub struct Mesh {
   next_id: InstanceId,
   wake_mode: WakeMode,
   max_call_depth: usize,
+  eval_limits: crate::compose_time::EvalLimits,
 }
 
 impl Default for Mesh {
@@ -90,6 +91,7 @@ impl Mesh {
       next_id: 0,
       wake_mode: WakeMode::default(),
       max_call_depth: if cfg!(target_os = "espidf") { 32 } else { 256 },
+      eval_limits: crate::compose_time::EvalLimits::default(),
     }
   }
 
@@ -100,6 +102,17 @@ impl Mesh {
 
   pub fn max_call_depth(&self) -> usize {
     self.max_call_depth
+  }
+
+  /// The budgets of compose-time evaluations (`#( ... )`) in what this mesh
+  /// composes. A cached result computed under larger limits is not
+  /// accepted under smaller ones.
+  pub fn set_eval_limits(&mut self, limits: crate::compose_time::EvalLimits) {
+    self.eval_limits = limits;
+  }
+
+  pub fn eval_limits(&self) -> crate::compose_time::EvalLimits {
+    self.eval_limits
   }
 
   pub fn set_wake_mode(&mut self, mode: WakeMode) {
@@ -152,6 +165,7 @@ impl Mesh {
       mesh_layout: &self.layout,
       wires: &self.wires,
       functions: &self.functions,
+      eval: self.eval_limits,
     };
     self
       .cache
@@ -195,6 +209,7 @@ impl Mesh {
       mesh_layout: &self.layout,
       wires: &self.wires,
       functions: &self.functions,
+      eval: self.eval_limits,
     };
     let wire = self
       .cache
@@ -220,6 +235,7 @@ impl Mesh {
     next.frame = self.frame.clone();
     next.wake_mode = self.wake_mode;
     next.max_call_depth = self.max_call_depth;
+    next.eval_limits = self.eval_limits;
     next.reset_policy = self.reset_policy;
     next
   }
@@ -235,6 +251,7 @@ impl Mesh {
         mesh_layout: &self.layout,
         wires: &self.wires,
         functions: &self.functions,
+        eval: self.eval_limits,
       },
     )
   }
@@ -467,6 +484,7 @@ impl Mesh {
       mesh_layout: &self.layout,
       wires: &self.wires,
       functions: &self.functions,
+      eval: self.eval_limits,
     };
     if !wire.deps_valid(&env) {
       return Err(Error::Compose(format!(
@@ -723,6 +741,7 @@ fn step(
         waker,
         iteration: *iteration,
         max_call_depth,
+        meter: None,
       };
       state.activate(&mut ctx, input)
     }))

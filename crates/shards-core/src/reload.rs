@@ -135,7 +135,7 @@ pub(crate) fn retention(wire: &CompiledWire, env: &ComposeEnv<'_>) -> Retention 
       // A framed callee (here through a spawned wire's call sites): its
       // call sites select the new body at entry, the code is unchanged.
       Dep::Function { .. } => {}
-      Dep::MeshVar { .. } | Dep::Wire { .. } => return Retention::Restart,
+      Dep::MeshVar { .. } | Dep::Wire { .. } | Dep::Evaluation(_) => return Retention::Restart,
     }
   }
   retention

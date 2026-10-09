@@ -226,7 +226,7 @@ impl Program {
         for arg in &def.args {
           match &arg.value {
             shards_core::ParamValue::Wire(name) => out.push(name.clone()),
-            shards_core::ParamValue::Flow(f) => refs(f, out),
+            shards_core::ParamValue::Flow(f) | shards_core::ParamValue::Eval(f) => refs(f, out),
             shards_core::ParamValue::Cases(cases) => cases.iter().for_each(|(_, f)| refs(f, out)),
             _ => {}
           }

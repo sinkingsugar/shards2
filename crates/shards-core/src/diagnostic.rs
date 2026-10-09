@@ -56,6 +56,9 @@ pub enum PathStep {
   Param(String),
   /// The case (`Match`) or variadic argument (`All`) holding the flow.
   Item(usize),
+  /// Enters a pipeline evaluated at compose time (`#( ... )`, the value of
+  /// the preceding parameter): the steps after it are inside the pipeline.
+  Evaluation,
 }
 
 /// Where a shard's input came from, for type mismatches on it: the shard
@@ -204,6 +207,7 @@ impl Diagnostic {
         PathStep::Shard { index, name } => format!("{index}:{name}"),
         PathStep::Param(name) => name.clone(),
         PathStep::Item(index) => format!("#{index}"),
+        PathStep::Evaluation => "#()".to_string(),
       })
       .collect();
     steps.join("/")
@@ -391,6 +395,7 @@ pub fn path_json(path: &[PathStep]) -> String {
       }
       PathStep::Param(name) => format!("{{\"param\":{}}}", json_str(name)),
       PathStep::Item(index) => format!("{{\"item\":{index}}}"),
+      PathStep::Evaluation => "{\"evaluation\":true}".to_string(),
     })
     .collect();
   format!("[{}]", steps.join(","))

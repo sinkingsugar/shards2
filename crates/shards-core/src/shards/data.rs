@@ -303,6 +303,21 @@ impl LeafShard for Push {
     // Take the value out of its slot so the sequence is unshared and grows
     // in place instead of being copied.
     let current = ctx.get(*b);
+    if let Some(meter) = ctx.meter() {
+      meter.nest(input)?;
+      // Before taking it out of its slot: the slot's own reference counts.
+      let shared = matches!(&current, Var::Seq(items) if Arc::strong_count(items) > 2);
+      let bytes = match &current {
+        Var::Seq(items) => (items.len() + 1) * std::mem::size_of::<Var>(),
+        _ => 0,
+      };
+      if shared {
+        meter.allocate(bytes)?;
+      } else {
+        meter.admit(bytes)?;
+        meter.charge(std::mem::size_of::<Var>() as u64)?;
+      }
+    }
     ctx.set(*b, Var::None);
     let seq = match current {
       Var::Seq(mut items) => {
@@ -396,6 +411,12 @@ impl LeafShard for SeqMake {
   }
 
   fn activate(items: &Vec<Operand>, _: &mut (), ctx: &mut impl LeafCtx, _: &Var) -> Result<Flow> {
+    if let Some(meter) = ctx.meter() {
+      meter.allocate(items.len() * std::mem::size_of::<Var>())?;
+      for item in items {
+        meter.nest(&item.get(ctx))?;
+      }
+    }
     Ok(Flow::Next(Var::Seq(Arc::new(
       items.iter().map(|o| o.get(ctx)).collect(),
     ))))
@@ -505,6 +526,12 @@ impl LeafShard for TableMake {
   }
 
   fn activate(code: &TableCode, _: &mut (), ctx: &mut impl LeafCtx, _: &Var) -> Result<Flow> {
+    if let Some(meter) = ctx.meter() {
+      meter.allocate(code.values.len() * std::mem::size_of::<Var>())?;
+      for value in &code.values {
+        meter.nest(&value.get(ctx))?;
+      }
+    }
     Ok(Flow::Next(Var::Table(Table::with_shape(
       code.shape,
       code.values.iter().map(|o| o.get(ctx)),
@@ -564,7 +591,12 @@ impl LeafShard for StringFormat {
     Ok(())
   }
 
-  fn activate(_: &(), _: &mut (), _: &mut impl LeafCtx, input: &Var) -> Result<Flow> {
+  fn activate(_: &(), _: &mut (), ctx: &mut impl LeafCtx, input: &Var) -> Result<Flow> {
+    if let Some(meter) = ctx.meter() {
+      // The text is at most the input's size as text.
+      let bytes = meter.traverse(input)?;
+      meter.allocate(bytes)?;
+    }
     let Var::Seq(items) = input else {
       return Err(Error::Activation(
         "String.Format: input is not a sequence".into(),

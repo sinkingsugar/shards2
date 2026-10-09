@@ -1323,6 +1323,17 @@ pub const RETURN_DESC: ShardDesc = ShardDesc {
 
 pub(crate) fn compose_return(ctx: &mut ComposeCtx<'_>) -> Result<Composed<()>> {
   let input = ctx.input();
+  if ctx.evaluating() {
+    return Err(Error::Diagnostic(Box::new(
+      Diagnostic::new(
+        Phase::Compose,
+        "compose-error",
+        "not-compose-time",
+        "Return cannot end a `#( )` evaluation: its value is what the pipeline outputs",
+      )
+      .shard("Return"),
+    )));
+  }
   if let Some(expected) = ctx.return_type()
     && !expected.accepts(input)
   {
@@ -1529,6 +1540,10 @@ pub mod defs {
 
   pub fn konst(v: Var) -> ShardDef {
     ShardDef::new(&CONST, vec![val(v)])
+  }
+  /// `#( flow )`: the value of `flow`, evaluated at compose time.
+  pub fn evaluated(flow: Vec<ShardDef>) -> ShardDef {
+    ShardDef::new(&CONST, vec![ParamValue::Eval(flow)])
   }
   /// `= name`.
   pub fn bind(name: &str) -> ShardDef {

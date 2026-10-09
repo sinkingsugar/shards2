@@ -10,6 +10,7 @@
 use std::any::{Any, TypeId};
 
 use crate::compose::Binding;
+use crate::compose_time::Meter;
 use crate::error::{Error, Result};
 use crate::shards::Operand;
 use crate::shards::data;
@@ -114,6 +115,10 @@ pub(crate) fn leaf_code(code: &[Instruction]) -> bool {
 /// frame being run. Copyable, so a nested run gets its own for the frame
 /// it runs in.
 pub(crate) trait VmCalls: Copy {
+  /// Whether runs meter their work (a compose-time evaluation,
+  /// [`Metered`]). A constant, so the runtime's instantiation of `run`
+  /// carries no metering at all.
+  const METERED: bool = false;
   /// The callee of the call site at instruction `site`, when it can run
   /// here: a stateless, non-recursive site with a kept frame, the current
   /// revision, a straight-line body whose own sites are ready too, and
@@ -122,6 +127,57 @@ pub(crate) trait VmCalls: Copy {
   /// The same test without entering: readiness of the site and, through
   /// it, of everything its body would run.
   fn site_ready(&self, site: usize) -> bool;
+  /// The call depth of the frame being run.
+  fn depth(&self) -> usize {
+    0
+  }
+  /// The meter, when `METERED`.
+  fn meter(&self) -> Option<&Meter> {
+    None
+  }
+}
+
+/// A run of a compose-time evaluation: `C`'s calls, with every instruction
+/// charged to the meter, and the allocations and traversals of the VM's
+/// own operations checked against its limits.
+#[derive(Clone, Copy)]
+pub(crate) struct Metered<'m, C> {
+  pub inner: C,
+  pub meter: &'m Meter,
+}
+
+impl<C: VmCalls> VmCalls for Metered<'_, C> {
+  const METERED: bool = true;
+
+  fn enter(&self, site: usize) -> Option<VmCallee<Self>> {
+    let callee = self.inner.enter(site)?;
+    self.meter.note_depth(callee.calls.depth());
+    Some(VmCallee {
+      code: callee.code,
+      constructors: callee.constructors,
+      locals: callee.locals,
+      param_slots: callee.param_slots,
+      input_slot: callee.input_slot,
+      args: callee.args,
+      ignores_input: callee.ignores_input,
+      calls: Metered {
+        inner: callee.calls,
+        meter: self.meter,
+      },
+    })
+  }
+
+  fn site_ready(&self, site: usize) -> bool {
+    self.inner.site_ready(site)
+  }
+
+  fn depth(&self) -> usize {
+    self.inner.depth()
+  }
+
+  fn meter(&self) -> Option<&Meter> {
+    Some(self.meter)
+  }
 }
 
 /// A callee a run enters: its code, its kept locals (a buffer that outlives
@@ -182,7 +238,7 @@ pub(crate) fn run_segment<C: VmCalls>(
   loop {
     let before = pc;
     (pc, value) = if pc < code.len() && code[pc].is_constructor() {
-      construct(code, pc, value, locals, mesh)?
+      construct(code, pc, value, locals, mesh, calls.meter())?
     } else {
       run(code, pc, value, locals, mesh, calls)?
     };
@@ -608,6 +664,9 @@ pub(crate) fn run<C: VmCalls>(
   let mut numeric = std::mem::MaybeUninit::<Var>::uninit();
   let mut value: *const Var = &scratch;
   while let Some(instruction) = code.get(index) {
+    if C::METERED {
+      calls.meter().expect("metered").charge(1)?;
+    }
     // SAFETY: `value` starts at scratch and each arm reanchors it to live
     // code, scratch, numeric storage or a checked frame slot. Reads end before
     // any write. No reference survives replacement of its owner; no callback
@@ -704,6 +763,9 @@ pub(crate) fn run<C: VmCalls>(
           // destination itself (a sequence pushing itself) needs a
           // snapshot before the slot is mutated.
           let target = frames.slot(*b);
+          if C::METERED {
+            meter_push(calls.meter().expect("metered"), &*target, &*value)?;
+          }
           let pushed = if std::ptr::eq(value, target) {
             scratch = (*value).clone();
             value = &scratch;
@@ -843,6 +905,11 @@ pub(crate) fn run<C: VmCalls>(
             Operand::Const(v) => v,
             Operand::Bound(b) => &*frames.slot(*b),
           };
+          if C::METERED {
+            let meter = calls.meter().expect("metered");
+            meter.traverse(&*value)?;
+            meter.traverse(rhs)?;
+          }
           numeric.write(Var::Bool(values::values_equal(&*value, rhs) != *negate));
           value = numeric.as_ptr();
         }
@@ -860,6 +927,24 @@ pub(crate) fn run<C: VmCalls>(
     unsafe { (*value).clone() }
   };
   Ok((index, output))
+}
+
+/// The meter's side of a `Push` onto `target` (the sequence before the
+/// push): the grown buffer within the value limit, and one element's bytes
+/// charged, or the whole copy when the sequence is shared (it is copied
+/// before it grows). Shared by the VM and the `Push` shard.
+pub(crate) fn meter_push(meter: &Meter, target: &Var, pushed: &Var) -> Result<()> {
+  let Var::Seq(items) = target else {
+    return Ok(());
+  };
+  meter.nest(pushed)?;
+  let bytes = (items.len() + 1) * size_of::<Var>();
+  if std::sync::Arc::strong_count(items) == 1 {
+    meter.admit(bytes)?;
+    meter.charge(size_of::<Var>() as u64)
+  } else {
+    meter.allocate(bytes)
+  }
 }
 
 /// The shard name an arithmetic error reports.
@@ -959,6 +1044,7 @@ pub(crate) fn construct(
   mut value: Var,
   locals: &[Var],
   mesh: &[Var],
+  meter: Option<&Meter>,
 ) -> Result<(usize, Var)> {
   use std::sync::Arc;
   let read = |operand: &Operand| match operand {
@@ -980,6 +1066,13 @@ pub(crate) fn construct(
           let Op::SeqMake(items) = &instruction.op else {
             break;
           };
+          if let Some(meter) = meter {
+            meter.charge(1)?;
+            meter.allocate(items.len() * size_of::<Var>())?;
+            for operand in items {
+              meter.nest(&read(operand))?;
+            }
+          }
           match output.as_mut().and_then(Arc::get_mut) {
             // Same length: overwrite the slots (one drop and one write
             // each, no length bookkeeping).
@@ -1019,6 +1112,13 @@ pub(crate) fn construct(
           let Op::TableMake(shape, operands) = &instruction.op else {
             break;
           };
+          if let Some(meter) = meter {
+            meter.charge(1)?;
+            meter.allocate(operands.len() * size_of::<Var>())?;
+            for operand in operands {
+              meter.nest(&read(operand))?;
+            }
+          }
           match output.as_mut().and_then(|t| t.unique_slots(*shape)) {
             Some(slots) => {
               for (slot, operand) in slots.iter_mut().zip(operands) {
@@ -1069,7 +1169,7 @@ mod tests {
         Operand::Const(Var::Int(4)),
       ]),
     ]);
-    let (index, output) = construct(&code, 0, Var::Seq(Arc::new(buffer)), &[], &[]).unwrap();
+    let (index, output) = construct(&code, 0, Var::Seq(Arc::new(buffer)), &[], &[], None).unwrap();
     assert_eq!(index, 2);
     let Var::Seq(items) = output else {
       panic!("expected sequence")
@@ -1078,7 +1178,7 @@ mod tests {
     assert_eq!(&**items, &[Var::Int(3), Var::Int(4)]);
     let snapshot = Var::Seq(items);
     let code = instructions([Op::SeqMake(vec![Operand::Const(Var::Int(5))])]);
-    let (_, output) = construct(&code, 0, snapshot.clone(), &[], &[]).unwrap();
+    let (_, output) = construct(&code, 0, snapshot.clone(), &[], &[], None).unwrap();
     assert_eq!(snapshot, Var::Seq(Arc::new(vec![Var::Int(3), Var::Int(4)])));
     assert_eq!(output, Var::Seq(Arc::new(vec![Var::Int(5)])));
   }

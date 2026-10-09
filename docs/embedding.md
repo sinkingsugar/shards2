@@ -274,3 +274,7 @@ from its own watcher or command channel.
 ### Execution limits (M4)
 
 `Mesh::set_max_call_depth(n)` limits nested named invocations; the default is 256 on native/WASI and 32 on ESP-IDF. Exceeding it reports an activation diagnostic with code `recursion-limit`. Anonymous control blocks do not count as named calls. The compose nesting limit remains separately enforced while compose still recurses. A preserving revision retains the mesh's configured runtime limit. The trampoline resumes the active leaf directly and owns child state centrally; LeafShard and AsyncShard implementations need no changes.
+
+### Compose-time evaluation limits (M8)
+
+`#( ... )` runs a pipeline while the mesh composes ([metaprogramming.md §2](metaprogramming.md#2-m8-compose-time-evaluation)). `Mesh::set_eval_limits(EvalLimits { fuel, depth, value_bytes, output_bytes })` sets its budgets; the defaults are small enough for the device (`EvalLimits::default()`), and a preserving revision keeps them. A result cached under larger limits is not accepted under smaller ones. Only the core shards on the audited list in `compose_time.rs` run at compose time: a host shard is never eligible, whatever its effects, and `#( )` reaching one is a `not-compose-time` diagnostic. `LeafCtx::meter()` is `None` at run time; it exists for the listed shards, which charge their work to it.

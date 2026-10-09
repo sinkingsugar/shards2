@@ -2017,7 +2017,6 @@ fn constructs_not_supported_yet_are_rejected_explicitly() {
     ("{1: 2}", "table keys are strings"),
     ("[{1: x}]", "table keys are strings"),
     ("Type::Value", "enums"),
-    ("#(1 | Add(1))", "evaluation while loading"),
     ("Pause(1.0 | Add(1.0))", "Pause.seconds takes a literal"),
   ] {
     let d = load_errors(text);
@@ -2475,4 +2474,237 @@ fn reload_admission_follows_the_live_component_body() {
     .unwrap_err();
   assert_eq!(d[0].code, "reload-resets-state");
   assert!(d[0].message.contains("C.extra"), "{}", d[0].message);
+}
+
+// --- compose-time evaluation (docs/metaprogramming.md §2, M8) ---
+
+/// The compose diagnostics of a source that loads.
+fn compose_errors(text: &str) -> Vec<Diagnostic> {
+  let report = check(text);
+  assert!(!report.ok(), "expected compose errors");
+  report.diagnostics
+}
+
+#[test]
+fn compose_time_values_replace_their_pipelines() {
+  let source = r#"@fn(Square input: Int output: Int params: {} { = x  x | Math.Multiply(x) })
+@fn(Label input: None output: String params: {name: String number: Int} { [name "-" number] | String.Format })
+@const(size #( 4 | Square ))
+@const(bigger #( @size | Math.Add(1) ))
+@const(plain 7)
+#( 3 | Square ) | Log
+@size | Log
+@bigger | Log
+@plain | Log
+0 | Var(n)
+Repeat({ Inc(n) } times: #( 2 | Square ))
+n | Log(prefix: #( Label(name: "count" number: 2) ))
+[1 #( 5 | Square ) @size] | Log
+{a: #( 6 | Square ) b: @plain} | Log
+2 | Square(x: #( 1 | Square ))"#;
+  // The last call passes a parameter Square does not declare: compose-time
+  // values go through the same checks as literals.
+  let d = compose_errors(source);
+  assert_eq!(d[0].code, "unknown-argument", "{d:?}");
+  let source = source.rsplit_once('\n').unwrap().0;
+  assert_eq!(
+    lines_of(source),
+    [
+      "9",
+      "16",
+      "17",
+      "7",
+      "count-2: 4",
+      "[1 25 16]",
+      "{a: 36 b: 7}"
+    ]
+  );
+}
+
+#[test]
+fn compose_time_results_take_their_exact_literal_type() {
+  // `Answer` outputs Any; the literal it evaluates to is an Int, so the
+  // arithmetic after it composes as if `42` were written by hand.
+  let source =
+    "@fn(Answer input: None output: Any params: {} { 42 })\n#( Answer ) | Math.Add(1) | Log";
+  assert_eq!(lines_of(source), ["43"]);
+  let d =
+    compose_errors("@fn(Answer input: None output: Any params: {} { 42 })\nAnswer | Math.Add(1)");
+  assert_eq!(d[0].code, "input-type-mismatch", "{d:?}");
+}
+
+#[test]
+fn not_compose_time_is_located_also_through_functions() {
+  let functions = r#"@fn(Noisy input: Int output: Int params: {} { Log })
+@fn(Counter stateful: true input: Int output: Int params: {} { Keep(k 0) })
+@fn(Waits input: Int output: Int params: {} { Pause() })
+@fn(Stops input: Int output: Int params: {} { Stop })"#;
+  for (expression, code, shard, location) in [
+    ("#( 1 | Log )", "not-compose-time", "Log", (5, 8)),
+    ("#( 1 | Noisy )", "not-compose-time", "Log", (1, 47)),
+    ("#( Time.Now )", "not-compose-time", "Time.Now", (5, 4)),
+    ("#( 1 | Keep(k 0) )", "not-compose-time", "Keep", (5, 8)),
+    ("#( 1 | Counter )", "not-compose-time", "Keep", (2, 64)),
+    ("#( 1 | Waits )", "not-compose-time", "Pause", (3, 47)),
+    ("#( Pause() )", "not-compose-time", "Pause", (5, 4)),
+    // Not on the list of shards evaluation may run, although it has no
+    // effect.
+    ("#( 1 | Stops )", "not-compose-time", "Stop", (4, 47)),
+    ("#( 1 | Return )", "not-compose-time", "Return", (5, 8)),
+  ] {
+    let d = compose_errors(&format!("{functions}\n{expression}"));
+    let d = d
+      .iter()
+      .find(|d| d.path.first() == Some(&shards_core::diagnostic::PathStep::Wire("root".into())))
+      .unwrap_or_else(|| panic!("{expression}: {d:?}"));
+    assert_eq!(
+      (d.code, d.shard.as_deref()),
+      (code, Some(shard)),
+      "{expression}: {d:?}"
+    );
+    assert_eq!(at(d), location, "{expression}: {}", d.message);
+    assert!(
+      d.path
+        .contains(&shards_core::diagnostic::PathStep::Evaluation),
+      "{expression}: {:?}",
+      d.path
+    );
+  }
+  // A runtime value is invisible to the evaluation, with a hint saying why.
+  let d = compose_errors("3 = x\n#( x | Math.Add(1) )");
+  assert_eq!(d[0].code, "unknown-variable");
+  assert!(
+    d[0].message.contains("cannot see runtime values"),
+    "{}",
+    d[0].message
+  );
+  assert_eq!(at(&d[0]), (2, 4));
+}
+
+#[test]
+fn compose_time_cycles_are_reported_where_they_close() {
+  // A function whose body evaluates itself.
+  let d = compose_errors(
+    "@fn(Selfish input: Int output: Int params: {} { #( 1 | Selfish ) })\n2 | Selfish",
+  );
+  let cycle = d
+    .iter()
+    .find(|d| d.code == "compose-time-cycle")
+    .expect("cycle");
+  assert_eq!(at(cycle), (1, 56));
+  // Through another function.
+  let d = compose_errors(
+    "@fn(A input: Int output: Int params: {} { #( 1 | B ) })\n@fn(B input: Int output: Int params: {} { A })\n2 | A",
+  );
+  assert!(d.iter().any(|d| d.code == "compose-time-cycle"), "{d:?}");
+  // Constants that read each other.
+  let d = load_errors("@const(a #( @b | Math.Add(1) ))\n@const(b #( @a ))\n@a | Log");
+  assert_eq!(d.len(), 1, "reported once: {d:?}");
+  assert_eq!((d[0].code, at(&d[0])), ("compose-time-cycle", (2, 14)));
+  assert!(d[0].message.contains("a -> b -> a"), "{}", d[0].message);
+  // Names: a constant cannot reuse a script argument's or another's.
+  let d = load_errors("@const(a 1)\n@const(a 2)\n@a | Log");
+  assert_eq!((d[0].code, at(&d[0])), ("duplicate-binding", (2, 8)));
+}
+
+#[test]
+fn compose_time_failures_point_at_the_evaluation() {
+  for (expression, message) in [
+    ("#( 1 | Math.Divide(0) )", "division by zero"),
+    ("#( [1 2] | Take(5) )", "out of range"),
+    ("#( \"x\" | ParseInt )", "is not an Int"),
+  ] {
+    let d = compose_errors(&format!("1 | Log\n{expression} | Log"));
+    assert_eq!(d[0].code, "compose-time-error", "{expression}: {d:?}");
+    assert!(
+      d[0].message.contains(message),
+      "{expression}: {}",
+      d[0].message
+    );
+    assert_eq!(at(&d[0]), (2, 1), "{expression}");
+    assert_eq!(d[0].path_string(), "root/2:Const/value/#()", "{expression}");
+  }
+}
+
+#[test]
+fn compose_time_budgets_end_runaway_evaluations() {
+  for (source, needle) in [
+    // Flat code: the loop is lowered to jumps in the evaluated pipeline.
+    ("#( 0 | Repeat({ Math.Add(1) } forever: true) )", "fuel"),
+    // A framed call: a recursive function runs in frames of its own.
+    (
+      "@fn(Spin input: Int output: Int params: {} { When({ IsLess(0) } { Spin }) Repeat({ Math.Add(1) } forever: true) })\n#( 0 | Spin )",
+      "fuel",
+    ),
+    // Unbounded recursion.
+    (
+      "@fn(Deeper input: Int output: Int params: {} { Math.Add(1) | Deeper })\n#( 0 | Deeper )",
+      "depth limit",
+    ),
+    // A growing value stops before the allocation that would exceed the
+    // value limit.
+    (
+      "#( [1] | Var(s) Repeat({ 1 | Push(s) } forever: true) )",
+      "value limit",
+    ),
+    // Wrapping a value in itself stops at the nesting limit.
+    (
+      "#( [] | Var(s) Repeat({ [s] | Update(s) } forever: true) )",
+      "nest deeper",
+    ),
+  ] {
+    let d = compose_errors(source);
+    let d = d
+      .iter()
+      .find(|d| d.code == "expansion-budget")
+      .unwrap_or_else(|| panic!("{source}: {d:?}"));
+    assert!(d.message.contains(needle), "{source}: {}", d.message);
+    assert!(
+      d.path_string().ends_with("#()"),
+      "{source}: {}",
+      d.path_string()
+    );
+  }
+}
+
+#[test]
+fn expanding_a_function_is_not_a_macro() {
+  let d = load_errors(
+    "@fn(Square input: Int output: Int params: {} { = x  x | Math.Multiply(x) })\n4 | @Square()",
+  );
+  assert_eq!((d[0].code, at(&d[0])), ("not-a-macro", (2, 5)));
+}
+
+#[test]
+fn implicit_loop_variables_are_rejected_with_the_1x_help() {
+  let d = load_errors("[1 2] | Take(0) | Log($0)");
+  assert_eq!(d[0].code, "implicit-loop-variable");
+  assert_eq!(at(&d[0]), (1, 23));
+  assert!(d[0].message.contains("`$0`"), "{}", d[0].message);
+  assert!(
+    d[0].message.contains("the element is the block's input"),
+    "{}",
+    d[0].message
+  );
+}
+
+#[test]
+fn preserving_reload_updates_compose_time_values() {
+  let source = |value| {
+    format!(
+      r#"@fn(Base input: None output: Int params: {{}} {{ {value} }})
+@fn(Show input: None output: Int params: {{}} {{ #( Base | Math.Add(1) ) | Log }})
+@wire(main {{ #( Base ) | Log Show Pause }} looped: true)
+@mesh(m) @schedule(m main) @run(m)"#
+    )
+  };
+  let mut session = shards_lang::Session::new();
+  preserve(&mut session, &source(10));
+  let (_, lines) = shards_core::log::capture(|| {
+    session.tick();
+    assert!(preserve(&mut session, &source(20)).is_empty());
+    session.tick();
+    session.tick();
+  });
+  assert_eq!(lines, ["10", "11", "20", "21"]);
 }

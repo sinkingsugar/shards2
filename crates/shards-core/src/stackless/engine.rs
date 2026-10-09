@@ -1087,6 +1087,9 @@ impl Engine {
     debug_assert!(child_frame.parent.is_none());
     child_frame.parent = Some(h);
     child_frame.call_depth = depth;
+    if let Some(meter) = ctx.meter {
+      meter.note_depth(depth as usize);
+    }
     child_frame.value = input;
     let scope = child_frame.scope;
     self.current = Some(child);
@@ -1114,13 +1117,20 @@ impl Engine {
     let f = self.frames.get_mut(h).expect("live frame");
     let index = f.pc();
     let flow = f.flow();
+    // A compose-time evaluation pays for every step that starts work (a
+    // completion only delivers work already paid for); out of fuel, the
+    // frame fails like a failed segment.
+    let mut vm_error = match ctx.meter {
+      Some(meter) if completed.is_none() => meter.charge(1).err(),
+      _ => None,
+    };
     // The VM runs every instruction it can, leaf or composite, as one
     // segment; it stops before a node that activates through its shard, a
     // composite without a VM form, or a call site that is not ready, and
     // those take the paths below. A segment that made no progress (a call
     // site not ready) falls through to the composite path of that node.
-    let mut vm_error = None;
-    let vm = completed.is_none()
+    let vm = vm_error.is_none()
+      && completed.is_none()
       && index < flow.code.len()
       && !matches!(flow.code[index].op, crate::inline::Op::Fallback);
     let f = if vm {
@@ -1136,7 +1146,20 @@ impl Engine {
       // One runner call per step, as before: a segment stops at a
       // constructor or after one, and the next step continues it.
       let result = if flow.code[index].is_constructor() {
-        crate::inline::construct(&flow.code, index, value, ctx.locals, ctx.mesh_frame)
+        crate::inline::construct(
+          &flow.code,
+          index,
+          value,
+          ctx.locals,
+          ctx.mesh_frame,
+          ctx.meter,
+        )
+      } else if let Some(meter) = ctx.meter {
+        let calls = crate::inline::Metered {
+          inner: calls,
+          meter,
+        };
+        crate::inline::run(&flow.code, index, value, ctx.locals, ctx.mesh_frame, &calls)
       } else {
         crate::inline::run(&flow.code, index, value, ctx.locals, ctx.mesh_frame, &calls)
       };
@@ -1375,14 +1398,27 @@ fn dispatch(
     if !flow.leaf {
       return Ok(dispatched);
     }
-    let result = crate::inline::run(
-      &flow.code,
-      0,
-      input.clone(),
-      ctx.locals,
-      ctx.mesh_frame,
-      &crate::inline::NoCalls,
-    );
+    let result = match ctx.meter {
+      None => crate::inline::run(
+        &flow.code,
+        0,
+        input.clone(),
+        ctx.locals,
+        ctx.mesh_frame,
+        &crate::inline::NoCalls,
+      ),
+      Some(meter) => crate::inline::run(
+        &flow.code,
+        0,
+        input.clone(),
+        ctx.locals,
+        ctx.mesh_frame,
+        &crate::inline::Metered {
+          inner: crate::inline::NoCalls,
+          meter,
+        },
+      ),
+    };
     if result.is_err() {
       release_slots(flow, ctx.locals);
     }
@@ -1584,6 +1620,10 @@ impl crate::inline::VmCalls for EngineCalls {
       ignores_input: call.def().ignores_input(),
       calls,
     })
+  }
+
+  fn depth(&self) -> usize {
+    self.depth
   }
 
   fn site_ready(&self, site: usize) -> bool {

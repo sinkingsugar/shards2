@@ -10,6 +10,8 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
+mod evaluate;
+
 use crate::args::{Args, decode};
 use crate::diagnostic::{Diagnostic, PathStep, Phase, TypeRef};
 use crate::error::{Error, Result};
@@ -281,11 +283,16 @@ pub enum Dep {
   },
   /// A function whose body was inlined into this code (`ComposeCtx::flatten`),
   /// so an edit to it changes this body too: unlike `Function`, a body
-  /// comparison counts it, and a wire holding it is swapped on reload.
+  /// comparison counts it, and a wire holding it is swapped on reload. A
+  /// function a compose-time evaluation reached is recorded the same way:
+  /// its result is part of this code.
   Inlined {
     name: String,
     def: Option<Arc<FunctionDef>>,
   },
+  /// What compose-time evaluations in this code used: valid only under
+  /// limits that cover it (docs/metaprogramming.md §2.3).
+  Evaluation(crate::compose_time::EvalUsage),
 }
 
 /// What compose may read besides parameters and input type.
@@ -293,6 +300,8 @@ pub struct ComposeEnv<'a> {
   pub mesh_layout: &'a FrameLayout,
   pub wires: &'a HashMap<String, WireDef>,
   pub functions: &'a HashMap<String, FunctionDef>,
+  /// The budgets of compose-time evaluations.
+  pub eval: crate::compose_time::EvalLimits,
 }
 
 impl Dep {
@@ -303,6 +312,7 @@ impl Dep {
       Dep::Function { name, def } | Dep::Inlined { name, def } => {
         env.functions.get(name) == def.as_deref()
       }
+      Dep::Evaluation(usage) => usage.fits(&env.eval),
     }
   }
 }
@@ -314,6 +324,9 @@ impl Dep {
 pub(crate) enum Owner {
   Wire,
   Function(Arc<FunctionDef>),
+  /// A pipeline evaluated at compose time (`#( ... )`): it sees only what
+  /// it declares itself, no runtime value.
+  Eval,
 }
 
 /// A compiled wire: shared, immutable, and free of per-instance data.
@@ -451,10 +464,10 @@ impl ComposeCtx<'_> {
         initialized: self.initialized[slot.index],
       });
     }
-    if let Owner::Function(def) = &self.owner
-      && !def.declares(name)
-    {
-      return None;
+    match &self.owner {
+      Owner::Function(def) if !def.declares(name) => return None,
+      Owner::Eval => return None,
+      _ => {}
     }
     let found = self.env.mesh_layout.lookup(name);
     let dep = Dep::MeshVar {
@@ -479,6 +492,7 @@ impl ComposeCtx<'_> {
       let declared = match &self.owner {
         Owner::Wire => true,
         Owner::Function(def) => def.declares(&name),
+        Owner::Eval => false,
       };
       if declared && !names.contains(&name) {
         names.push(name);
@@ -492,7 +506,7 @@ impl ComposeCtx<'_> {
   /// `Return` must produce. `None` in a wire.
   pub fn return_type(&self) -> Option<Type> {
     match &self.owner {
-      Owner::Wire => None,
+      Owner::Wire | Owner::Eval => None,
       Owner::Function(def) => Some(def.output),
     }
   }
@@ -501,15 +515,22 @@ impl ComposeCtx<'_> {
   /// wire, or in a function declared `stateful: true`.
   pub fn allows_persistent_state(&self) -> bool {
     match &self.owner {
-      Owner::Wire => true,
+      // Composed, then refused as not compose-time with the other state.
+      Owner::Wire | Owner::Eval => true,
       Owner::Function(def) => def.stateful,
     }
+  }
+
+  /// Whether the flow being composed is evaluated at compose time
+  /// (`#( ... )`).
+  pub fn evaluating(&self) -> bool {
+    matches!(self.owner, Owner::Eval)
   }
 
   /// The function being composed, if any (for messages).
   pub fn function_name(&self) -> Option<&str> {
     match &self.owner {
-      Owner::Wire => None,
+      Owner::Wire | Owner::Eval => None,
       Owner::Function(def) => Some(&def.name),
     }
   }
@@ -561,15 +582,20 @@ impl ComposeCtx<'_> {
           );
         }
         let near = crate::diagnostic::closest(name, self.visible_names(), 3);
-        variable_error("unknown-variable", format!("unknown variable {name}")).map_err(
-          |e: crate::Error| match e {
-            crate::Error::Diagnostic(mut d) => {
-              d.did_you_mean = near;
-              crate::Error::Diagnostic(d)
-            }
-            other => other,
-          },
-        )
+        let message = if self.evaluating() {
+          format!(
+            "unknown variable {name}; `#( )` runs at compose time and cannot see runtime values (locals, parameters, mesh variables)"
+          )
+        } else {
+          format!("unknown variable {name}")
+        };
+        variable_error("unknown-variable", message).map_err(|e: crate::Error| match e {
+          crate::Error::Diagnostic(mut d) => {
+            d.did_you_mean = near;
+            crate::Error::Diagnostic(d)
+          }
+          other => other,
+        })
       }
       Some(info) if !info.initialized => variable_error(
         "possibly-uninitialized",
@@ -949,6 +975,29 @@ impl ComposeCtx<'_> {
     // flow's output stays `Never`.
     let mut diverged = false;
     for (index, def) in flow.iter().enumerate() {
+      // Arguments evaluated at compose time (`#( ... )`) become literals
+      // first; the definition is copied only when it holds one.
+      let evaluated;
+      let def = if def
+        .args
+        .iter()
+        .any(|a| matches!(a.value, ParamValue::Eval(_)))
+      {
+        evaluated = match self.evaluate_args(def) {
+          Ok(def) => def,
+          Err(err) => {
+            self.input = saved;
+            self.failed_child = Some(Child::Flow(flow.as_ptr()));
+            return Err(err.prefix_path(PathStep::Shard {
+              index,
+              name: def.name().to_string(),
+            }));
+          }
+        };
+        &evaluated
+      } else {
+        def
+      };
       self.input = if ty == Type::never() {
         Type::none()
       } else {
@@ -968,6 +1017,9 @@ impl ComposeCtx<'_> {
         Analysis {
           effects: def.ty.desc.effects,
           lifetime: def.ty.desc.lifetime,
+          // A call is the body it reaches (included by `compose_call`).
+          not_compose_time: (def.function.is_none() && !crate::compose_time::eligible(def.ty))
+            .then(|| def.ty.name()),
           ..Analysis::default()
         },
       );
@@ -1287,6 +1339,19 @@ impl ComposeCtx<'_> {
     } else {
       self.input
     };
+    // A compose-time evaluation that reaches a function whose body holds
+    // it (directly or through other functions) would need that body first.
+    if let Some(&floor) = self.cache.eval_floors.last()
+      && self.composing[..floor].iter().any(|n| *n == fdef.name)
+    {
+      return Err(fn_error(
+        name,
+        "compose-time-cycle",
+        format!(
+          "{name} is evaluated at compose time from inside its own body (directly or through other functions), so its body would be needed to compose itself"
+        ),
+      ));
+    }
     // A call to a function being composed (direct or mutual recursion,
     // golden path M7) composes against the declared signature: the call
     // site resolves the body at entry, and its effects are the recursive
@@ -1613,6 +1678,10 @@ pub struct CacheStats {
   /// Function bodies actually composed (one per definition and input type
   /// while its dependencies hold).
   pub function_composes: u64,
+  /// Compose-time evaluations run (`#( ... )`).
+  pub evaluations: u64,
+  /// Compose-time evaluations answered from the cache.
+  pub evaluation_hits: u64,
 }
 
 struct Entry {
@@ -1625,6 +1694,16 @@ struct FunctionEntry {
   def: Arc<FunctionDef>,
   input: Type,
   compiled: Arc<CompiledFunction>,
+}
+
+/// A compose-time evaluation's result, by the pipeline evaluated: what it
+/// read (revalidated like any compose) and what it used (checked against
+/// the requesting context's limits).
+struct EvalEntry {
+  flow: Vec<ShardDef>,
+  value: Var,
+  deps: Vec<Dep>,
+  usage: crate::compose_time::EvalUsage,
 }
 
 pub type HashFn = fn(&WireDef, Type) -> u64;
@@ -1654,6 +1733,11 @@ pub struct ComposeCache {
   /// Functions referenced while being composed, in the current pass.
   recursive_refs: Vec<String>,
   group: Option<RecursiveGroup>,
+  evaluations: HashMap<u64, Vec<EvalEntry>>,
+  /// For each compose-time evaluation in progress, innermost last: how
+  /// many names `composing` held when it started. A function among those
+  /// holds the evaluation in its body (`compose-time-cycle`).
+  eval_floors: Vec<usize>,
 }
 
 impl Default for ComposeCache {
@@ -1672,6 +1756,8 @@ impl ComposeCache {
       stats: CacheStats::default(),
       recursive_refs: Vec::new(),
       group: None,
+      evaluations: HashMap::new(),
+      eval_floors: Vec::new(),
     }
   }
 
@@ -1984,6 +2070,7 @@ impl ComposeCache {
         uses: group.analysis.uses.clone(),
         mutates: group.analysis.mutates.clone(),
         occurrences: Default::default(),
+        not_compose_time: group.analysis.not_compose_time,
       },
       None => Analysis::default(),
     }

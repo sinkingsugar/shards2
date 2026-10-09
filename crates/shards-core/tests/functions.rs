@@ -1420,3 +1420,136 @@ fn a_flattened_composite_releases_its_saved_input() {
     );
   }
 }
+
+// --- Compose-time evaluation (docs/metaprogramming.md §2, M8) ---
+
+/// `@fn(Square input: Int output: Int params: {} { = x  x | Math.Multiply(x) })`.
+fn square() -> FunctionDef {
+  FunctionDef::new("Square", Type::int(), Type::int()).body(vec![
+    bind("x"),
+    get("x"),
+    ShardDef::new(&shards_core::shards::math::MULTIPLY, vec![var("x")]),
+  ])
+}
+
+fn sixteen() -> ShardDef {
+  evaluated(vec![konst(Var::Int(4)), call("Square", vec![])])
+}
+
+#[test]
+fn a_repeated_evaluation_is_a_cache_hit_within_the_requesting_limits() {
+  let mut mesh = Mesh::new();
+  mesh.add_function(square());
+  mesh.add_wire(wire("first", false, vec![sixteen()]));
+  mesh.add_wire(wire("second", false, vec![sixteen(), log()]));
+  let first = mesh.compile("first", Type::none()).unwrap();
+  mesh.compile("second", Type::none()).unwrap();
+  let stats = mesh.cache_stats();
+  assert_eq!((stats.evaluations, stats.evaluation_hits), (1, 1));
+  assert_eq!(first.flow.output, Type::int());
+  // A context with less fuel than the cached result used rejects the hit,
+  // with the error its own evaluation would have reported; so does a
+  // recompose of a wire whose code holds that result.
+  mesh.set_eval_limits(shards_core::EvalLimits {
+    fuel: 3,
+    ..Default::default()
+  });
+  mesh.add_wire(wire("third", false, vec![konst(Var::None), sixteen()]));
+  for name in ["third", "first"] {
+    let err = mesh.compile(name, Type::none()).err().expect("over budget");
+    let d = err.diagnostic().expect("structured");
+    assert_eq!(d.code, "expansion-budget", "{name}: {d:?}");
+    assert!(d.message.contains("cached"), "{name}: {}", d.message);
+  }
+  assert_eq!(mesh.cache_stats().evaluations, 1);
+}
+
+#[test]
+fn an_evaluation_reaching_mesh_access_is_not_compose_time() {
+  let mut mesh = Mesh::new();
+  mesh.declare_var("gain", Var::Int(2), true);
+  mesh.add_function(
+    FunctionDef::new("Gain", Type::none(), Type::int())
+      .uses(&["gain"])
+      .body(vec![get("gain")]),
+  );
+  mesh.add_wire(wire(
+    "root",
+    false,
+    vec![evaluated(vec![call("Gain", vec![])])],
+  ));
+  let d = compile_error(&mut mesh);
+  assert_eq!(d.code, "not-compose-time");
+  assert!(d.message.contains("mesh variable gain"), "{}", d.message);
+}
+
+#[test]
+fn evaluated_floats_keep_their_bits_and_print_back() {
+  use shards_core::shards::math::{DIVIDE, MULTIPLY};
+  let zero = std::hint::black_box(0.0f64);
+  for (flow, expected) in [
+    (
+      vec![
+        konst(Var::Float(0.0)),
+        ShardDef::new(&DIVIDE, vec![val(Var::Float(0.0))]),
+      ],
+      zero / zero,
+    ),
+    (
+      vec![
+        konst(Var::Float(1.0)),
+        ShardDef::new(&DIVIDE, vec![val(Var::Float(0.0))]),
+      ],
+      f64::INFINITY,
+    ),
+    (
+      vec![
+        konst(Var::Float(-1.0)),
+        ShardDef::new(&DIVIDE, vec![val(Var::Float(0.0))]),
+      ],
+      f64::NEG_INFINITY,
+    ),
+    (
+      vec![
+        konst(Var::Float(0.0)),
+        ShardDef::new(&MULTIPLY, vec![val(Var::Float(-1.0))]),
+      ],
+      -0.0,
+    ),
+    (
+      vec![
+        konst(Var::Float(5e-324)),
+        ShardDef::new(&MULTIPLY, vec![val(Var::Float(1.0))]),
+      ],
+      5e-324,
+    ),
+    (
+      vec![
+        konst(Var::Float(0.1)),
+        ShardDef::new(&MULTIPLY, vec![val(Var::Float(3.0))]),
+      ],
+      0.1 * 3.0,
+    ),
+  ] {
+    let mut mesh = Mesh::new();
+    mesh.add_wire(wire("root", false, vec![evaluated(flow)]));
+    let (outcome, _) = run_logging(&mut mesh, 2);
+    let Outcome::Completed(Var::Float(value)) = outcome else {
+      panic!("{outcome:?}")
+    };
+    assert_eq!(
+      value.to_bits(),
+      expected.to_bits(),
+      "{value} against {expected}"
+    );
+    // Finite values print in the shortest form that reads back exactly.
+    if value.is_finite() {
+      let printed = Var::Float(value).to_string();
+      assert_eq!(
+        printed.parse::<f64>().unwrap().to_bits(),
+        value.to_bits(),
+        "{printed}"
+      );
+    }
+  }
+}

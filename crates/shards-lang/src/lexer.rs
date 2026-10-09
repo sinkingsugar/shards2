@@ -298,6 +298,26 @@ impl<'a> Lexer<'a> {
       }
       b'a'..=b'z' => Some(self.ident(start)),
       b'_' if next.is_some_and(|n| n.is_ascii_lowercase()) => Some(self.ident(start)),
+      b'$' if next.is_some_and(|n| n.is_ascii_digit()) => {
+        // 1.x's implicit loop variables (`ForEach`, `Map`): models trained
+        // on 1.x write them. Read as a name so the rest still parses.
+        self.pos += 1;
+        let tok = self.ident(start);
+        self.problems.push(
+          Problem::syntax(
+            Span::new(start, self.pos),
+            "implicit-loop-variable",
+            format!(
+              "`{}` is 1.x's implicit loop variable; Shards 2 has none",
+              &self.text[start..self.pos]
+            ),
+          )
+          .help(
+            "in 2.0 the element is the block's input: bind it with `= item` if you need a name",
+          ),
+        );
+        Some(tok)
+      }
       b'$' if next.is_some_and(|n| n.is_ascii_alphanumeric()) => {
         self.pos += 1;
         Some(self.ident(start))

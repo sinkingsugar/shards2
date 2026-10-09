@@ -286,6 +286,9 @@ pub struct Analysis {
   pub uses: Vec<MeshAccess>,
   pub mutates: Vec<MeshAccess>,
   pub occurrences: Occurrences,
+  /// The first native shard reached that a compose-time evaluation may not
+  /// run (`compose_time::eligible`), by name.
+  pub not_compose_time: Option<&'static str>,
 }
 impl Default for Analysis {
   fn default() -> Self {
@@ -295,6 +298,7 @@ impl Default for Analysis {
       uses: Vec::new(),
       mutates: Vec::new(),
       occurrences: Occurrences::default(),
+      not_compose_time: None,
     }
   }
 }
@@ -324,6 +328,9 @@ impl Analysis {
       self.access(&access.name, access.ty, true);
     }
     self.occurrences.include(&child.occurrences, prefix);
+    if self.not_compose_time.is_none() {
+      self.not_compose_time = child.not_compose_time;
+    }
   }
   pub fn mesh_json(accesses: &[MeshAccess]) -> String {
     format!(

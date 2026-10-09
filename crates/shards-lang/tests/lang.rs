@@ -2646,9 +2646,11 @@ fn constants_built_from_each_other_stop_at_the_expansion_budget() {
 #[test]
 fn a_lookup_table_constant_is_shared_by_every_read() {
   // Many reads of one large table cost nothing per read: the reads together
-  // are far past the expansion limit if each lowered the table again.
+  // are far past the expansion limit if each lowered the table again. On
+  // the device, 16 reads of about 400 bytes each (every statement costs a
+  // few KB of compose state of its own there).
   let (size, reads) = if cfg!(target_os = "espidf") {
-    (100, 50)
+    (100, 16)
   } else {
     (5000, 80)
   };

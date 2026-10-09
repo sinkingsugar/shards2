@@ -1,0 +1,4 @@
+Task,Model,ModelId,Variant,Trial,SemanticSuccess,FirstPassSuccess,FirstFailure,RepairRounds,Tokens,OutputTokens,LatencyMs,Failure
+42-compose-time-prefix,claude-sonnet-5-5,claude-sonnet-5-5,functions,3,true,true,,0,44265,443,7194,
+42-compose-time-prefix,claude-sonnet-5-5,claude-sonnet-5-5,functions,1,true,true,,0,44159,337,7256,
+42-compose-time-prefix,claude-sonnet-5-5,claude-sonnet-5-5,functions,2,true,true,,0,44312,490,8199,

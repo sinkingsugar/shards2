@@ -203,7 +203,11 @@ fn shards2_path(explicit: Option<&str>) -> Result<PathBuf, String> {
   {
     Some(p) => PathBuf::from(p),
     None => {
-      let target = manifest_dir().join("../../target");
+      // Where cargo builds: `CARGO_TARGET_DIR` when set, so a stale
+      // binary in the checkout's own `target` is never picked instead.
+      let target = std::env::var_os("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| manifest_dir().join("../../target"));
       ["release", "debug"]
         .iter()
         .map(|profile| target.join(profile).join("shards2"))

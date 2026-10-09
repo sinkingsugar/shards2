@@ -187,24 +187,33 @@ struct Lowerer<'a> {
   const_values: HashMap<String, Option<Var>>,
   /// Reads of constants so far, to tell a constant built from others.
   const_reads: usize,
-  /// Source bytes of constants holding a `#( )` lowered so far, every read
-  /// counted (see [`const_limit`]).
+  /// Source-map nodes that reads of constants holding a `#( )` added so
+  /// far (see [`EVAL_CONST_NODES`]).
   const_expansion: usize,
-  /// The read that took those past [`const_limit`]; kept apart from
+  /// The read that took those past [`EVAL_CONST_NODES`]; kept apart from
   /// `problems`, which a repeated read truncates.
   const_overflow: Option<Problem>,
 }
 
-/// What constants built from each other may expand to: the platform's
-/// default value limit (`EvalLimits::default().value_bytes`). They multiply
-/// at every level, so without a bound a few lines expand past any memory
-/// before compose-time limits apply. A value constant built from others is
-/// bounded by its size as text; a constant holding a `#( )` is lowered
-/// again at each read (its pipelines are recorded under the reading
-/// occurrence), so the source those reads lower is bounded in total.
+/// What a value constant built from others may expand to, by its size as
+/// text: the platform's default value limit
+/// (`EvalLimits::default().value_bytes`). Constants built from each other
+/// multiply at every level, so without a bound a few lines expand past any
+/// memory before compose-time limits apply.
 fn const_limit() -> usize {
   shards_core::compose_time::EvalLimits::default().value_bytes
 }
+
+/// How many source-map nodes the reads of constants holding a `#( )` may
+/// add in total. Such a constant is lowered again at each read (its
+/// pipelines are recorded under the reading occurrence), and each node is
+/// a lowered step with its location, about a hundred bytes: a bound on
+/// nodes bounds that memory, where one on source text would not.
+const EVAL_CONST_NODES: usize = if cfg!(target_os = "espidf") {
+  128
+} else {
+  32_768
+};
 
 /// What lowering needs of a declared function: its parameter names and
 /// whether each has a default.
@@ -1561,19 +1570,17 @@ impl Lowerer<'_> {
       if !self.contains_eval(&block) {
         return self.read_value_const(&name.node, &block, at);
       }
-      self.const_expansion += block.span.end - block.span.start;
       if self.const_overflow.is_some() {
         return None;
       }
-      if self.const_expansion > const_limit() {
+      if self.const_expansion > EVAL_CONST_NODES {
         self.const_overflow = Some(
           Problem::construct(
             name.span,
             "generic",
             "expansion-budget",
             format!(
-              "constants holding `#( )` expand past {} bytes of source here: each read of `@{}` lowers its pipelines again",
-              const_limit(),
+              "constants holding `#( )` lower past {EVAL_CONST_NODES} steps here: each read of `@{}` lowers its pipelines again",
               name.node
             ),
           )
@@ -1581,7 +1588,14 @@ impl Lowerer<'_> {
         );
         return None;
       }
-      return self.read_const(&name.node, at);
+      // Charged with the nodes this read added itself: a nested read
+      // charges its own as it completes, so a runaway chain stops within
+      // one constant's own lowering of the bound.
+      let (nodes, charged) = (self.map.nodes.len(), self.const_expansion);
+      let value = self.read_const(&name.node, at);
+      let added = self.map.nodes.len() - nodes;
+      self.const_expansion += added.saturating_sub(self.const_expansion - charged);
+      return value;
     }
     let mut known: Vec<String> = self.defines.keys().cloned().collect();
     known.extend(self.consts.keys().cloned());

@@ -346,4 +346,20 @@ fn values_built_from_one_shared_value_cost_what_they_hold() {
   assert_ne!(v, build(2));
   let param = |v: &Var| hash_of(&shards_core::ParamValue::Value(v.clone()));
   assert_eq!(param(&v), param(&w));
+  // The same with tables holding the level below twice: map tables as
+  // literals lower to, compared with each other and with their struct
+  // form (a preserving reload compares separately built definitions).
+  let tables = |leaf: i64| {
+    let mut v = Var::table([("a", Var::Int(leaf))]);
+    for _ in 0..64 {
+      v = Var::table([("a", v.clone()), ("b", v)]);
+    }
+    v
+  };
+  let (v, w) = (tables(1), tables(1));
+  assert_eq!(v, w);
+  assert_eq!(v.clone().into_struct_tables(), w);
+  assert_eq!(w, v.clone().into_struct_tables());
+  assert_ne!(v, tables(2));
+  assert_ne!(v.clone().into_struct_tables(), tables(2));
 }

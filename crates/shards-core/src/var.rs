@@ -187,25 +187,14 @@ impl Var {
   /// walk over a value visit storage it holds in many places once (see
   /// [`Storage`]).
   pub(crate) fn storage(&self) -> Option<(Storage, bool)> {
-    let (at, shape, shared) = match self {
-      Var::Seq(items) => (
-        Arc::as_ptr(items) as *const (),
-        None,
+    match self {
+      Var::Seq(items) => Some((
+        Storage(Arc::as_ptr(items) as *const (), None),
         Arc::strong_count(items) > 1,
-      ),
-      Var::Table(Table(TableRepr::Struct { shape, slots })) => (
-        Arc::as_ptr(slots) as *const (),
-        Some(*shape),
-        Arc::strong_count(slots) > 1,
-      ),
-      Var::Table(Table(TableRepr::Map(entries))) => (
-        Arc::as_ptr(entries) as *const (),
-        None,
-        Arc::strong_count(entries) > 1,
-      ),
-      _ => return None,
-    };
-    Some((Storage(at, shape), shared))
+      )),
+      Var::Table(table) => Some(table.storage()),
+      _ => None,
+    }
   }
 
   /// The same value with every table (at any depth) in struct
@@ -400,6 +389,20 @@ impl Default for Table {
 impl Table {
   pub fn new() -> Table {
     Table::default()
+  }
+
+  /// This table's [`Storage`], and whether another table shares it.
+  fn storage(&self) -> (Storage, bool) {
+    match &self.0 {
+      TableRepr::Struct { shape, slots } => (
+        Storage(Arc::as_ptr(slots) as *const (), Some(*shape)),
+        Arc::strong_count(slots) > 1,
+      ),
+      TableRepr::Map(entries) => (
+        Storage(Arc::as_ptr(entries) as *const (), None),
+        Arc::strong_count(entries) > 1,
+      ),
+    }
   }
 
   pub fn builder() -> TableBuilder {
@@ -805,12 +808,11 @@ impl PartialEq for Var {
 }
 
 /// One equality check: the pairs of shared sequences or tables already
-/// found equal, by storage address (as [`Storage`]), so two values
-/// built from copies of one value compare in what they hold, not in what
-/// they expand to. Only equal pairs are remembered: the first unequal pair
-/// ends the check.
+/// found equal, by [`Storage`], so two values built from copies of one
+/// value compare in what they hold, not in what they expand to. Only equal
+/// pairs are remembered: the first unequal pair ends the check.
 #[derive(Default)]
-struct SameValues(Seen<(*const (), *const ()), ()>);
+struct SameValues(Seen<(Storage, Storage), ()>);
 
 impl SameValues {
   fn eq(&mut self, a: &Var, b: &Var) -> bool {
@@ -822,49 +824,68 @@ impl SameValues {
   }
 
   fn seqs(&mut self, a: &Arc<Vec<Var>>, b: &Arc<Vec<Var>>) -> bool {
-    Arc::ptr_eq(a, b)
-      || a.len() == b.len()
-        && self.remember(a, b, |same| {
-          a.iter().zip(b.iter()).all(|(a, b)| same.eq(a, b))
-        })
+    if Arc::ptr_eq(a, b) {
+      return true;
+    }
+    if a.len() != b.len() {
+      return false;
+    }
+    let storage = |items: &Arc<Vec<Var>>| {
+      (
+        Storage(Arc::as_ptr(items) as *const (), None),
+        Arc::strong_count(items) > 1,
+      )
+    };
+    self.remember(storage(a), storage(b), |same| {
+      a.iter().zip(b.iter()).all(|(a, b)| same.eq(a, b))
+    })
   }
 
   fn tables(&mut self, a: &Table, b: &Table) -> bool {
     match (&a.0, &b.0) {
       (TableRepr::Struct { shape: s, slots: x }, TableRepr::Struct { shape: t, slots: y }) => {
-        s == t
-          && (Arc::ptr_eq(x, y)
-            || self.remember(x, y, |same| {
-              x.iter().zip(y.iter()).all(|(a, b)| same.eq(a, b))
-            }))
+        if s != t {
+          return false;
+        }
+        if Arc::ptr_eq(x, y) {
+          return true;
+        }
       }
-      (TableRepr::Map(x), TableRepr::Map(y)) if Arc::ptr_eq(x, y) => true,
-      _ => {
-        a.len() == b.len()
-          && a
-            .iter()
-            .zip(b.iter())
-            .all(|((k, v), (l, w))| k == l && self.eq(v, w))
-      }
+      (TableRepr::Map(x), TableRepr::Map(y)) if Arc::ptr_eq(x, y) => return true,
+      _ => {}
     }
+    if a.len() != b.len() {
+      return false;
+    }
+    self.remember(a.storage(), b.storage(), |same| match (&a.0, &b.0) {
+      // Same shape (checked above): the slots line up.
+      (TableRepr::Struct { slots: x, .. }, TableRepr::Struct { slots: y, .. }) => {
+        x.iter().zip(y.iter()).all(|(v, w)| same.eq(v, w))
+      }
+      // Either representation iterates its keys in order.
+      _ => a
+        .iter()
+        .zip(b.iter())
+        .all(|((k, v), (l, w))| k == l && same.eq(v, w)),
+    })
   }
 
-  /// `compare()`, remembered for storage both sides share elsewhere (a
-  /// table's keys are compared before, so the storage pair decides).
-  fn remember<T: ?Sized, U: ?Sized>(
+  /// `compare()`, remembered when both sides' storage is shared elsewhere.
+  /// A [`Storage`] holds a struct table's shape, so a pair decides its
+  /// keys too.
+  fn remember(
     &mut self,
-    a: &Arc<T>,
-    b: &Arc<U>,
+    (a, a_shared): (Storage, bool),
+    (b, b_shared): (Storage, bool),
     compare: impl FnOnce(&mut Self) -> bool,
   ) -> bool {
-    let shared = Arc::strong_count(a) > 1 && Arc::strong_count(b) > 1;
-    let key = (Arc::as_ptr(a) as *const (), Arc::as_ptr(b) as *const ());
-    if shared && self.0.get(&key).is_some() {
+    let shared = a_shared && b_shared;
+    if shared && self.0.get(&(a, b)).is_some() {
       return true;
     }
     let same = compare(self);
     if same && shared {
-      self.0.insert(key, ());
+      self.0.insert((a, b), ());
     }
     same
   }

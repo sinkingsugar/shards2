@@ -182,6 +182,21 @@ struct Lowerer<'a> {
   /// Constants already lowered once: their problems were reported then,
   /// and lowering them again at a read reports nothing new.
   consts_checked: std::collections::HashSet<String>,
+  /// Source bytes of constant values lowered so far, every read counted
+  /// (see [`CONST_EXPANSION`]).
+  const_expansion: usize,
+  /// The read that took constants past [`CONST_EXPANSION`]; kept apart from
+  /// `problems`, which a repeated read truncates.
+  const_overflow: Option<Problem>,
+}
+
+/// How many bytes of constant source a program may lower in total, each
+/// read of a constant counting its value again. Constants built from each
+/// other multiply at every level, so without a bound a few lines expand
+/// past any memory before compose-time limits apply; the bound is the
+/// platform's default value limit (`EvalLimits::default().value_bytes`).
+fn const_expansion_limit() -> usize {
+  shards_core::compose_time::EvalLimits::default().value_bytes
 }
 
 /// What lowering needs of a declared function: its parameter names and
@@ -248,6 +263,8 @@ pub fn lower(
     consts: HashMap::new(),
     const_stack: Vec::new(),
     consts_checked: std::collections::HashSet::new(),
+    const_expansion: 0,
+    const_overflow: None,
   };
   let mut out = Lowered::default();
   // Function signatures first: a call may precede its declaration, and
@@ -351,6 +368,7 @@ pub fn lower(
   }
   l.map.nodes.shrink_to_fit();
   out.map = l.map;
+  l.problems.extend(l.const_overflow);
   (out, l.problems)
 }
 
@@ -1524,6 +1542,27 @@ impl Lowerer<'_> {
             chain.join(" -> ")
           ),
         ));
+        return None;
+      }
+      let size = self.consts[&name.node].span.end - self.consts[&name.node].span.start;
+      self.const_expansion += size;
+      if self.const_overflow.is_some() {
+        return None;
+      }
+      if self.const_expansion > const_expansion_limit() {
+        self.const_overflow = Some(
+          Problem::construct(
+            name.span,
+            "generic",
+            "expansion-budget",
+            format!(
+              "constants expand past {} bytes of source here: each read of `@{}` lowers its value again",
+              const_expansion_limit(),
+              name.node
+            ),
+          )
+          .help("constants built from each other multiply at every level; read large ones in fewer places"),
+        );
         return None;
       }
       return self.read_const(&name.node, at);

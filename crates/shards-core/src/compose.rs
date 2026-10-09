@@ -2071,6 +2071,8 @@ impl ComposeCache {
         mutates: group.analysis.mutates.clone(),
         occurrences: Default::default(),
         not_compose_time: group.analysis.not_compose_time,
+        // The group's own body locates its accesses.
+        mesh_at: None,
       },
       None => Analysis::default(),
     }

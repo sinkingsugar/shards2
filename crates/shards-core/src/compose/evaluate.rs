@@ -314,28 +314,32 @@ fn not_compose_time(analysis: &Analysis) -> Option<Error> {
     };
     found.iter().find(|o| inner(o)).cloned()
   };
-  let (reason, occurrence) =
+  let (reason, path) =
     if let Some((label, pick)) = effects.iter().find(|(_, pick)| pick(analysis.effects)) {
       (
         format!("it has the effect `{label}`"),
-        first(&|o| pick(o.effects)),
+        first(&|o| pick(o.effects)).map(|o| o.path),
       )
     } else if analysis.lifetime != Lifetime::Stateless {
       (
         "it holds persistent state".to_string(),
-        first(&|o| o.lifetime != Lifetime::Stateless),
+        first(&|o| o.lifetime != Lifetime::Stateless).map(|o| o.path),
       )
     } else if let Some(access) = analysis.uses.first().or(analysis.mutates.first()) {
-      (format!("it reaches mesh variable {}", access.name), None)
+      (
+        format!("it reaches mesh variable {}", access.name),
+        analysis.mesh_at.clone(),
+      )
     } else if let Some(name) = &analysis.not_compose_time {
       (
         "it is not on the list of shards compose-time evaluation may run".to_string(),
-        first(&|o| matches!(o.path.last(), Some(PathStep::Shard { name: n, .. }) if **n == **name)),
+        first(&|o| matches!(o.path.last(), Some(PathStep::Shard { name: n, .. }) if **n == **name))
+          .map(|o| o.path),
       )
     } else {
       return None;
     };
-  let path = occurrence.map(|o| o.path).unwrap_or_default();
+  let path = path.unwrap_or_default();
   let shard = match path.last() {
     Some(PathStep::Shard { name, .. }) => name.clone(),
     _ => "the pipeline".to_string(),

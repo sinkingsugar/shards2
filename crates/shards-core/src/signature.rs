@@ -289,6 +289,9 @@ pub struct Analysis {
   /// The first native shard reached that a compose-time evaluation may not
   /// run (`compose_time::eligible`), by name.
   pub not_compose_time: Option<&'static str>,
+  /// The path to the first shard reached that reads or assigns a mesh
+  /// variable, relative like the occurrences.
+  pub mesh_at: Option<Vec<PathStep>>,
 }
 impl Default for Analysis {
   fn default() -> Self {
@@ -299,6 +302,7 @@ impl Default for Analysis {
       mutates: Vec::new(),
       occurrences: Occurrences::default(),
       not_compose_time: None,
+      mesh_at: None,
     }
   }
 }
@@ -309,6 +313,9 @@ impl Analysis {
     } else {
       &mut self.uses
     };
+    if self.mesh_at.is_none() {
+      self.mesh_at = Some(Vec::new());
+    }
     let access = MeshAccess {
       name: name.into(),
       ty,
@@ -319,6 +326,11 @@ impl Analysis {
     }
   }
   pub(crate) fn include(&mut self, child: &Self, prefix: &[PathStep]) {
+    if self.mesh_at.is_none()
+      && let Some(at) = &child.mesh_at
+    {
+      self.mesh_at = Some(prefix.iter().chain(at).cloned().collect());
+    }
     self.effects = self.effects.union(child.effects);
     self.lifetime = self.lifetime.union(child.lifetime);
     for access in &child.uses {

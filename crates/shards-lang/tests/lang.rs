@@ -1635,6 +1635,9 @@ fn nesting_up_to_the_limit_runs_through_every_control_shard() {
     ("1 | Match([1 {{next}}] default: {{}})", 2),
     ("Maybe({{next}} {2})", 2),
     ("Any({false} {{next} false})", 2),
+    // A compose-time evaluation composes and runs its pipeline in the
+    // middle of compose, an engine activation per level.
+    ("#( {next} )", 3),
   ] {
     let n = (shards_core::compose::MAX_FLOW_DEPTH - 2) / levels;
     let src = wrapped_chain(n, wrapper);
@@ -2579,6 +2582,57 @@ fn not_compose_time_is_located_also_through_functions() {
     d[0].message
   );
   assert_eq!(at(&d[0]), (2, 4));
+  // Mesh access is reached only through a function declaring it: the
+  // diagnostic names that function and points at the read.
+  let mut mesh = Mesh::new();
+  mesh.declare_var("gain", Var::Int(2), true);
+  let mut session = shards_lang::Session::with_mesh(mesh);
+  let (_, d) = session
+    .reload_preserving(
+      Source::new(
+        "t.shs",
+        "@fn(Read input: Int output: Int params: {} uses: [gain] { Math.Add(gain) })\n#( 1 | Read ) | Log",
+      ),
+      &catalog(),
+      &no_defines(),
+    )
+    .unwrap_err();
+  assert_eq!(
+    (d[0].code, d[0].shard.as_deref()),
+    ("not-compose-time", Some("Math.Add")),
+    "{}",
+    d[0].message
+  );
+  assert!(
+    d[0].message.contains("(reached through Read)") && d[0].message.contains("mesh variable gain"),
+    "{}",
+    d[0].message
+  );
+  assert_eq!(at(&d[0]), (1, 59));
+}
+
+#[test]
+fn constants_built_from_each_other_stop_at_the_expansion_budget() {
+  // Each line reads the previous constant eight times: seven lines would
+  // lower millions of elements.
+  let mut source = String::from("@const(c0 [1 2 3 4 5 6 7 8])\n");
+  for i in 1..=7 {
+    let read = format!("@c{} ", i - 1).repeat(8);
+    source += &format!("@const(c{i} [{}])\n", read.trim_end());
+  }
+  source += "@c7 | Count | Log\n";
+  let d = load_errors(&source);
+  assert_eq!(d.len(), 1, "{d:?}");
+  assert_eq!(d[0].code, "expansion-budget", "{}", d[0].message);
+  assert!(d[0].message.contains("each read of"), "{}", d[0].message);
+  // Reported at a read inside a constant's value.
+  let (line, _) = at(&d[0]);
+  assert!((2..=8).contains(&line), "{}", d[0].message);
+  // A constant read a few times stays well within it.
+  assert_eq!(
+    lines_of("@const(row [1 2 3])\n@const(grid [@row @row @row])\n@grid | Count | Log"),
+    ["3"]
+  );
 }
 
 #[test]
@@ -2665,6 +2719,40 @@ fn compose_time_budgets_end_runaway_evaluations() {
       d.path_string()
     );
   }
+  // Match pays for each case it compares by size: a thousand comparisons of
+  // 64-element sequences cost far more than the thousand dispatches.
+  let input: Vec<String> = (0..63)
+    .map(|i| i.to_string())
+    .chain(["-1".into()])
+    .collect();
+  let case: Vec<String> = (0..64).map(|i| i.to_string()).collect();
+  let source = format!(
+    "#( 0 | Var(k) Repeat({{ [{}] | Match([[{}] {{ 1 }}] default: {{ 0 }}) Inc(k) }} times: 1000) k ) | Log",
+    input.join(" "),
+    case.join(" ")
+  );
+  let mut mesh = Mesh::new();
+  mesh.set_eval_limits(shards_core::compose_time::EvalLimits {
+    fuel: 10_000,
+    ..Default::default()
+  });
+  let mut session = shards_lang::Session::with_mesh(mesh);
+  let (_, d) = session
+    .reload_preserving(Source::new("t.shs", &source), &catalog(), &no_defines())
+    .unwrap_err();
+  assert_eq!(d[0].code, "expansion-budget", "{}", d[0].message);
+  assert!(d[0].message.contains("fuel"), "{}", d[0].message);
+}
+
+#[test]
+fn an_evaluation_retaining_what_it_allocates_ends_at_its_budget() {
+  // Every iteration allocates a new sequence and keeps it: the live heap
+  // grows with the fuel spent, under the platform's default limits (on the
+  // device, within its heap).
+  let d = compose_errors(
+    "#( [] | Var(all) 0 | Var(k) Repeat({ [k k k k k k k k] | Push(all) Inc(k) } forever: true) all ) | Log",
+  );
+  assert_eq!(d[0].code, "expansion-budget", "{}", d[0].message);
 }
 
 #[test]

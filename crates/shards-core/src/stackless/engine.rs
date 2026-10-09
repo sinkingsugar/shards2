@@ -1477,7 +1477,7 @@ fn dispatch_once(
       Ok(Dispatch::Prepare)
     }
     Control::Call(_) => enter(c, 0, 2),
-    Control::Match(m) => enter(c, m.find(input)?, 1),
+    Control::Match(m) => enter(c, m.find(input, ctx.meter)?, 1),
     Control::Sub(_) => {
       if value.is_some() {
         next(input.clone())

@@ -210,13 +210,35 @@ impl ControlFlows for MatchCompiled {
 impl MatchCompiled {
   /// The flow to run for `input`: the first equal case, else the default.
   /// Compose proved one of them exists for every input of its type.
-  pub(crate) fn find(&self, input: &Var) -> Result<usize> {
-    self
-      .values
-      .iter()
-      .position(|v| super::values::values_equal(v, input))
+  pub(crate) fn find(
+    &self,
+    input: &Var,
+    meter: Option<&crate::compose_time::Meter>,
+  ) -> Result<usize> {
+    let found = match meter {
+      None => self
+        .values
+        .iter()
+        .position(|v| super::values::values_equal(v, input)),
+      Some(meter) => self.find_metered(input, meter)?,
+    };
+    found
       .or((self.flows.len() > self.values.len()).then_some(self.values.len()))
       .ok_or_else(|| Error::Activation(format!("Match: no case matches {input}")))
+  }
+
+  /// [`Self::find`] in a compose-time evaluation: each case compared is
+  /// charged by the size of the smaller side, which bounds the comparison.
+  fn find_metered(&self, input: &Var, meter: &crate::compose_time::Meter) -> Result<Option<usize>> {
+    let size = meter.traverse(input)?;
+    for (i, v) in self.values.iter().enumerate() {
+      let compared = crate::compose_time::text_size(v, size).unwrap_or(size);
+      meter.charge((compared / crate::compose_time::TRAVERSAL_BYTES + 1) as u64)?;
+      if super::values::values_equal(v, input) {
+        return Ok(Some(i));
+      }
+    }
+    Ok(None)
   }
 }
 

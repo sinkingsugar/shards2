@@ -42,10 +42,11 @@ impl Default for EvalLimits {
   fn default() -> EvalLimits {
     if cfg!(target_os = "espidf") {
       // An allocation costs a unit per byte, so the fuel also bounds the
-      // heap an evaluation can take: well below the classic ESP32's
-      // free heap while the frontend composes.
+      // heap an evaluation can take. The classic ESP32's heap low-water
+      // over the acceptance suites is about 12 KB (2026-10-09), so an
+      // evaluation keeps below 8 KB.
       EvalLimits {
-        fuel: 20_000,
+        fuel: 8_000,
         depth: 32,
         value_bytes: 4 * 1024,
         output_bytes: 2 * 1024,
@@ -168,8 +169,8 @@ impl Meter {
     // walk stops when it has read as many as the fuel left pays for.
     let left = self.limits.fuel.saturating_sub(self.fuel.get());
     let mut nodes = 0u64;
-    let mut work = vec![(value, 1usize)];
-    while let Some((v, level)) = work.pop() {
+    let mut walk = Walk::new(value);
+    while let Some((v, level)) = walk.next() {
       nodes += 1;
       if nodes > left {
         return self.charge(nodes);
@@ -180,11 +181,7 @@ impl Meter {
           "a value would nest deeper than {VALUE_DEPTH} levels"
         )));
       }
-      match v {
-        Var::Seq(items) => work.extend(items.iter().map(|i| (i, level + 1))),
-        Var::Table(table) => work.extend(table.iter().map(|(_, i)| (i, level + 1))),
-        _ => {}
-      }
+      walk.enter(v);
     }
     self.charge(nodes)
   }
@@ -221,8 +218,8 @@ pub(crate) fn budget(message: String) -> Error {
 /// shared value costs at most `cap` steps to measure.
 pub fn text_size(value: &Var, cap: usize) -> Option<usize> {
   let mut size = 0usize;
-  let mut work = vec![value];
-  while let Some(v) = work.pop() {
+  let mut walk = Walk::new(value);
+  while let Some((v, _)) = walk.next() {
     size += match v {
       Var::None | Var::Bool(_) => 5,
       Var::Int(_) => 20,
@@ -232,24 +229,74 @@ pub fn text_size(value: &Var, cap: usize) -> Option<usize> {
       Var::Float3(_) => 8 + 3 * 33,
       Var::Float4(_) => 8 + 4 * 33,
       Var::String(s) => s.len(),
-      Var::Seq(items) => {
-        work.extend(items.iter());
-        2 + items.len()
-      }
+      Var::Seq(items) => 2 + items.len(),
       Var::Table(table) => {
-        let mut keys = 0;
-        for (k, item) in table.iter() {
+        let mut keys = 2;
+        for k in table.keys() {
           keys += k.len() + 3;
-          work.push(item);
+          if size + keys > cap {
+            return None;
+          }
         }
-        2 + keys
+        keys
       }
     };
     if size > cap {
       return None;
     }
+    walk.enter(v);
   }
   Some(size)
+}
+
+/// A depth-first walk over a value that keeps one iterator per level open,
+/// so its memory grows with the nesting, not with the number of elements
+/// waiting to be read.
+struct Walk<'a> {
+  next: Option<&'a Var>,
+  open: Vec<Children<'a>>,
+}
+
+enum Children<'a> {
+  Seq(std::slice::Iter<'a, Var>),
+  Table(crate::var::Iter<'a>),
+}
+
+impl<'a> Walk<'a> {
+  fn new(value: &'a Var) -> Walk<'a> {
+    Walk {
+      next: Some(value),
+      open: Vec::new(),
+    }
+  }
+
+  /// The next value and its level (the root's is 1).
+  fn next(&mut self) -> Option<(&'a Var, usize)> {
+    loop {
+      if let Some(v) = self.next.take() {
+        return Some((v, self.open.len() + 1));
+      }
+      let item = match self.open.last_mut()? {
+        Children::Seq(items) => items.next(),
+        Children::Table(entries) => entries.next().map(|(_, v)| v),
+      };
+      match item {
+        Some(v) => self.next = Some(v),
+        None => {
+          self.open.pop();
+        }
+      }
+    }
+  }
+
+  /// Visits the elements of `value`, the value just returned, next.
+  fn enter(&mut self, value: &'a Var) {
+    match value {
+      Var::Seq(items) => self.open.push(Children::Seq(items.iter())),
+      Var::Table(table) => self.open.push(Children::Table(table.iter())),
+      _ => {}
+    }
+  }
 }
 
 /// The native shards a compose-time evaluation may reach, with the version
@@ -293,7 +340,7 @@ static SAFE: &[(&ShardType, u32)] = {
     (&values::TO_FLOAT4, 1),
     (&data::TAKE, 1),
     // Composites: the engine and the VM charge their dispatches; `Match`
-    // compares against literal cases, bounded by the code.
+    // charges each case it compares by size.
     (&WHEN, 1),
     (&IF, 1),
     (&MATCH, 1),
@@ -377,6 +424,32 @@ mod tests {
       shared = Var::Seq(Arc::new(vec![shared.clone(), shared]));
     }
     assert_eq!(text_size(&shared, 1000), None);
+  }
+
+  #[test]
+  fn walks_hold_one_iterator_per_level() {
+    // Three levels of 1000 elements: a walk that queued the waiting
+    // elements would hold thousands at once.
+    let row = Var::Seq(Arc::new(vec![Var::Int(1); 1000]));
+    let table = Var::table([("row", row.clone())]);
+    let value = Var::Seq(Arc::new(vec![table; 1000]));
+    let mut walk = Walk::new(&value);
+    let (mut nodes, mut widest) = (0, 0);
+    while let Some((v, level)) = walk.next() {
+      nodes += 1;
+      widest = widest.max(walk.open.len());
+      assert!(level <= 4);
+      walk.enter(v);
+    }
+    assert_eq!(nodes, 1 + 1000 * (2 + 1000));
+    assert_eq!(widest, 3);
+    // Nesting is measured the same way, and charged a unit per element.
+    let meter = Meter::new(EvalLimits {
+      fuel: 10_000_000,
+      ..EvalLimits::default()
+    });
+    meter.nest(&value).unwrap();
+    assert_eq!(meter.usage(0).fuel, nodes);
   }
 
   #[test]

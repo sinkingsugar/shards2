@@ -1481,6 +1481,19 @@ fn an_evaluation_reaching_mesh_access_is_not_compose_time() {
   let d = compile_error(&mut mesh);
   assert_eq!(d.code, "not-compose-time");
   assert!(d.message.contains("mesh variable gain"), "{}", d.message);
+  // Located at the read inside the function that declares it.
+  assert_eq!(d.shard.as_deref(), Some("Get"), "{}", d.message);
+  assert!(
+    d.message.contains("(reached through Gain)"),
+    "{}",
+    d.message
+  );
+  assert!(
+    d.path
+      .contains(&shards_core::diagnostic::PathStep::Function("Gain".into())),
+    "{:?}",
+    d.path
+  );
 }
 
 #[test]

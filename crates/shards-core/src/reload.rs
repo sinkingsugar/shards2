@@ -135,7 +135,11 @@ pub(crate) fn retention(wire: &CompiledWire, env: &ComposeEnv<'_>) -> Retention 
       // A framed callee (here through a spawned wire's call sites): its
       // call sites select the new body at entry, the code is unchanged.
       Dep::Function { .. } => {}
-      Dep::MeshVar { .. } | Dep::Wire { .. } | Dep::Evaluation(_) => return Retention::Restart,
+      Dep::MeshVar { .. } | Dep::Wire { .. } => return Retention::Restart,
+      // Recorded in `deps` only: an evaluation's usage is deterministic, so
+      // once it no longer fits the limits the candidate fails to compose
+      // (`expansion-budget`) and no instance is retained or restarted.
+      Dep::Evaluation(_) => {}
     }
   }
   retention

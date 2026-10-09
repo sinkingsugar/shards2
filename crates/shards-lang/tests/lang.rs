@@ -2670,9 +2670,10 @@ fn a_table_constant_built_from_copies_composes_as_it_is_held() {
   // read many times: compose converts, types, hashes and compares it as
   // held (each level once), not expanded at every read. Natively about
   // 850 KB as text, which each read once rebuilt in full. On the device
-  // 3 levels, within its value limit.
+  // 2 levels (1,754 bytes as the value limit measures text; 3 levels pass
+  // its 4 KiB).
   let (levels, reads) = if cfg!(target_os = "espidf") {
-    (3, 16)
+    (2, 16)
   } else {
     (5, 400)
   };

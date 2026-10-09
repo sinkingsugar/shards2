@@ -1,0 +1,45 @@
+diff --git a/crates/shards-lang/tests/zz_probe_m8c.rs b/crates/shards-lang/tests/zz_probe_m8c.rs
+new file mode 100644
+index 0000000..a4ad6e8
+--- /dev/null
++++ b/crates/shards-lang/tests/zz_probe_m8c.rs
+@@ -0,0 +1,39 @@
++use std::collections::HashMap;
++use std::time::Instant;
++use shards_core::Catalog;
++use shards_lang::Source;
++
++fn catalog() -> Catalog {
++  Catalog::new(&[shards_core::shards::CATALOG]).unwrap()
++}
++
++fn source(levels: usize, reads: usize, wide: &str) -> String {
++  let mut src = String::from("@const(t0 {a: 1})\n");
++  for i in 1..=levels {
++    let p = format!("@t{}", i - 1);
++    let body = if wide == "table" { format!("{{a: {p} b: {p}}}") } else { format!("[{p} {p}]") };
++    src += &format!("@const(t{i} {body})\n");
++  }
++  src += "@wire(w {\n";
++  for _ in 0..reads {
++    src += &format!("@t{levels} | Count | Math.Add(1)\n");
++  }
++  src += "Pause } looped: true)\n@mesh(m) @schedule(m w) @run(m)\n";
++  src
++}
++
++#[test]
++fn probe_nested_map_tables_reload() {
++  let levels: usize = std::env::var("LEVELS").ok().and_then(|s| s.parse().ok()).unwrap_or(14);
++  let reads: usize = std::env::var("READS").ok().and_then(|s| s.parse().ok()).unwrap_or(10);
++  let wide = std::env::var("WIDE").unwrap_or("table".into());
++  let src = source(levels, reads, &wide);
++  let mut session = shards_lang::Session::new();
++  let t = Instant::now();
++  let r = session.reload(Source::new("p.shs", &src), &catalog(), &HashMap::new());
++  eprintln!("{wide} levels {levels} reads {reads}: reload ok={} in {:?}", r.is_ok(), t.elapsed());
++  if let Err((_, d)) = &r { eprintln!("{:?}", d.first().map(|d| (d.code, d.message.clone()))); return; }
++  let t = Instant::now();
++  let r = session.reload_preserving(Source::new("p.shs", &src), &catalog(), &HashMap::new());
++  eprintln!("  reload_preserving ok={} in {:?}", r.is_ok(), t.elapsed());
++}

@@ -57,3 +57,17 @@ jobs:
           node scripts/run-wasi.mjs "$(ls -t target/wasm32-wasip1/debug/deps/functions-*.wasm | head -1)"
           node scripts/run-wasi.mjs "$(ls -t target/wasm32-wasip1/debug/deps/values-*.wasm | head -1)"
           node scripts/run-wasi.mjs "$(ls -t target/wasm32-wasip1/debug/deps/lang-*.wasm | head -1)"
+
+  bench:
+    # Compose costs gated against bench/compose/baseline.txt (allocations,
+    # and time relative to flat twins); the runtime benchmarks are printed
+    # for the log, not gated (bench/compose/README.md).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo run --release -p shards-lang --example bench_compose -- --check bench/compose/baseline.txt
+      - run: cargo run --release -p shards-core --example bench_tables -- 200000
+      - run: cargo run --release -p shards-core --example bench_instances -- 1000
+      - run: cargo run --release -p shards-core --example bench_depth -- --progress

@@ -35,7 +35,7 @@ This repository should be usable without previous chat history or private agent 
 - `crates/shards-io`: I/O shards (`Http.Get`) on a shared Tokio runtime, following 1.x's HTTP module. Native only.
 - `crates/shards-lang`: the language frontend: hand-written lexer and parser with spans, lowering to `WireDef`/`ShardDef` with a source map, and `check`/`run` (`docs/surface-syntax-review.md`).
 - `crates/shards-cli`: the `shards2` command (`check [--json]`, `run`, `watch`, `describe`, `search`, `catalog`).
-- `bench/`: benchmarks matched with 1.x (`shards-1x/`, `http-concurrency/`), and the authoring eval (`authoring/`, golden path §8; its README says how to run it).
+- `bench/`: benchmarks matched with 1.x (`shards-1x/`, `http-concurrency/`), compose costs gated in CI (`compose/`), and the authoring eval (`authoring/`, golden path §8; its README says how to run it).
 - `examples/esp32`: ESP-IDF firmware embedding the core and frontend on the stackless scheduler; a separate workspace with its own lockfile (`docs/esp32.md`).
 
 ## Core rules
@@ -70,9 +70,10 @@ The prototype milestone is complete. Next is porting the language front end and 
 - release nesting: `cargo test --release -p shards-lang --test lang nesting_up_to_the_limit`
 - TLS: `cargo clippy -p shards-io --all-targets --features rustls-ring -- -D warnings`
 - wasm lint: `cargo clippy -p shards-core -p shards-lang --target wasm32-wasip1 --lib --tests -- -D warnings`
+- compose costs: `cargo run --release -p shards-lang --example bench_compose -- --check bench/compose/baseline.txt` (CI's `bench` job; after an intended allocation change, regenerate with `--write` and say why in the commit, see `bench/compose/README.md`)
 - wasm tests: `cargo test -p shards-core --test prototype --test metadata --target wasm32-wasip1 --no-run` and `cargo test -p shards-lang --test lang --target wasm32-wasip1 --no-run`, then run each emitted test `.wasm` with `node scripts/run-wasi.mjs <path>`. Install the target with `rustup target add wasm32-wasip1` if needed. Benchmark examples are native-only; do not use `--all-targets` for wasm.
 
-The toolchain is pinned in `rust-toolchain.toml`. CI runs fmt, clippy and tests on Linux and macOS, clippy for the `rustls-ring` build, and the suite on wasm (Node WASI). A separate workflow links the ESP32 firmware for three chips and boots each in Espressif's QEMU (`scripts/esp32-qemu.sh`) when the core, frontend or example change; it needs no local run, but when `shards-core` or `shards-lang` gain or change a dependency, refresh `examples/esp32/Cargo.lock` (`cargo update -w` in `examples/esp32`), since the firmware builds with `--locked`.
+The toolchain is pinned in `rust-toolchain.toml`. CI runs fmt, clippy and tests on Linux and macOS, clippy for the `rustls-ring` build, the suite on wasm (Node WASI), and the compose cost check. A separate workflow links the ESP32 firmware for three chips and boots each in Espressif's QEMU (`scripts/esp32-qemu.sh`) when the core, frontend or example change; it needs no local run, but when `shards-core` or `shards-lang` gain or change a dependency, refresh `examples/esp32/Cargo.lock` (`cargo update -w` in `examples/esp32`), since the firmware builds with `--locked`.
 
 
 ## Git

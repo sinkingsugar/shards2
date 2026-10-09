@@ -182,20 +182,27 @@ struct Lowerer<'a> {
   /// Constants already lowered once: their problems were reported then,
   /// and lowering them again at a read reports nothing new.
   consts_checked: std::collections::HashSet<String>,
-  /// Source bytes of constant values lowered so far, every read counted
-  /// (see [`CONST_EXPANSION`]).
+  /// Constants without a `#( )`, lowered once to a value every read
+  /// shares (`None` when lowering failed, reported then).
+  const_values: HashMap<String, Option<Var>>,
+  /// Reads of constants so far, to tell a constant built from others.
+  const_reads: usize,
+  /// Source bytes of constants holding a `#( )` lowered so far, every read
+  /// counted (see [`const_limit`]).
   const_expansion: usize,
-  /// The read that took constants past [`CONST_EXPANSION`]; kept apart from
+  /// The read that took those past [`const_limit`]; kept apart from
   /// `problems`, which a repeated read truncates.
   const_overflow: Option<Problem>,
 }
 
-/// How many bytes of constant source a program may lower in total, each
-/// read of a constant counting its value again. Constants built from each
-/// other multiply at every level, so without a bound a few lines expand
-/// past any memory before compose-time limits apply; the bound is the
-/// platform's default value limit (`EvalLimits::default().value_bytes`).
-fn const_expansion_limit() -> usize {
+/// What constants built from each other may expand to: the platform's
+/// default value limit (`EvalLimits::default().value_bytes`). They multiply
+/// at every level, so without a bound a few lines expand past any memory
+/// before compose-time limits apply. A value constant built from others is
+/// bounded by its size as text; a constant holding a `#( )` is lowered
+/// again at each read (its pipelines are recorded under the reading
+/// occurrence), so the source those reads lower is bounded in total.
+fn const_limit() -> usize {
   shards_core::compose_time::EvalLimits::default().value_bytes
 }
 
@@ -263,6 +270,8 @@ pub fn lower(
     consts: HashMap::new(),
     const_stack: Vec::new(),
     consts_checked: std::collections::HashSet::new(),
+    const_values: HashMap::new(),
+    const_reads: 0,
     const_expansion: 0,
     const_overflow: None,
   };
@@ -1544,24 +1553,31 @@ impl Lowerer<'_> {
         ));
         return None;
       }
-      let size = self.consts[&name.node].span.end - self.consts[&name.node].span.start;
-      self.const_expansion += size;
+      self.const_reads += 1;
+      if let Some(value) = self.const_values.get(&name.node) {
+        return value.clone().map(ParamValue::Value);
+      }
+      let block = self.consts[&name.node].clone();
+      if !self.contains_eval(&block) {
+        return self.read_value_const(&name.node, &block, at);
+      }
+      self.const_expansion += block.span.end - block.span.start;
       if self.const_overflow.is_some() {
         return None;
       }
-      if self.const_expansion > const_expansion_limit() {
+      if self.const_expansion > const_limit() {
         self.const_overflow = Some(
           Problem::construct(
             name.span,
             "generic",
             "expansion-budget",
             format!(
-              "constants expand past {} bytes of source here: each read of `@{}` lowers its value again",
-              const_expansion_limit(),
+              "constants holding `#( )` expand past {} bytes of source here: each read of `@{}` lowers its pipelines again",
+              const_limit(),
               name.node
             ),
           )
-          .help("constants built from each other multiply at every level; read large ones in fewer places"),
+          .help("constants built from each other multiply at every level; read those holding `#( )` in fewer places"),
         );
         return None;
       }
@@ -1582,6 +1598,39 @@ impl Lowerer<'_> {
       .did_you_mean(closest(&name.node, known, 3)),
     );
     None
+  }
+
+  /// A constant without a `#( )`: lowered at its first read and shared by
+  /// every later one. Built from other constants, its size as text must be
+  /// within [`const_limit`] (measured with an early exit, so a value that
+  /// shares one constant many times costs at most the limit to measure).
+  fn read_value_const(&mut self, name: &str, block: &Block, at: &[PathStep]) -> Option<ParamValue> {
+    let reads = self.const_reads;
+    let value = match self.read_const(name, at) {
+      Some(ParamValue::Value(v)) => Some(v),
+      _ => None,
+    };
+    let value = value.filter(|v| {
+      let fits = self.const_reads == reads
+        || shards_core::compose_time::text_size(v, const_limit()).is_some();
+      if !fits {
+        self.problem(
+          Problem::construct(
+            block.span,
+            "generic",
+            "expansion-budget",
+            format!(
+              "`@{name}` expands past {} bytes as text: constants built from each other multiply at every level",
+              const_limit()
+            ),
+          )
+          .help("build large values from fewer copies, or compute them with `#( )`"),
+        );
+      }
+      fits
+    });
+    self.const_values.insert(name.to_string(), value.clone());
+    value.map(ParamValue::Value)
   }
 
   /// A constant's value, lowered where it is read. Its problems are

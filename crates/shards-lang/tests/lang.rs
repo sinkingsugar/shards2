@@ -2614,25 +2614,52 @@ fn not_compose_time_is_located_also_through_functions() {
 #[test]
 fn constants_built_from_each_other_stop_at_the_expansion_budget() {
   // Each line reads the previous constant eight times: seven lines would
-  // lower millions of elements.
-  let mut source = String::from("@const(c0 [1 2 3 4 5 6 7 8])\n");
-  for i in 1..=7 {
-    let read = format!("@c{} ", i - 1).repeat(8);
-    source += &format!("@const(c{i} [{}])\n", read.trim_end());
-  }
-  source += "@c7 | Count | Log\n";
-  let d = load_errors(&source);
+  // build millions of elements.
+  let chain = |first: &str| {
+    let mut source = format!("@const(c0 [{first} 2 3 4 5 6 7 8])\n");
+    for i in 1..=7 {
+      let read = format!("@c{} ", i - 1).repeat(8);
+      source += &format!("@const(c{i} [{}])\n", read.trim_end());
+    }
+    source + "@c7 | Count | Log\n"
+  };
+  // Values: lowered once and shared, bounded by their size as text, and
+  // reported at the definition that passes it.
+  let d = load_errors(&chain("1"));
+  assert_eq!(d.len(), 1, "{d:?}");
+  assert_eq!(d[0].code, "expansion-budget", "{}", d[0].message);
+  assert!(d[0].message.contains("expands past"), "{}", d[0].message);
+  assert!((2..=8).contains(&at(&d[0]).0), "{}", d[0].message);
+  // Holding a `#( )`, a constant is lowered again at each read: the source
+  // those reads lower is bounded in total.
+  let d = load_errors(&chain("#( 1 )"));
   assert_eq!(d.len(), 1, "{d:?}");
   assert_eq!(d[0].code, "expansion-budget", "{}", d[0].message);
   assert!(d[0].message.contains("each read of"), "{}", d[0].message);
-  // Reported at a read inside a constant's value.
-  let (line, _) = at(&d[0]);
-  assert!((2..=8).contains(&line), "{}", d[0].message);
   // A constant read a few times stays well within it.
   assert_eq!(
     lines_of("@const(row [1 2 3])\n@const(grid [@row @row @row])\n@grid | Count | Log"),
     ["3"]
   );
+}
+
+#[test]
+fn a_lookup_table_constant_is_shared_by_every_read() {
+  // Many reads of one large table cost nothing per read: the reads together
+  // are far past the expansion limit if each lowered the table again.
+  let (size, reads) = if cfg!(target_os = "espidf") {
+    (100, 50)
+  } else {
+    (5000, 80)
+  };
+  let table: Vec<String> = (0..size).map(|i| (i * 7 % 1000).to_string()).collect();
+  let mut source = format!("@const(lut [{}])\n", table.join(" "));
+  for i in 0..reads {
+    source += &format!("@lut | Take({}) = v{i}\n", i * 3 % size);
+  }
+  source += &format!("v{} | Log", reads - 1);
+  let expected = ((reads - 1) * 3 % size * 7 % 1000).to_string();
+  assert_eq!(lines_of(&source), [expected]);
 }
 
 #[test]

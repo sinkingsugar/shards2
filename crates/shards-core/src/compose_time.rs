@@ -43,7 +43,8 @@ impl Default for EvalLimits {
     if cfg!(target_os = "espidf") {
       // An allocation costs a unit per byte, so the fuel also bounds the
       // heap an evaluation can take. The classic ESP32's heap low-water
-      // over the acceptance suites is about 12 KB (2026-10-09), so an
+      // over the acceptance suites is 9.7 KB (CI at f7d3b25, 2026-10-09,
+      // set by the frontend suite's deep function chain), so an
       // evaluation keeps below 8 KB.
       EvalLimits {
         fuel: 8_000,

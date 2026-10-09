@@ -15,7 +15,7 @@ mod evaluate;
 use crate::args::{Args, decode};
 use crate::diagnostic::{Diagnostic, PathStep, Phase, TypeRef};
 use crate::error::{Error, Result};
-use crate::flow::CompiledFlow;
+use crate::flow::{CompiledFlow, NO_ORIGIN, OriginName, OriginStep};
 use crate::function::{CallCompiled, CallTarget, CompiledFunction, FunctionDef, KeepSlot};
 use crate::reload::{FunctionKey, FunctionRegistry};
 use crate::shard::{CompiledNode, Composed, ParamValue, ShardDef, ShardType};
@@ -161,6 +161,10 @@ struct Flat {
   /// `Lowered::inlined` and `Lowered::released_slots`.
   inlined: Vec<(u32, u32)>,
   released_slots: Vec<u32>,
+  /// `CompiledFlow::origins`, and the entry of the shard being added.
+  origins: Vec<u32>,
+  steps: Vec<(OriginStep, u32)>,
+  current: u32,
 }
 
 impl Flat {
@@ -169,8 +173,26 @@ impl Flat {
     u32::try_from(self.code.len()).expect("flow code fits u32")
   }
 
+  /// Starts the instructions of shard `index` of this flow.
+  fn shard(&mut self, index: usize, name: OriginName) {
+    self.current = self.step(
+      OriginStep::Shard {
+        index: u32::try_from(index).expect("shard index fits u32"),
+        name,
+      },
+      NO_ORIGIN,
+    );
+  }
+
+  /// A new origin entry, following `parent`.
+  fn step(&mut self, step: OriginStep, parent: u32) -> u32 {
+    self.steps.push((step, parent));
+    u32::try_from(self.steps.len() - 1).expect("origin count fits u32")
+  }
+
   /// A node of this flow with its one instruction.
   fn node(&mut self, node: Arc<dyn CompiledNode>, name: &'static str, output: Type) {
+    self.origins.push(self.current);
     self
       .pc_nodes
       .push(u32::try_from(self.nodes.len()).expect("node count fits u32"));
@@ -184,6 +206,7 @@ impl Flat {
   /// `target`).
   fn op(&mut self, op: crate::inline::Op, output: Type) -> u32 {
     let at = self.here();
+    self.origins.push(self.current);
     self.pc_nodes.push(crate::flow::NO_NODE);
     self.code.push(crate::inline::Instruction::new(
       Some(crate::inline::InlineOp(op)),
@@ -213,16 +236,16 @@ impl Flat {
     self
       .released_slots
       .extend(flow.released_slots().iter().copied());
-    self.append_rebased(flow, 0);
+    self.append_rebased(flow, 0, &flow.origins.prefix);
   }
 
   /// Appends an inlined callee's body: like `append`, with every local slot
   /// the code addresses moved up by `slots` (the callee's frame lives at
   /// that offset in the caller's); all its nodes count as one inlined call.
-  fn inline(&mut self, flow: &CompiledFlow, slots: usize) {
+  fn inline(&mut self, flow: &CompiledFlow, slots: usize, function: Arc<str>) {
     let len = u32::try_from(flow.nodes.len()).expect("node count fits u32");
     self.inlined.push((self.node_base(), len));
-    self.append_rebased(flow, slots);
+    self.append_rebased(flow, slots, &[OriginStep::Function(function)]);
   }
 
   /// Ends the value of a hidden slot holding a value of type `ty` here
@@ -246,7 +269,25 @@ impl Flat {
     u32::try_from(self.nodes.len()).expect("node count fits u32")
   }
 
-  fn append_rebased(&mut self, flow: &CompiledFlow, slots: usize) {
+  /// Appends `flow`'s code; its origins hang below the current shard,
+  /// through `prefix` (the parameter holding it, or the function inlined).
+  fn append_rebased(&mut self, flow: &CompiledFlow, slots: usize, prefix: &[OriginStep]) {
+    let mut root = self.current;
+    for step in prefix {
+      root = self.step(step.clone(), root);
+    }
+    let steps = u32::try_from(self.steps.len()).expect("origin count fits u32");
+    let rebase = |at: u32| if at == NO_ORIGIN { root } else { at + steps };
+    self.steps.extend(
+      flow
+        .origins
+        .steps
+        .iter()
+        .map(|(step, parent)| (step.clone(), rebase(*parent))),
+    );
+    self
+      .origins
+      .extend(flow.origins.at.iter().map(|at| rebase(*at)));
     let base = self.here();
     let node_base = self.node_base();
     for (instruction, node) in flow.code.iter().zip(&flow.pc_nodes) {
@@ -754,7 +795,7 @@ impl ComposeCtx<'_> {
         } else if !c.args.is_empty() {
           flat.op(Op::get(input_slot), input);
         }
-        flat.inline(&body.flow, base);
+        flat.inline(&body.flow, base, Arc::from(fdef.name.as_str()));
         // The call's values end with it: every slot it used that may hold
         // a heap value is cleared, unless the callee's own code already
         // ended it last (a call inlined into the callee, whose slots then
@@ -940,11 +981,11 @@ impl ComposeCtx<'_> {
       ));
     }
     let path_len = self.diagnostic_path.len();
-    if let Some((param, item)) = self
+    let held = self
       .current_args
       .as_ref()
-      .and_then(|args| args.param_of(&Child::Flow(flow.as_ptr())))
-    {
+      .and_then(|args| args.param_of(&Child::Flow(flow.as_ptr())));
+    if let Some((param, item)) = held {
       self.diagnostic_path.push(PathStep::Param(param.into()));
       if let Some(item) = item {
         self.diagnostic_path.push(PathStep::Item(item));
@@ -954,7 +995,14 @@ impl ComposeCtx<'_> {
     let result = self.compose_flow_at_depth(flow, input);
     self.depth -= 1;
     self.diagnostic_path.truncate(path_len);
-    result
+    result.map(|mut compiled| {
+      if let Some((param, item)) = held {
+        let mut prefix = vec![OriginStep::Param(param)];
+        prefix.extend(item.map(|i| OriginStep::Item(u32::try_from(i).expect("item fits u32"))));
+        compiled.origins.prefix = prefix.into_boxed_slice();
+      }
+      compiled
+    })
   }
 
   #[inline(never)]
@@ -967,6 +1015,9 @@ impl ComposeCtx<'_> {
       pc_nodes: Vec::with_capacity(flow.len()),
       inlined: Vec::new(),
       released_slots: Vec::new(),
+      origins: Vec::with_capacity(flow.len()),
+      steps: Vec::with_capacity(flow.len()),
+      current: NO_ORIGIN,
     };
     let mut ty = input;
     // Once a shard never produces a value (`Stop`), the rest of the flow is
@@ -1078,6 +1129,13 @@ impl ComposeCtx<'_> {
           name: def.name().into(),
         }],
       );
+      flat.shard(
+        index,
+        match &def.function {
+          Some(name) => OriginName::Call(name.clone()),
+          None => OriginName::Shard(def.ty.name()),
+        },
+      );
       if !self.flatten(&composed.compiled, node_input, &mut flat) {
         flat.node(composed.compiled, def.ty.name(), composed.output);
       }
@@ -1094,6 +1152,9 @@ impl ComposeCtx<'_> {
       pc_nodes,
       inlined,
       mut released_slots,
+      origins,
+      steps,
+      ..
     } = flat;
     released_slots.sort_unstable();
     released_slots.dedup();
@@ -1111,6 +1172,11 @@ impl ComposeCtx<'_> {
           inlined,
           released_slots,
         })
+      }),
+      origins: Box::new(crate::flow::Origins {
+        at: origins.into_boxed_slice(),
+        steps: steps.into_boxed_slice(),
+        prefix: Box::default(),
       }),
     })
   }

@@ -2716,21 +2716,90 @@ fn compose_time_cycles_are_reported_where_they_close() {
 }
 
 #[test]
-fn compose_time_failures_point_at_the_evaluation() {
-  for (expression, message) in [
-    ("#( 1 | Math.Divide(0) )", "division by zero"),
-    ("#( [1 2] | Take(5) )", "out of range"),
-    ("#( \"x\" | ParseInt )", "is not an Int"),
+fn compose_time_failures_point_at_the_shard_that_failed() {
+  // The path goes through the evaluation to the failing shard, whatever
+  // ran it: flat code, a composite's child, a function in its own frame,
+  // inlined, or run by the VM on a kept frame.
+  // Past the inlining budget: it stays a call.
+  let big = format!(
+    "@fn(Big input: Int output: Int params: {{}} {{ = d{} 10 | Math.Divide(d) }})\n",
+    " Math.Add(0)".repeat(25)
+  );
+  for (source, message, (line, needle), path) in [
+    (
+      "1 | Log\n#( 1 | Math.Divide(0) ) | Log".to_string(),
+      "division by zero",
+      (2, "Math.Divide"),
+      "root/2:Const/value/#()/1:Math.Divide",
+    ),
+    (
+      "1 | Log\n#( [1 2] | Take(5) ) | Log".to_string(),
+      "out of range",
+      (2, "Take"),
+      "root/2:Const/value/#()/1:Take",
+    ),
+    (
+      "1 | Log\n#( \"x\" | ParseInt ) | Log".to_string(),
+      "is not an Int",
+      (2, "ParseInt"),
+      "root/2:Const/value/#()/1:ParseInt",
+    ),
+    // A flattened composite's child.
+    (
+      "#( 1 | When({ true } { Math.Divide(0) }) ) | Log".to_string(),
+      "division by zero",
+      (1, "Math.Divide"),
+      "root/0:Const/value/#()/1:When/action/0:Math.Divide",
+    ),
+    // A child flow a composite runs inside its own step (a `Match` case).
+    (
+      "#( 1 | Match([1 { Math.Divide(0) }] default: {}) ) | Log".to_string(),
+      "division by zero",
+      (1, "Math.Divide"),
+      "root/0:Const/value/#()/1:Match/cases/#0/0:Math.Divide",
+    ),
+    // An inlined function.
+    (
+      "@fn(Broken input: Int output: Int params: {} { Math.Divide(0) })\n#( 1 | Broken ) | Log"
+        .to_string(),
+      "division by zero",
+      (1, "Math.Divide"),
+      "root/0:Const/value/#()/1:Broken/Broken()/0:Math.Divide",
+    ),
+    // A function in a frame of its own (a shard without a VM form).
+    (
+      "@fn(Parse1 input: String output: Int params: {} { ParseInt })\n#( \"x\" | Parse1 ) | Log"
+        .to_string(),
+      "is not an Int",
+      (1, "ParseInt"),
+      "root/0:Const/value/#()/1:Parse1/Parse1()/0:ParseInt",
+    ),
+    // A body too large to inline, called again in a loop: the VM runs it
+    // on its kept frame, and the third call fails.
+    (
+      format!(
+        "{big}#( 2 | Var(n) Repeat({{ n | Big  n | Math.Subtract(1) | Update(n) }} times: 3) n ) | Log"
+      ),
+      "division by zero",
+      (1, "Math.Divide"),
+      "root/0:Const/value/#()/2:Repeat/action/1:Big/Big()/27:Math.Divide",
+    ),
   ] {
-    let d = compose_errors(&format!("1 | Log\n{expression} | Log"));
-    assert_eq!(d[0].code, "compose-time-error", "{expression}: {d:?}");
-    assert!(
-      d[0].message.contains(message),
-      "{expression}: {}",
-      d[0].message
+    let d = compose_errors(&source);
+    assert_eq!(d[0].code, "compose-time-error", "{source}: {d:?}");
+    assert!(d[0].message.contains(message), "{source}: {}", d[0].message);
+    let column = source
+      .lines()
+      .nth(line as usize - 1)
+      .unwrap()
+      .find(needle)
+      .unwrap() as u32
+      + 1;
+    assert_eq!(
+      (at(&d[0]), d[0].path_string().as_str()),
+      ((line, column), path),
+      "{source}"
     );
-    assert_eq!(at(&d[0]), (2, 1), "{expression}");
-    assert_eq!(d[0].path_string(), "root/2:Const/value/#()", "{expression}");
   }
 }
 

@@ -4,6 +4,7 @@
 
 use std::sync::Arc;
 
+use crate::diagnostic::PathStep;
 use crate::shard::CompiledNode;
 use crate::types::Type;
 
@@ -27,6 +28,85 @@ pub struct CompiledFlow {
   /// What lowering added beyond the flow's own nodes, when it added
   /// anything (most flows: `None`, one word).
   pub(crate) lowered: Option<Box<Lowered>>,
+  /// Where each instruction comes from in the flow's definition, read only
+  /// to locate a failure: boxed, so the flow the engine reads each step
+  /// stays as small as before.
+  pub(crate) origins: Box<Origins>,
+}
+
+/// Where each instruction of a flow comes from in its definition, to
+/// locate a runtime failure (`Engine::failure_path`): per instruction, an
+/// entry in a tree of path steps. The instructions of one shard share its
+/// entry, and what a flattened composite or an inlined call brought hangs
+/// below the shard that brought it, so a flow holds one entry per shard it
+/// runs, whatever it inlined. Nothing reads it unless something failed.
+#[derive(Default)]
+pub(crate) struct Origins {
+  /// Per instruction, its entry in `steps` (`NO_ORIGIN`: the flow itself).
+  pub at: Box<[u32]>,
+  /// A path step, and the entry it follows (`NO_ORIGIN`: the flow's root).
+  pub steps: Box<[(OriginStep, u32)]>,
+  /// The steps from the shard holding this flow to the flow (its parameter,
+  /// and the item for a case or a variadic argument); empty for a wire or
+  /// function body.
+  pub prefix: Box<[OriginStep]>,
+}
+
+/// An `Origins` entry with no step: the flow itself.
+pub(crate) const NO_ORIGIN: u32 = u32::MAX;
+
+/// A step of an instruction's origin: a `PathStep` that keeps the names it
+/// already shares (a shard type's, a call's function name) instead of
+/// copying them.
+#[derive(Clone, Debug)]
+pub(crate) enum OriginStep {
+  Shard { index: u32, name: OriginName },
+  Param(&'static str),
+  Item(u32),
+  Function(Arc<str>),
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum OriginName {
+  Shard(&'static str),
+  Call(Arc<str>),
+}
+
+impl OriginStep {
+  fn path(&self) -> PathStep {
+    match self {
+      OriginStep::Shard { index, name } => PathStep::Shard {
+        index: *index as usize,
+        name: match name {
+          OriginName::Shard(name) => (*name).to_string(),
+          OriginName::Call(name) => name.to_string(),
+        },
+      },
+      OriginStep::Param(name) => PathStep::Param((*name).to_string()),
+      OriginStep::Item(item) => PathStep::Item(*item as usize),
+      OriginStep::Function(name) => PathStep::Function(name.to_string()),
+    }
+  }
+
+  /// The path steps of `steps`.
+  pub(crate) fn paths(steps: &[OriginStep]) -> impl Iterator<Item = PathStep> + '_ {
+    steps.iter().map(OriginStep::path)
+  }
+}
+
+impl Origins {
+  /// Appends the path of instruction `pc` within the flow to `out`: empty
+  /// at the end of the code, or for an instruction of the flow itself.
+  pub(crate) fn path(&self, pc: usize, out: &mut Vec<PathStep>) {
+    let mut chain = Vec::new();
+    let mut at = self.at.get(pc).copied().unwrap_or(NO_ORIGIN);
+    while at != NO_ORIGIN {
+      let (step, parent) = &self.steps[at as usize];
+      chain.push(step);
+      at = *parent;
+    }
+    out.extend(chain.into_iter().rev().map(OriginStep::path));
+  }
 }
 
 /// The parts of a flow's code that compose lowering added (`ComposeCtx::flatten`).

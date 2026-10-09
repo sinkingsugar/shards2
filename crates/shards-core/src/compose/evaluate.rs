@@ -244,6 +244,11 @@ fn run(wire: Arc<CompiledWire>, meter: &Meter) -> Result<Var> {
     };
     engine.activate(&mut ctx, &Var::None)
   }));
+  // Where it failed, inside the pipeline (read only on failure).
+  let path = match &result {
+    Ok(Err(_)) => crate::stackless::failure_path(meter),
+    _ => Vec::new(),
+  };
   let cleanup = catch_unwind(AssertUnwindSafe(|| {
     engine.cleanup(&mut CleanupCtx { instance });
   }));
@@ -273,12 +278,35 @@ fn run(wire: Arc<CompiledWire>, meter: &Meter) -> Result<Var> {
       meter.limits().depth,
       d.message
     ))),
-    Err(err) => Err(failure(match err {
-      Error::Activation(message) | Error::Compose(message) => message,
-      Error::Diagnostic(d) => d.to_string(),
-      Error::Cancelled => "cancelled".into(),
-    })),
+    Err(err) => Err(failure_at(
+      match err {
+        Error::Activation(message) | Error::Compose(message) => message,
+        Error::Diagnostic(d) => d.to_string(),
+        Error::Cancelled => "cancelled".into(),
+      },
+      path,
+    )),
   }
+}
+
+/// A runtime failure inside the evaluation, located at the shard that
+/// failed: `path` leads there from the pipeline (through the composites,
+/// parameters and functions it ran in).
+#[cold]
+fn failure_at(message: String, path: Vec<PathStep>) -> Error {
+  let mut d = compose_diagnostic(
+    "compose-time-error",
+    format!("the evaluation failed: {message}"),
+  );
+  if let Some(PathStep::Shard { name, .. }) = path
+    .iter()
+    .rev()
+    .find(|s| matches!(s, PathStep::Shard { .. }))
+  {
+    d = d.shard(name);
+  }
+  d.path = path;
+  Error::Diagnostic(Box::new(d))
 }
 
 /// A runtime failure inside the evaluation (`compose-time-error`).
@@ -363,4 +391,47 @@ fn not_compose_time(analysis: &Analysis) -> Option<Error> {
   .shard(&shard);
   d.path = path;
   Some(Error::Diagnostic(Box::new(d)))
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::shards::defs::*;
+
+  #[test]
+  fn a_failure_handled_on_the_way_leaves_no_trace_in_the_location() {
+    // `Maybe` handles a failure in a child run inside its own step (leaf
+    // code), then one in a child frame (a shard without a VM form); the
+    // failure that ends the run is located at its own shard.
+    let seq = || konst(Var::Seq(Arc::new(vec![Var::Int(1), Var::Int(2)])));
+    let flow = vec![
+      maybe(
+        vec![seq(), take(val(Var::Int(5)))],
+        Some(vec![konst(Var::Int(0))]),
+      ),
+      maybe(
+        vec![log(), seq(), take(val(Var::Int(5)))],
+        Some(vec![konst(Var::Int(0))]),
+      ),
+      seq(),
+      take(val(Var::Int(9))),
+    ];
+    let mut mesh = crate::Mesh::new();
+    mesh.add_wire(WireDef {
+      name: "w".into(),
+      looped: false,
+      flow,
+    });
+    let wire = mesh.compile("w", Type::none()).expect("composes");
+    let err = run(wire, &Meter::new(EvalLimits::default())).expect_err("fails");
+    let d = err.diagnostic().expect("a diagnostic");
+    assert_eq!(d.code, "compose-time-error");
+    assert_eq!(
+      d.path,
+      [PathStep::Shard {
+        index: 3,
+        name: "Take".into()
+      }]
+    );
+  }
 }

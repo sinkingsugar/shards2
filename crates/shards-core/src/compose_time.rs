@@ -97,6 +97,10 @@ pub struct Meter {
   fuel: Cell<u64>,
   depth: Cell<usize>,
   largest: Cell<usize>,
+  /// Where the failure being propagated passed, innermost first
+  /// (`stackless::failure_path`): each frame that fails adds itself as it
+  /// completes, and a composite that handles the failure clears it.
+  pub(crate) trace: std::cell::RefCell<Vec<crate::stackless::Failed>>,
 }
 
 impl Meter {
@@ -106,6 +110,7 @@ impl Meter {
       fuel: Cell::new(0),
       depth: Cell::new(0),
       largest: Cell::new(0),
+      trace: Default::default(),
     }
   }
 

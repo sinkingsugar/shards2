@@ -5,8 +5,9 @@ use std::sync::Arc;
 use super::arena::{Arena, Generational, Handle};
 use crate::Var;
 use crate::compose::CompiledWire;
+use crate::diagnostic::PathStep;
 use crate::error::{Error, Result};
-use crate::flow::CompiledFlow;
+use crate::flow::{CompiledFlow, OriginStep};
 use crate::function::{CallCompiled, CallTarget, CompiledFunction};
 use crate::instance::{CleanupCtx, InstanceCtx};
 use crate::reload::{FunctionKey, FunctionRegistry};
@@ -356,6 +357,50 @@ fn release_slots(flow: &CompiledFlow, locals: &mut [Var]) {
   for slot in flow.released_slots() {
     locals[*slot as usize] = Var::None;
   }
+}
+
+/// One level a failure passed through in a compose-time evaluation (kept
+/// in its meter, `Meter::trace`).
+pub(crate) struct Failed(Location);
+
+enum Location {
+  /// A frame's code and the instruction it failed at.
+  Frame(Code, u32),
+  /// A child flow (`.1`) a composite ran inside its own step, and the
+  /// instruction it failed at.
+  Leaf(Arc<dyn CompiledNode>, u32, u32),
+}
+
+#[cold]
+fn record(meter: &crate::compose_time::Meter, at: Location) {
+  meter.trace.borrow_mut().push(Failed(at));
+}
+
+/// Where the evaluation metered by `meter` failed: the definition path from
+/// its pipeline to the shard that failed, through the composites,
+/// parameters and functions it ran in (inlined and flattened code
+/// included). Empty when nothing failed.
+pub(crate) fn failure_path(meter: &crate::compose_time::Meter) -> Vec<PathStep> {
+  let mut path = Vec::new();
+  for Failed(at) in meter.trace.borrow().iter().rev() {
+    let (flow, pc) = match at {
+      Location::Frame(code, pc) => {
+        match code {
+          Code::Root(_) => {}
+          Code::Child(..) => path.extend(OriginStep::paths(&code.flow().origins.prefix)),
+          Code::Function(f) => path.push(PathStep::Function(f.def.name.clone())),
+        }
+        (code.flow(), *pc)
+      }
+      Location::Leaf(node, child, pc) => {
+        let flow = child_flow(&node.control().expect("composite"), *child as usize);
+        path.extend(OriginStep::paths(&flow.origins.prefix));
+        (flow, *pc)
+      }
+    };
+    flow.origins.path(pc as usize, &mut path);
+  }
+  path
 }
 
 /// What one frame step asks the loop to do next.
@@ -1037,12 +1082,30 @@ impl Engine {
     // Resuming inside an invocation: its locals are the ones addressed.
     let scope = self.current_scope;
     self.switch_scope(scope, ctx);
+    // A compose-time evaluation locates its failures (`failure_path`); the
+    // runtime's steps carry none of that code.
+    let result = if ctx.meter.is_some() {
+      self.steps::<true>(ctx, &mut completed)
+    } else {
+      self.steps::<false>(ctx, &mut completed)
+    };
+    // The activation ends with the instance's own locals addressed.
+    self.switch_scope(None, ctx);
+    self.own_locals = std::ptr::slice_from_raw_parts_mut(std::ptr::null_mut(), 0);
+    result
+  }
+
+  /// Steps the current frame until the activation finishes; `LOCATE`
+  /// records where a failure passed in the evaluation's meter.
+  #[inline(always)]
+  fn steps<const LOCATE: bool>(
+    &mut self,
+    ctx: &mut ActivationCtx<'_>,
+    completed: &mut Option<Result<Step>>,
+  ) -> Result<Step> {
     loop {
       let h = self.current.expect("active frame");
-      if let Next::Finish(result) = self.step(h, ctx, &mut completed) {
-        // The activation ends with the instance's own locals addressed.
-        self.switch_scope(None, ctx);
-        self.own_locals = std::ptr::slice_from_raw_parts_mut(std::ptr::null_mut(), 0);
+      if let Next::Finish(result) = self.step::<LOCATE>(h, ctx, completed) {
         return result;
       }
     }
@@ -1104,7 +1167,7 @@ impl Engine {
   /// delivers a child's completion to it. Inlined into the activation loop
   /// (its only caller): a call per step is measurable.
   #[inline(always)]
-  fn step(
+  fn step<const LOCATE: bool>(
     &mut self,
     h: Handle,
     ctx: &mut ActivationCtx<'_>,
@@ -1197,6 +1260,14 @@ impl Engine {
       usize::MAX
     };
     let result = if let Some(err) = vm_error.take() {
+      // A failing run recorded where (`EngineCalls::failed_in`); a failure
+      // before any run (out of fuel) or in a constructor is recorded here.
+      if LOCATE {
+        let meter = ctx.meter.expect("a located activation is metered");
+        if meter.trace.borrow().is_empty() {
+          record(meter, Location::Frame(f.code.clone(), index as u32));
+        }
+      }
       Request::Complete(Err(err))
     } else if index == flow.code.len() {
       Request::Complete(Ok(Step::Next(std::mem::replace(&mut f.value, Var::None))))
@@ -1212,12 +1283,30 @@ impl Engine {
       if let Control::Call(call) = &control {
         call_entry = Some(call.def().ignores_input());
       }
-      let result = match dispatch(control, c, ctx, &f.value, completed.take()) {
+      let child_failed = LOCATE && matches!(completed, Some(Err(_)));
+      let dispatched = dispatch::<LOCATE>(
+        control,
+        c,
+        ctx,
+        &f.value,
+        completed.take(),
+        &flow.nodes[node],
+      );
+      let result = match dispatched {
         Ok(Dispatch::Enter(i)) => Request::Enter(c.children[i]),
         Ok(Dispatch::Complete(result)) => Request::Complete(result),
         Ok(Dispatch::Prepare) => Request::Prepare,
         Err(err) => Request::Complete(Err(err)),
       };
+      if LOCATE {
+        let meter = ctx.meter.expect("a located activation is metered");
+        match &result {
+          Request::Complete(Err(_)) => record(meter, Location::Frame(f.code.clone(), index as u32)),
+          // The composite handled its child's failure.
+          _ if child_failed => meter.trace.borrow_mut().clear(),
+          _ => {}
+        }
+      }
       if let Request::Complete(_) = &result {
         c.reset();
         match stateless_call {
@@ -1232,7 +1321,12 @@ impl Engine {
       let State::Leaf(state) = &mut f.states[node] else {
         unreachable!()
       };
-      Request::Complete(flow.nodes[node].activate(state.as_mut(), ctx, &f.value))
+      let result = flow.nodes[node].activate(state.as_mut(), ctx, &f.value);
+      if LOCATE && result.is_err() {
+        let meter = ctx.meter.expect("a located activation is metered");
+        record(meter, Location::Frame(f.code.clone(), index as u32));
+      }
+      Request::Complete(result)
     };
     let next = match result {
       Request::Prepare => {
@@ -1261,6 +1355,10 @@ impl Engine {
           }
           Err(err) => {
             let f = self.frames.get_mut(h).expect("live frame");
+            if LOCATE {
+              let meter = ctx.meter.expect("a located activation is metered");
+              record(meter, Location::Frame(f.code.clone(), index as u32));
+            }
             if let State::Control(c) = &mut f.states[node] {
               c.reset();
             }
@@ -1379,15 +1477,22 @@ fn enter(c: &mut Continuation, child: usize, phase: u32) -> Result<Dispatch> {
 /// suspend, holds a site, loop, branch or constructor, or a call (its own
 /// scope) is entered as a frame.
 #[inline(always)]
-fn dispatch(
+fn dispatch<const LOCATE: bool>(
   control: Control<'_>,
   c: &mut Continuation,
   ctx: &mut ActivationCtx<'_>,
   input: &Var,
   mut completion: Option<Result<Step>>,
+  node: &Arc<dyn CompiledNode>,
 ) -> Result<Dispatch> {
   loop {
+    let child_failed = LOCATE && matches!(completion, Some(Err(_)));
     let dispatched = dispatch_once(control, c, ctx, input, completion.take())?;
+    if child_failed && !matches!(dispatched, Dispatch::Complete(Err(_))) {
+      // The composite handled the failure of a child it ran here.
+      let meter = ctx.meter.expect("a located activation is metered");
+      meter.trace.borrow_mut().clear();
+    }
     let Dispatch::Enter(i) = dispatched else {
       return Ok(dispatched);
     };
@@ -1399,6 +1504,27 @@ fn dispatch(
       return Ok(dispatched);
     }
     let result = match ctx.meter {
+      Some(meter) if LOCATE => {
+        let at = std::cell::Cell::new(0);
+        let result = crate::inline::run(
+          &flow.code,
+          0,
+          input.clone(),
+          ctx.locals,
+          ctx.mesh_frame,
+          &crate::inline::Metered {
+            inner: crate::inline::FailedAt(&at),
+            meter,
+          },
+        );
+        if result.is_err() {
+          record(
+            meter,
+            Location::Leaf(node.clone(), i as u32, at.get() as u32),
+          );
+        }
+        result
+      }
       None => crate::inline::run(
         &flow.code,
         0,
@@ -1624,6 +1750,11 @@ impl crate::inline::VmCalls for EngineCalls {
 
   fn depth(&self) -> usize {
     self.depth
+  }
+
+  fn failed_in(&self, pc: usize, meter: &crate::compose_time::Meter) {
+    let code = self.arena().get(self.h).expect("live frame").code.clone();
+    record(meter, Location::Frame(code, pc as u32));
   }
 
   fn site_ready(&self, site: usize) -> bool {

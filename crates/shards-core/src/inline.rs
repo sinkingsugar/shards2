@@ -229,10 +229,12 @@ impl VmCalls for NoCalls {
 /// ticks). A frame's own code needs no such check: the engine continues it
 /// from the instruction the run stopped at.
 pub(crate) fn vm_ready<C: VmCalls>(code: &[Instruction], calls: &C) -> bool {
-  code
-    .iter()
-    .enumerate()
-    .all(|(i, instruction)| !matches!(instruction.op, Op::VmCall) || calls.site_ready(i))
+  for (i, instruction) in code.iter().enumerate() {
+    if matches!(instruction.op, Op::VmCall) && !calls.site_ready(i) {
+      return false;
+    }
+  }
+  true
 }
 
 /// Runs `code` from `from` as far as the VM goes: constructors through
@@ -251,11 +253,15 @@ pub(crate) fn run_segment<C: VmCalls>(
   loop {
     let before = pc;
     (pc, value) = if pc < code.len() && code[pc].is_constructor() {
-      construct(code, pc, value, locals, mesh, calls.meter()).inspect_err(|_| {
-        if let Some(meter) = calls.meter() {
-          meter.at(pc);
+      match construct(code, pc, value, locals, mesh, calls.meter()) {
+        Ok(next) => next,
+        Err(err) => {
+          if let Some(meter) = calls.meter() {
+            meter.at(pc);
+          }
+          return Err(err);
         }
-      })?
+      }
     } else {
       run(code, pc, value, locals, mesh, calls)?
     };
@@ -843,7 +849,12 @@ pub(crate) fn run<C: VmCalls>(
         }
         Op::AddFloat4Const(rhs) => {
           if let Var::Float4(lhs) = &*value {
-            let result = std::array::from_fn(|i| lhs[i] + rhs[i]);
+            let result = [
+              lhs[0] + rhs[0],
+              lhs[1] + rhs[1],
+              lhs[2] + rhs[2],
+              lhs[3] + rhs[3],
+            ];
             numeric.write(Var::Float4(Float4(result)));
             value = numeric.as_ptr();
           } else {
@@ -854,7 +865,12 @@ pub(crate) fn run<C: VmCalls>(
         Op::AddFloat4Bound(b) => {
           let rhs = &*frames.slot(*b);
           if let (Var::Float4(lhs), Var::Float4(rhs)) = (&*value, rhs) {
-            let result = std::array::from_fn(|i| lhs[i] + rhs[i]);
+            let result = [
+              lhs[0] + rhs[0],
+              lhs[1] + rhs[1],
+              lhs[2] + rhs[2],
+              lhs[3] + rhs[3],
+            ];
             numeric.write(Var::Float4(Float4(result)));
             value = numeric.as_ptr();
           } else {
@@ -1054,6 +1070,16 @@ unsafe fn clear_slot(target: *mut Var, value: *const Var) -> Option<Var> {
   }
 }
 
+/// A constructor operand's value.
+#[inline(always)]
+fn read(operand: &Operand, locals: &[Var], mesh: &[Var]) -> Var {
+  match operand {
+    Operand::Const(v) => v.clone(),
+    Operand::Bound(Binding::Local(i)) => locals[*i].clone(),
+    Operand::Bound(Binding::Mesh(i)) => mesh[*i].clone(),
+  }
+}
+
 #[cold]
 fn not_a_bool() -> Error {
   Error::Activation("predicate did not output a Bool".into())
@@ -1077,11 +1103,6 @@ pub(crate) fn construct(
   meter: Option<&Meter>,
 ) -> Result<(usize, Var)> {
   use std::sync::Arc;
-  let read = |operand: &Operand| match operand {
-    Operand::Const(v) => v.clone(),
-    Operand::Bound(Binding::Local(i)) => locals[*i].clone(),
-    Operand::Bound(Binding::Mesh(i)) => mesh[*i].clone(),
-  };
   while let Some(instruction) = code.get(index) {
     match &instruction.op {
       Op::SeqMake(_) => {
@@ -1100,7 +1121,7 @@ pub(crate) fn construct(
             meter.charge(1)?;
             meter.allocate(items.len() * size_of::<Var>())?;
             for operand in items {
-              meter.nest(&read(operand))?;
+              meter.nest(&read(operand, locals, mesh))?;
             }
           }
           match output.as_mut().and_then(Arc::get_mut) {
@@ -1108,14 +1129,23 @@ pub(crate) fn construct(
             // each, no length bookkeeping).
             Some(buffer) if buffer.len() == items.len() => {
               for (slot, operand) in buffer.iter_mut().zip(items) {
-                *slot = read(operand);
+                *slot = read(operand, locals, mesh);
               }
             }
             Some(buffer) => {
               buffer.clear();
-              buffer.extend(items.iter().map(&read));
+              buffer.reserve(items.len());
+              for operand in items {
+                buffer.push(read(operand, locals, mesh));
+              }
             }
-            None => output = Some(Arc::new(items.iter().map(&read).collect())),
+            None => {
+              let mut buffer = Vec::with_capacity(items.len());
+              for operand in items {
+                buffer.push(read(operand, locals, mesh));
+              }
+              output = Some(Arc::new(buffer));
+            }
           }
           // Checking builds materialize each intermediate output; release
           // keeps the owned buffer until the constructor segment ends.
@@ -1146,16 +1176,31 @@ pub(crate) fn construct(
             meter.charge(1)?;
             meter.allocate(operands.len() * size_of::<Var>())?;
             for operand in operands {
-              meter.nest(&read(operand))?;
+              meter.nest(&read(operand, locals, mesh))?;
             }
           }
-          match output.as_mut().and_then(|t| t.unique_slots(*shape)) {
+          let reused = match output.as_mut() {
+            Some(table) => table.unique_slots(*shape),
+            None => None,
+          };
+          match reused {
             Some(slots) => {
               for (slot, operand) in slots.iter_mut().zip(operands) {
-                *slot = read(operand);
+                *slot = read(operand, locals, mesh);
               }
             }
-            None => output = Some(Table::with_shape(*shape, operands.iter().map(&read))),
+            None => {
+              // One allocation, filled in place.
+              let mut slots = Arc::<[Var]>::new_uninit_slice(operands.len());
+              let uninit = Arc::get_mut(&mut slots).expect("just allocated");
+              for (slot, operand) in uninit.iter_mut().zip(operands) {
+                slot.write(read(operand, locals, mesh));
+              }
+              // SAFETY: `slots` has one entry per operand, each written
+              // above.
+              let slots = unsafe { slots.assume_init() };
+              output = Some(Table::with_slots(*shape, slots));
+            }
           }
           #[cfg(any(debug_assertions, feature = "output-checks"))]
           leaf::check_output(

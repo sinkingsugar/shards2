@@ -423,6 +423,18 @@ impl Table {
     Table(TableRepr::Struct { shape, slots })
   }
 
+  /// A struct table of `shape` holding `slots`, in the shape's key order.
+  /// Panics if the counts differ, as [`Table::with_shape`].
+  pub(crate) fn with_slots(shape: Shape, slots: Arc<[Var]>) -> Table {
+    assert_eq!(
+      slots.len(),
+      shape.len(),
+      "table of shape {shape} needs {} values",
+      shape.len()
+    );
+    Table(TableRepr::Struct { shape, slots })
+  }
+
   /// The key shape of a struct table; `None` for a map table.
   pub fn shape(&self) -> Option<Shape> {
     match &self.0 {
@@ -470,14 +482,20 @@ impl Table {
     self.len() == 0
   }
 
-  #[inline]
+  /// Out of line: inlined into the VM's run loop (its `Take` arm), it grew
+  /// the loop and its register pressure and slowed every instruction (VM
+  /// suite, 2026-10-09; `docs/runtime-performance-overview.md` lesson 6).
+  #[inline(never)]
   pub fn get(&self, key: &str) -> Option<&Var> {
     match &self.0 {
-      TableRepr::Struct { shape, slots } => shape.index_of(key).map(|i| &slots[i]),
-      TableRepr::Map(entries) => entries
-        .binary_search_by(|(k, _)| (**k).cmp(key))
-        .ok()
-        .map(|i| &entries[i].1),
+      TableRepr::Struct { shape, slots } => match shape.index_of(key) {
+        Some(i) => Some(&slots[i]),
+        None => None,
+      },
+      TableRepr::Map(entries) => match search(entries, key) {
+        Ok(i) => Some(&entries[i].1),
+        Err(_) => None,
+      },
     }
   }
 
@@ -489,7 +507,10 @@ impl Table {
   pub fn slot(&self, index: usize) -> Option<&Var> {
     match &self.0 {
       TableRepr::Struct { slots, .. } => slots.get(index),
-      TableRepr::Map(entries) => entries.get(index).map(|(_, v)| v),
+      TableRepr::Map(entries) => match entries.get(index) {
+        Some((_, v)) => Some(v),
+        None => None,
+      },
     }
   }
 
@@ -506,13 +527,13 @@ impl Table {
   }
 
   /// Keys in sorted order.
-  pub fn keys(&self) -> impl ExactSizeIterator<Item = &str> + DoubleEndedIterator {
-    self.iter().map(|(k, _)| k)
+  pub fn keys(&self) -> Keys<'_> {
+    Keys(self.iter())
   }
 
   /// Values in key order.
-  pub fn values(&self) -> impl ExactSizeIterator<Item = &Var> + DoubleEndedIterator {
-    self.iter().map(|(_, v)| v)
+  pub fn values(&self) -> Values<'_> {
+    Values(self.iter())
   }
 
   /// How many tables share this storage. For tests that check snapshot
@@ -550,10 +571,17 @@ enum IterRepr<'a> {
 impl<'a> Iterator for Iter<'a> {
   type Item = (&'a str, &'a Var);
 
+  #[inline]
   fn next(&mut self) -> Option<(&'a str, &'a Var)> {
     match &mut self.0 {
-      IterRepr::Struct(zip) => zip.next().map(|(k, v)| (&**k, v)),
-      IterRepr::Map(entries) => entries.next().map(|(k, v)| (&**k, v)),
+      IterRepr::Struct(zip) => match zip.next() {
+        Some((k, v)) => Some((&**k, v)),
+        None => None,
+      },
+      IterRepr::Map(entries) => match entries.next() {
+        Some((k, v)) => Some((&**k, v)),
+        None => None,
+      },
     }
   }
 
@@ -566,15 +594,120 @@ impl<'a> Iterator for Iter<'a> {
 }
 
 impl DoubleEndedIterator for Iter<'_> {
+  #[inline]
   fn next_back(&mut self) -> Option<Self::Item> {
     match &mut self.0 {
-      IterRepr::Struct(zip) => zip.next_back().map(|(k, v)| (&**k, v)),
-      IterRepr::Map(entries) => entries.next_back().map(|(k, v)| (&**k, v)),
+      IterRepr::Struct(zip) => match zip.next_back() {
+        Some((k, v)) => Some((&**k, v)),
+        None => None,
+      },
+      IterRepr::Map(entries) => match entries.next_back() {
+        Some((k, v)) => Some((&**k, v)),
+        None => None,
+      },
     }
   }
 }
 
 impl ExactSizeIterator for Iter<'_> {}
+
+/// A table's keys in sorted order ([`Table::keys`]).
+pub struct Keys<'a>(Iter<'a>);
+
+impl<'a> Iterator for Keys<'a> {
+  type Item = &'a str;
+
+  #[inline]
+  fn next(&mut self) -> Option<&'a str> {
+    match self.0.next() {
+      Some((k, _)) => Some(k),
+      None => None,
+    }
+  }
+
+  fn size_hint(&self) -> (usize, Option<usize>) {
+    self.0.size_hint()
+  }
+}
+
+impl DoubleEndedIterator for Keys<'_> {
+  #[inline]
+  fn next_back(&mut self) -> Option<Self::Item> {
+    match self.0.next_back() {
+      Some((k, _)) => Some(k),
+      None => None,
+    }
+  }
+}
+
+impl ExactSizeIterator for Keys<'_> {}
+
+/// A table's values in key order ([`Table::values`]).
+pub struct Values<'a>(Iter<'a>);
+
+impl<'a> Iterator for Values<'a> {
+  type Item = &'a Var;
+
+  #[inline]
+  fn next(&mut self) -> Option<&'a Var> {
+    match self.0.next() {
+      Some((_, v)) => Some(v),
+      None => None,
+    }
+  }
+
+  fn size_hint(&self) -> (usize, Option<usize>) {
+    self.0.size_hint()
+  }
+}
+
+impl DoubleEndedIterator for Values<'_> {
+  #[inline]
+  fn next_back(&mut self) -> Option<Self::Item> {
+    match self.0.next_back() {
+      Some((_, v)) => Some(v),
+      None => None,
+    }
+  }
+}
+
+impl ExactSizeIterator for Values<'_> {}
+
+/// Something sorted by a string key, for [`search`].
+pub(crate) trait Keyed {
+  fn key(&self) -> &str;
+}
+
+impl<V> Keyed for (Arc<str>, V) {
+  #[inline(always)]
+  fn key(&self) -> &str {
+    &self.0
+  }
+}
+
+impl Keyed for Arc<str> {
+  #[inline(always)]
+  fn key(&self) -> &str {
+    self
+  }
+}
+
+/// Binary search of `items`, sorted by key, for `key`: `Ok` with its index,
+/// or `Err` with where it would go (as `slice::binary_search`). Written out
+/// so the runtime's key lookups take no closure.
+#[inline]
+pub(crate) fn search<K: Keyed>(items: &[K], key: &str) -> std::result::Result<usize, usize> {
+  let (mut low, mut high) = (0, items.len());
+  while low < high {
+    let mid = low + (high - low) / 2;
+    match items[mid].key().cmp(key) {
+      std::cmp::Ordering::Less => low = mid + 1,
+      std::cmp::Ordering::Greater => high = mid,
+      std::cmp::Ordering::Equal => return Ok(mid),
+    }
+  }
+  Err(low)
+}
 
 impl<'a> IntoIterator for &'a Table {
   type Item = (&'a str, &'a Var);
@@ -638,7 +771,7 @@ impl TableBuilder {
   }
 
   fn position(&self, key: &str) -> std::result::Result<usize, usize> {
-    self.0.binary_search_by(|(k, _)| (**k).cmp(key))
+    search(&self.0, key)
   }
 
   pub fn insert(&mut self, key: impl Into<Arc<str>>, value: Var) -> &mut TableBuilder {
@@ -652,11 +785,17 @@ impl TableBuilder {
 
   /// Removes a key, returning its value.
   pub fn remove(&mut self, key: &str) -> Option<Var> {
-    self.position(key).ok().map(|i| self.0.remove(i).1)
+    match self.position(key) {
+      Ok(i) => Some(self.0.remove(i).1),
+      Err(_) => None,
+    }
   }
 
   pub fn get(&self, key: &str) -> Option<&Var> {
-    self.position(key).ok().map(|i| &self.0[i].1)
+    match self.position(key) {
+      Ok(i) => Some(&self.0[i].1),
+      Err(_) => None,
+    }
   }
 
   pub fn with(mut self, key: impl Into<Arc<str>>, value: Var) -> TableBuilder {
@@ -892,7 +1031,12 @@ impl SameValues {
 }
 
 fn same_bits(a: &[f32], b: &[f32]) -> bool {
-  a.iter().zip(b).all(|(x, y)| x.to_bits() == y.to_bits())
+  for (x, y) in a.iter().zip(b) {
+    if x.to_bits() != y.to_bits() {
+      return false;
+    }
+  }
+  true
 }
 
 impl Eq for Var {}
@@ -905,9 +1049,21 @@ impl Hash for Var {
       Var::Bool(v) => v.hash(state),
       Var::Int(v) => v.hash(state),
       Var::Float(v) => v.to_bits().hash(state),
-      Var::Float2(v) => v.iter().for_each(|x| x.to_bits().hash(state)),
-      Var::Float3(v) => v.iter().for_each(|x| x.to_bits().hash(state)),
-      Var::Float4(v) => v.iter().for_each(|x| x.to_bits().hash(state)),
+      Var::Float2(v) => {
+        for x in v.iter() {
+          x.to_bits().hash(state);
+        }
+      }
+      Var::Float3(v) => {
+        for x in v.iter() {
+          x.to_bits().hash(state);
+        }
+      }
+      Var::Float4(v) => {
+        for x in v.iter() {
+          x.to_bits().hash(state);
+        }
+      }
       Var::String(v) => v.hash(state),
       Var::Seq(v) => v.hash(state),
       Var::Table(v) => v.hash(state),

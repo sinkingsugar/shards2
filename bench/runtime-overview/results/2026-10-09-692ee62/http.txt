@@ -1,0 +1,25 @@
+server latency 50 ms; runs per point: 3
+runtime=1.x instances=1 create_ms=1.93875 exec_ms=54.886 ticks=345785 ok=1 failed=0 threads=n/a server_peak=1 server_completed=1
+runtime=1.x instances=1 create_ms=1.66738 exec_ms=52.2278 ticks=331920 ok=1 failed=0 threads=n/a server_peak=1 server_completed=1
+runtime=1.x instances=1 create_ms=1.54108 exec_ms=53.6106 ticks=339158 ok=1 failed=0 threads=n/a server_peak=1 server_completed=1
+runtime=1.x instances=32 create_ms=1.92288 exec_ms=213.02 ticks=303087 ok=32 failed=0 threads=n/a server_peak=10 server_completed=32
+runtime=1.x instances=32 create_ms=1.87796 exec_ms=209.646 ticks=298342 ok=32 failed=0 threads=n/a server_peak=10 server_completed=32
+runtime=1.x instances=32 create_ms=1.85896 exec_ms=212.151 ticks=297509 ok=32 failed=0 threads=n/a server_peak=10 server_completed=32
+runtime=1.x instances=100 create_ms=2.52954 exec_ms=531.632 ticks=384775 ok=100 failed=0 threads=n/a server_peak=13 server_completed=100
+runtime=1.x instances=100 create_ms=2.49225 exec_ms=531.535 ticks=373017 ok=100 failed=0 threads=n/a server_peak=13 server_completed=100
+runtime=1.x instances=100 create_ms=2.47546 exec_ms=534.138 ticks=383472 ok=100 failed=0 threads=n/a server_peak=13 server_completed=100
+runtime=1.x instances=1000 create_ms=10.089 exec_ms=2614.38 ticks=153147 ok=1000 failed=0 threads=n/a server_peak=32 server_completed=1000
+runtime=1.x instances=1000 create_ms=10.1222 exec_ms=2597.91 ticks=154670 ok=1000 failed=0 threads=n/a server_peak=32 server_completed=1000
+runtime=1.x instances=1000 create_ms=10.0565 exec_ms=2605.59 ticks=150600 ok=1000 failed=0 threads=n/a server_peak=32 server_completed=1000
+runtime=2.0 instances=1 create_ms=0.051 exec_ms=53.969 ticks=9030286 ok=1 threads=n/a server_peak=1 server_completed=1
+runtime=2.0 instances=1 create_ms=0.005 exec_ms=53.434 ticks=11161422 ok=1 threads=n/a server_peak=1 server_completed=1
+runtime=2.0 instances=1 create_ms=0.005 exec_ms=53.407 ticks=11062954 ok=1 threads=n/a server_peak=1 server_completed=1
+runtime=2.0 instances=32 create_ms=0.008 exec_ms=52.478 ticks=1847144 ok=32 threads=n/a server_peak=32 server_completed=32
+runtime=2.0 instances=32 create_ms=0.008 exec_ms=52.798 ticks=1839823 ok=32 threads=n/a server_peak=32 server_completed=32
+runtime=2.0 instances=32 create_ms=0.012 exec_ms=53.471 ticks=1856448 ok=32 threads=n/a server_peak=32 server_completed=32
+runtime=2.0 instances=100 create_ms=0.018 exec_ms=55.457 ticks=621095 ok=100 threads=n/a server_peak=100 server_completed=100
+runtime=2.0 instances=100 create_ms=0.018 exec_ms=55.494 ticks=623703 ok=100 threads=n/a server_peak=100 server_completed=100
+runtime=2.0 instances=100 create_ms=0.018 exec_ms=64.539 ticks=723074 ok=100 threads=n/a server_peak=100 server_completed=100
+runtime=2.0 instances=1000 create_ms=0.051 exec_ms=84.741 ticks=44235 ok=1000 threads=n/a server_peak=1000 server_completed=1000
+runtime=2.0 instances=1000 create_ms=0.057 exec_ms=78.635 ticks=42144 ok=1000 threads=n/a server_peak=1000 server_completed=1000
+runtime=2.0 instances=1000 create_ms=0.057 exec_ms=72.387 ticks=37153 ok=1000 threads=n/a server_peak=1000 server_completed=1000

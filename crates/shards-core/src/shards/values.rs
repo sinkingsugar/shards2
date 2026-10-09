@@ -74,13 +74,27 @@ pub fn values_equal(a: &Var, b: &Var) -> bool {
     (Var::Float3(x), Var::Float3(y)) => x == y,
     (Var::Float4(x), Var::Float4(y)) => x == y,
     (Var::Seq(x), Var::Seq(y)) => {
-      x.len() == y.len() && x.iter().zip(y.iter()).all(|(a, b)| values_equal(a, b))
+      if x.len() != y.len() {
+        return false;
+      }
+      for (a, b) in x.iter().zip(y.iter()) {
+        if !values_equal(a, b) {
+          return false;
+        }
+      }
+      true
     }
     (Var::Table(x), Var::Table(y)) => {
-      x.len() == y.len()
-        && x
-          .iter()
-          .all(|(k, v)| y.get(k).is_some_and(|w| values_equal(v, w)))
+      if x.len() != y.len() {
+        return false;
+      }
+      for (k, v) in x.iter() {
+        match y.get(k) {
+          Some(w) if values_equal(v, w) => {}
+          _ => return false,
+        }
+      }
+      true
     }
     _ => a == b,
   }
@@ -472,9 +486,14 @@ impl LeafShard for IsAny {
     let Var::Seq(items) = values else {
       return Err(Error::Activation("IsAny: Values is not a sequence".into()));
     };
-    Ok(Flow::Next(Var::Bool(
-      items.iter().any(|v| values_equal(input, v)),
-    )))
+    let mut found = false;
+    for item in items.iter() {
+      if values_equal(input, item) {
+        found = true;
+        break;
+      }
+    }
+    Ok(Flow::Next(Var::Bool(found)))
   }
 }
 
@@ -544,9 +563,12 @@ impl LeafShard for ParseInt {
     let Var::String(s) = input else {
       return Err(Error::Activation("ParseInt: input is not a string".into()));
     };
-    i64::from_str_radix(s.trim(), *base)
-      .map(|i| Flow::Next(Var::Int(i)))
-      .map_err(|_| Error::Activation(format!("ParseInt: {s:?} is not an Int in base {base}")))
+    match i64::from_str_radix(s.trim(), *base) {
+      Ok(i) => Ok(Flow::Next(Var::Int(i))),
+      Err(_) => Err(Error::Activation(format!(
+        "ParseInt: {s:?} is not an Int in base {base}"
+      ))),
+    }
   }
 }
 
@@ -816,10 +838,10 @@ impl PureOp for ToIntOp {
         ));
       }
       Var::Bool(b) => i64::from(*b),
-      Var::String(s) => s
-        .trim()
-        .parse()
-        .map_err(|_| fail("ToInt", &format!("{s:?} is not an Int")))?,
+      Var::String(s) => match s.trim().parse() {
+        Ok(i) => i,
+        Err(_) => return Err(fail("ToInt", &format!("{s:?} is not an Int"))),
+      },
       _ => return Err(fail("ToInt", "input type mismatch")),
     }))
   }
@@ -845,10 +867,10 @@ impl PureOp for ToFloatOp {
       Var::Int(i) => *i as f64,
       Var::Float(f) => *f,
       Var::Bool(b) => f64::from(u8::from(*b)),
-      Var::String(s) => s
-        .trim()
-        .parse()
-        .map_err(|_| fail("ToFloat", &format!("{s:?} is not a Float")))?,
+      Var::String(s) => match s.trim().parse() {
+        Ok(f) => f,
+        Err(_) => return Err(fail("ToFloat", &format!("{s:?} is not a Float"))),
+      },
       _ => return Err(fail("ToFloat", "input type mismatch")),
     }))
   }
@@ -873,11 +895,10 @@ impl PureOp for ParseFloatOp {
   }
   fn apply(input: &Var) -> Result<Var> {
     match input {
-      Var::String(s) => s
-        .trim()
-        .parse()
-        .map(Var::Float)
-        .map_err(|_| fail("ParseFloat", &format!("{s:?} is not a Float"))),
+      Var::String(s) => match s.trim().parse() {
+        Ok(f) => Ok(Var::Float(f)),
+        Err(_) => Err(fail("ParseFloat", &format!("{s:?} is not a Float"))),
+      },
       _ => Err(fail("ParseFloat", "input is not a string")),
     }
   }
@@ -903,7 +924,14 @@ impl PureOp for ToHexOp {
   fn apply(input: &Var) -> Result<Var> {
     Ok(Var::string(&match input {
       Var::Int(i) => format!("0x{:x}", *i as u64),
-      Var::String(s) => s.bytes().map(|b| format!("{b:02x}")).collect(),
+      Var::String(s) => {
+        use std::fmt::Write;
+        let mut hex = String::with_capacity(2 * s.len());
+        for b in s.bytes() {
+          let _ = write!(hex, "{b:02x}");
+        }
+        hex
+      }
       _ => return Err(fail("ToHex", "input type mismatch")),
     }))
   }
@@ -955,9 +983,21 @@ impl<const N: usize> PureOp for ToVector<N> {
   fn apply(input: &Var) -> Result<Var> {
     let mut c = [0.0f64; 4];
     match input {
-      Var::Float2(v) => v.iter().enumerate().for_each(|(i, x)| c[i] = f64::from(*x)),
-      Var::Float3(v) => v.iter().enumerate().for_each(|(i, x)| c[i] = f64::from(*x)),
-      Var::Float4(v) => v.iter().enumerate().for_each(|(i, x)| c[i] = f64::from(*x)),
+      Var::Float2(v) => {
+        for (i, x) in v.iter().enumerate() {
+          c[i] = f64::from(*x);
+        }
+      }
+      Var::Float3(v) => {
+        for (i, x) in v.iter().enumerate() {
+          c[i] = f64::from(*x);
+        }
+      }
+      Var::Float4(v) => {
+        for (i, x) in v.iter().enumerate() {
+          c[i] = f64::from(*x);
+        }
+      }
       Var::Seq(items) if items.len() == N => {
         for (i, item) in items.iter().enumerate() {
           c[i] = match item {
@@ -976,7 +1016,7 @@ impl<const N: usize> PureOp for ToVector<N> {
       _ => return Err(fail(Self::NAME, "input type mismatch")),
     }
     // Rounded once to f32; out-of-range values become infinite.
-    let c = c.map(|x| x as f32);
+    let c = [c[0] as f32, c[1] as f32, c[2] as f32, c[3] as f32];
     Ok(match N {
       2 => Var::float2(c[0], c[1]),
       3 => Var::float3(c[0], c[1], c[2]),

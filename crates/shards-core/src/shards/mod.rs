@@ -693,9 +693,9 @@ pub(crate) fn activate_inc(binding: Binding, frames: &mut impl Frames) -> Result
   let Var::Int(v) = frames.get(binding) else {
     return Err(Error::Activation("Inc: variable is not an Int".into()));
   };
-  let next = v
-    .checked_add(1)
-    .ok_or_else(|| Error::Activation("Inc: integer overflow".into()))?;
+  let Some(next) = v.checked_add(1) else {
+    return Err(Error::Activation("Inc: integer overflow".into()));
+  };
   frames.set(binding, Var::Int(next));
   Ok(Var::Int(next))
 }
@@ -830,29 +830,33 @@ pub(crate) fn cmp_int_float(i: i64, f: f64) -> Option<std::cmp::Ordering> {
   }
   let whole = f.trunc();
   // In range, so the conversion is exact.
-  Some(i.cmp(&(whole as i64)).then_with(|| {
-    if f > whole {
-      Ordering::Less
-    } else if f < whole {
-      Ordering::Greater
-    } else {
-      Ordering::Equal
-    }
-  }))
+  Some(match i.cmp(&(whole as i64)) {
+    Ordering::Equal if f > whole => Ordering::Less,
+    Ordering::Equal if f < whole => Ordering::Greater,
+    ordering => ordering,
+  })
+}
+
+#[cold]
+fn nan_compare() -> Error {
+  Error::Activation("cannot compare NaN".into())
 }
 
 pub(crate) fn compare(input: &Var, operand: Var) -> Result<std::cmp::Ordering> {
   match (input, operand) {
     (Var::Int(a), Var::Int(b)) => Ok(a.cmp(&b)),
-    (Var::Float(a), Var::Float(b)) => a
-      .partial_cmp(&b)
-      .ok_or_else(|| Error::Activation("cannot compare NaN".into())),
-    (Var::Int(a), Var::Float(b)) => {
-      cmp_int_float(*a, b).ok_or_else(|| Error::Activation("cannot compare NaN".into()))
-    }
-    (Var::Float(a), Var::Int(b)) => cmp_int_float(b, *a)
-      .map(std::cmp::Ordering::reverse)
-      .ok_or_else(|| Error::Activation("cannot compare NaN".into())),
+    (Var::Float(a), Var::Float(b)) => match a.partial_cmp(&b) {
+      Some(ordering) => Ok(ordering),
+      None => Err(nan_compare()),
+    },
+    (Var::Int(a), Var::Float(b)) => match cmp_int_float(*a, b) {
+      Some(ordering) => Ok(ordering),
+      None => Err(nan_compare()),
+    },
+    (Var::Float(a), Var::Int(b)) => match cmp_int_float(b, *a) {
+      Some(ordering) => Ok(ordering.reverse()),
+      None => Err(nan_compare()),
+    },
     _ => Err(Error::Activation("comparison type mismatch".into())),
   }
 }

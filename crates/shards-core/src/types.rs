@@ -169,7 +169,7 @@ impl Shape {
 
   /// The slot of `key`, if the shape has it.
   pub fn index_of(self, key: &str) -> Option<usize> {
-    self.keys().binary_search_by(|k| (**k).cmp(key)).ok()
+    crate::var::search(self.keys(), key).ok()
   }
 }
 
@@ -550,17 +550,48 @@ impl fmt::Debug for Type {
 struct Admits(Seen<(Type, Storage), bool>);
 
 impl Admits {
+  /// A map table against a table type: every key the type lists is there
+  /// and fits, and every other key fits the type's rest.
+  fn map_table(&mut self, t: &TableType, entries: &crate::var::Table) -> bool {
+    for (k, kt) in t.keys.iter() {
+      match entries.get(k) {
+        Some(v) if self.check(*kt, v) => {}
+        _ => return false,
+      }
+    }
+    for (k, v) in entries.iter() {
+      if crate::var::search(&t.keys, k).is_err() {
+        match t.rest {
+          Some(r) if self.check(r, v) => {}
+          _ => return false,
+        }
+      }
+    }
+    true
+  }
+
   fn check(&mut self, ty: Type, value: &Var) -> bool {
     let key = match value.storage() {
       Some((storage, true)) => Some((ty, storage)),
       _ => None,
     };
-    if let Some(&known) = key.as_ref().and_then(|key| self.0.get(key)) {
+    if let Some(key) = &key
+      && let Some(&known) = self.0.get(key)
+    {
       return known;
     }
     let admitted = match (ty.desc(), value) {
       (TypeDesc::Any, _) => true,
-      (TypeDesc::Union(members), _) => members.iter().any(|m| self.check(*m, value)),
+      (TypeDesc::Union(members), _) => {
+        let mut any = false;
+        for m in members.iter() {
+          if self.check(*m, value) {
+            any = true;
+            break;
+          }
+        }
+        any
+      }
       (TypeDesc::None, Var::None)
       | (TypeDesc::Bool, Var::Bool(_))
       | (TypeDesc::Int, Var::Int(_))
@@ -569,29 +600,36 @@ impl Admits {
       | (TypeDesc::Float3, Var::Float3(_))
       | (TypeDesc::Float4, Var::Float4(_))
       | (TypeDesc::String, Var::String(_)) => true,
-      (TypeDesc::Seq(e), Var::Seq(items)) => items.iter().all(|v| self.check(*e, v)),
+      (TypeDesc::Seq(e), Var::Seq(items)) => {
+        let mut all = true;
+        for v in items.iter() {
+          if !self.check(*e, v) {
+            all = false;
+            break;
+          }
+        }
+        all
+      }
       (TypeDesc::Table(t), Var::Table(entries)) => {
         if let (Some(expected), Some(actual)) = (t.shape, entries.shape()) {
           // A struct value of a fixed type: the shape handle says whether
           // the keys match (no lookups), then each slot is checked. The
           // slot check is unconditional: `set_var` and `spawn` admit host
           // values with this, in release too.
-          expected == actual
-            && t
-              .keys
-              .iter()
-              .zip(entries.values())
-              .all(|((_, kt), v)| self.check(*kt, v))
-        } else {
-          t.keys
-            .iter()
-            .all(|(k, kt)| entries.get(k).is_some_and(|v| self.check(*kt, v)))
-            && entries.iter().all(|(k, v)| {
-              match t.keys.binary_search_by(|(name, _)| (**name).cmp(k)) {
-                Ok(_) => true,
-                Err(_) => t.rest.is_some_and(|r| self.check(r, v)),
+          if expected != actual {
+            false
+          } else {
+            let mut all = true;
+            for ((_, kt), v) in t.keys.iter().zip(entries.values()) {
+              if !self.check(*kt, v) {
+                all = false;
+                break;
               }
-            })
+            }
+            all
+          }
+        } else {
+          self.map_table(t, entries)
         }
       }
       _ => false,

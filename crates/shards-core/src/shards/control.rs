@@ -216,15 +216,24 @@ impl MatchCompiled {
     meter: Option<&crate::compose_time::Meter>,
   ) -> Result<usize> {
     let found = match meter {
-      None => self
-        .values
-        .iter()
-        .position(|v| super::values::values_equal(v, input)),
+      None => {
+        let mut found = None;
+        for (i, v) in self.values.iter().enumerate() {
+          if super::values::values_equal(v, input) {
+            found = Some(i);
+            break;
+          }
+        }
+        found
+      }
       Some(meter) => self.find_metered(input, meter)?,
     };
-    found
-      .or((self.flows.len() > self.values.len()).then_some(self.values.len()))
-      .ok_or_else(|| Error::Activation(format!("Match: no case matches {input}")))
+    match found {
+      Some(i) => Ok(i),
+      // The default case, when there is one.
+      None if self.flows.len() > self.values.len() => Ok(self.values.len()),
+      None => Err(no_case(input)),
+    }
   }
 
   /// [`Self::find`] in a compose-time evaluation: each case compared is
@@ -548,3 +557,8 @@ pub(crate) fn compose_conditions(
 }
 
 // --- Repeat: Until and Forever (compose and compiled type in mod.rs) ---
+
+#[cold]
+fn no_case(input: &Var) -> Error {
+  Error::Activation(format!("Match: no case matches {input}"))
+}

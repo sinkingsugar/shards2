@@ -628,13 +628,21 @@ impl Mesh {
   /// records; a host that needs some outcomes later keeps them itself.
   pub fn take_finished(&mut self) -> Vec<(InstanceId, String, Outcome)> {
     let mut finished = Vec::new();
-    self.instances.retain_mut(|i| {
-      let Some(outcome) = i.outcome.take() else {
-        return true;
-      };
-      finished.push((i.id, i.wire.name.clone(), outcome));
-      false
-    });
+    // Compacts in place, keeping the order of the records left.
+    let mut kept = 0;
+    for at in 0..self.instances.len() {
+      match self.instances[at].outcome.take() {
+        Some(outcome) => {
+          let i = &self.instances[at];
+          finished.push((i.id, i.wire.name.clone(), outcome));
+        }
+        None => {
+          self.instances.swap(kept, at);
+          kept += 1;
+        }
+      }
+    }
+    self.instances.truncate(kept);
     finished
   }
 
@@ -691,15 +699,15 @@ fn step(
     let wire = &instance.wire;
     // Flow instantiation already turns panics into errors; this is a last
     // line of defense so a panic never escapes `tick`.
-    let instantiated = catch_unwind(AssertUnwindSafe(|| {
+    let instantiated = match catch_unwind(AssertUnwindSafe(|| {
       Engine::instantiate(wire.clone(), &mut ictx)
-    }))
-    .unwrap_or_else(|payload| {
-      Err(Error::Activation(format!(
+    })) {
+      Ok(result) => result,
+      Err(payload) => Err(Error::Activation(format!(
         "panic in instantiate: {}",
         panic_message(&*payload)
-      )))
-    });
+      ))),
+    };
     match instantiated {
       Ok(state) => {
         instance.memory = InstanceMemory {

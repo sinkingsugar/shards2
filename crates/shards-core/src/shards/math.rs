@@ -136,15 +136,21 @@ fn components(v: &Var) -> Option<([f64; 4], Option<usize>)> {
       None
     }
     Var::Float2(x) => {
-      x.iter().enumerate().for_each(|(i, v)| c[i] = f64::from(*v));
+      for (i, v) in x.iter().enumerate() {
+        c[i] = f64::from(*v);
+      }
       Some(2)
     }
     Var::Float3(x) => {
-      x.iter().enumerate().for_each(|(i, v)| c[i] = f64::from(*v));
+      for (i, v) in x.iter().enumerate() {
+        c[i] = f64::from(*v);
+      }
       Some(3)
     }
     Var::Float4(x) => {
-      x.iter().enumerate().for_each(|(i, v)| c[i] = f64::from(*v));
+      for (i, v) in x.iter().enumerate() {
+        c[i] = f64::from(*v);
+      }
       Some(4)
     }
     _ => return None,
@@ -156,15 +162,26 @@ fn components(v: &Var) -> Option<([f64; 4], Option<usize>)> {
 /// and division by zero are activation errors; division truncates); Int with
 /// Float is Float; a vector with a number applies per component; floats
 /// follow IEEE (division by zero is infinite).
+#[cold]
+fn int_failure(op: BinOp, name: &str, rhs: i64) -> Error {
+  Error::Activation(if rhs == 0 && op == BinOp::Divide {
+    format!("{name}: division by zero")
+  } else {
+    format!("{name}: integer overflow")
+  })
+}
+
+#[cold]
+fn mismatch(name: &str) -> Error {
+  Error::Activation(format!("{name}: operand type mismatch"))
+}
+
 pub fn arith(op: BinOp, name: &str, input: &Var, operand: &Var) -> Result<Var> {
   if let (Var::Int(a), Var::Int(b)) = (input, operand) {
-    return op.int(*a, *b).map(Var::Int).ok_or_else(|| {
-      Error::Activation(if *b == 0 && op == BinOp::Divide {
-        format!("{name}: division by zero")
-      } else {
-        format!("{name}: integer overflow")
-      })
-    });
+    return match op.int(*a, *b) {
+      Some(result) => Ok(Var::Int(result)),
+      None => Err(int_failure(op, name, *b)),
+    };
   }
   // Same-size vectors, directly in f32 (same results as the general rule).
   match (input, operand) {
@@ -188,19 +205,22 @@ pub fn arith(op: BinOp, name: &str, input: &Var, operand: &Var) -> Result<Var> {
     }
     _ => {}
   }
-  let mismatch = || Error::Activation(format!("{name}: operand type mismatch"));
-  let (a, na) = components(input).ok_or_else(mismatch)?;
-  let (b, nb) = components(operand).ok_or_else(mismatch)?;
+  let (Some((a, na)), Some((b, nb))) = (components(input), components(operand)) else {
+    return Err(mismatch(name));
+  };
   let size = match (na, nb) {
-    (Some(n), Some(m)) if n != m => return Err(mismatch()),
+    (Some(n), Some(m)) if n != m => return Err(mismatch(name)),
     (Some(n), _) | (_, Some(n)) => n,
     (None, None) => return Ok(Var::Float(op.f64(a[0], b[0]))),
   };
-  // A number on either side applies to every component.
-  let at = |c: &[f64; 4], n: Option<usize>, i: usize| if n.is_some() { c[i] } else { c[0] };
-  let r: [f64; 4] = std::array::from_fn(|i| op.f64(at(&a, na, i), at(&b, nb, i)));
-  // Components are computed in f64 and rounded once to f32.
-  let r = r.map(|x| x as f32);
+  // A number on either side applies to every component. Components are
+  // computed in f64 and rounded once to f32.
+  let mut r = [0f32; 4];
+  for (i, out) in r.iter_mut().enumerate() {
+    let x = if na.is_some() { a[i] } else { a[0] };
+    let y = if nb.is_some() { b[i] } else { b[0] };
+    *out = op.f64(x, y) as f32;
+  }
   Ok(match size {
     2 => Var::float2(r[0], r[1]),
     3 => Var::float3(r[0], r[1], r[2]),
@@ -380,9 +400,9 @@ impl LeafShard for Dec {
     let Var::Int(v) = ctx.get(*b) else {
       return Err(Error::Activation("Math.Dec: variable is not an Int".into()));
     };
-    let next = v
-      .checked_sub(1)
-      .ok_or_else(|| Error::Activation("Math.Dec: integer overflow".into()))?;
+    let Some(next) = v.checked_sub(1) else {
+      return Err(Error::Activation("Math.Dec: integer overflow".into()));
+    };
     ctx.set(*b, Var::Int(next));
     Ok(Flow::Next(Var::Int(next)))
   }
@@ -528,16 +548,20 @@ impl<S: UnarySpec> LeafShard for Unary<S> {
   }
 
   fn activate(_: &(), _: &mut (), _: &mut impl LeafCtx, input: &Var) -> Result<Flow> {
-    let f32op = |x: f32| S::float(f64::from(x)) as f32;
     Ok(Flow::Next(match input {
-      Var::Int(v) => Var::Int(
-        S::int(*v)
-          .ok_or_else(|| Error::Activation(format!("{}: integer overflow", S::DESC.name)))?,
-      ),
+      Var::Int(v) => match S::int(*v) {
+        Some(result) => Var::Int(result),
+        None => {
+          return Err(Error::Activation(format!(
+            "{}: integer overflow",
+            S::DESC.name
+          )));
+        }
+      },
       Var::Float(v) => Var::Float(S::float(*v)),
-      Var::Float2(v) => Var::from(v.map(f32op)),
-      Var::Float3(v) => Var::from(v.map(f32op)),
-      Var::Float4(v) => Var::from(v.map(f32op)),
+      Var::Float2(v) => Var::from(unary_f32::<S, 2>(&v.0)),
+      Var::Float3(v) => Var::from(unary_f32::<S, 3>(&v.0)),
+      Var::Float4(v) => Var::from(unary_f32::<S, 4>(&v.0)),
       _ => {
         return Err(Error::Activation(format!(
           "{}: input type mismatch",
@@ -546,6 +570,25 @@ impl<S: UnarySpec> LeafShard for Unary<S> {
       }
     }))
   }
+}
+
+/// `S` applied to each component, in f64 and rounded once to f32.
+#[inline(always)]
+fn unary_f32<S: UnarySpec, const N: usize>(v: &[f32; N]) -> [f32; N] {
+  let mut out = [0f32; N];
+  for (o, x) in out.iter_mut().zip(v) {
+    *o = S::float(f64::from(*x)) as f32;
+  }
+  out
+}
+
+#[inline(always)]
+fn sum_of_squares(v: &[f32]) -> f64 {
+  let mut sum = 0.0;
+  for x in v {
+    sum += f64::from(*x).powi(2);
+  }
+  sum
 }
 
 // --- Math.Length ---
@@ -587,9 +630,9 @@ impl LeafShard for Length {
 
   fn activate(_: &(), _: &mut (), _: &mut impl LeafCtx, input: &Var) -> Result<Flow> {
     let squares: f64 = match input {
-      Var::Float2(v) => v.iter().map(|x| f64::from(*x).powi(2)).sum(),
-      Var::Float3(v) => v.iter().map(|x| f64::from(*x).powi(2)).sum(),
-      Var::Float4(v) => v.iter().map(|x| f64::from(*x).powi(2)).sum(),
+      Var::Float2(v) => sum_of_squares(&v.0),
+      Var::Float3(v) => sum_of_squares(&v.0),
+      Var::Float4(v) => sum_of_squares(&v.0),
       _ => {
         return Err(Error::Activation(
           "Math.Length: input is not a vector".into(),

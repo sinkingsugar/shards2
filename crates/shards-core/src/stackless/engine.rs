@@ -242,8 +242,11 @@ fn vm_site(
   call: &CallCompiled,
   body: &Arc<CompiledFunction>,
 ) -> Option<std::ptr::NonNull<CallCompiled>> {
-  (!call.stateful() && body.vm_only && matches!(call.target, CallTarget::Direct(_)))
-    .then(|| std::ptr::NonNull::from(call))
+  if !call.stateful() && body.vm_only && matches!(call.target, CallTarget::Direct(_)) {
+    Some(std::ptr::NonNull::from(call))
+  } else {
+    None
+  }
 }
 
 /// Binds a call's arguments and input into an invocation's locals: the
@@ -369,6 +372,13 @@ enum Location {
   /// A child flow (`.1`) a composite ran inside its own step, and the
   /// instruction it failed at.
   Leaf(Arc<dyn CompiledNode>, u32, u32),
+}
+
+#[cold]
+fn no_body(name: &str, input: crate::types::Type) -> Error {
+  Error::Activation(format!(
+    "{name} has no compiled body for input {input} in this revision"
+  ))
 }
 
 #[cold]
@@ -816,15 +826,18 @@ impl Engine {
       // A recursive call resolves through the table its group entered
       // with, so the group runs as a unit across reloads (§11).
       CallTarget::Lazy { key, def } => {
-        let table = scope
-          .and_then(|s| self.frames.get(s).expect("scope").invocation.as_ref())
-          .map_or_else(|| ctx.table().clone(), |i| i.table.clone());
-        let body = table.get(key).cloned().ok_or_else(|| {
-          Error::Activation(format!(
-            "{} has no compiled body for input {} in this revision",
-            def.name, key.input
-          ))
-        })?;
+        let invocation = match scope {
+          Some(s) => self.frames.get(s).expect("scope").invocation.as_ref(),
+          None => None,
+        };
+        let table = match invocation {
+          Some(i) => i.table.clone(),
+          None => ctx.table().clone(),
+        };
+        let body = match table.get(key) {
+          Some(body) => body.clone(),
+          None => return Err(no_body(&def.name, key.input)),
+        };
         (body, table)
       }
       CallTarget::Direct(direct) => {
@@ -837,7 +850,10 @@ impl Engine {
           return self.enter_kept_frame(child, call, input, ctx);
         }
         let c = self.continuation(h);
-        let mut body = c.function.clone().unwrap_or_else(|| direct.clone());
+        let mut body = match &c.function {
+          Some(selected) => selected.clone(),
+          None => direct.clone(),
+        };
         if c.revision != ctx.reload_revision() {
           c.revision = ctx.reload_revision();
           if let Some(next) = ctx.function_body(&FunctionKey::of(&body))
@@ -1033,7 +1049,7 @@ impl Engine {
       instance: ctx.instance(),
     };
     let mut revived: Vec<(Handle, usize)> = Vec::new();
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
       for h in self.invocation_frames(child) {
         let frame = self.frames.get_mut(h).expect("invocation frame");
         let nodes = frame.flow().nodes.clone();
@@ -1045,13 +1061,14 @@ impl Engine {
         }
       }
       Ok(())
-    }))
-    .unwrap_or_else(|p| {
-      Err(Error::Activation(format!(
+    }));
+    let result = match caught {
+      Ok(result) => result,
+      Err(p) => Err(Error::Activation(format!(
         "panic in instantiate: {}",
         crate::error::panic_message(&*p)
-      )))
-    });
+      ))),
+    };
     if result.is_err() {
       // In reverse initialization order, every cleanup attempted.
       let mut leaves = Vec::new();
@@ -1092,7 +1109,11 @@ impl Engine {
     self.switch_scope(scope, ctx);
     // A compose-time evaluation locates its failures (`failure_path`); the
     // runtime's steps carry none of that code.
-    let result = if ctx.meter.is_some_and(|m| m.locating) {
+    let locating = match ctx.meter {
+      Some(meter) => meter.locating,
+      None => false,
+    };
+    let result = if locating {
       self.steps::<true>(ctx, &mut completed)
     } else {
       self.steps::<false>(ctx, &mut completed)
@@ -1560,7 +1581,10 @@ fn dispatch<const LOCATE: bool>(
     if result.is_err() {
       release_slots(flow, ctx.locals);
     }
-    completion = Some(result.map(|(_, value)| Step::Next(value)));
+    completion = Some(match result {
+      Ok((_, value)) => Ok(Step::Next(value)),
+      Err(err) => Err(err),
+    });
   }
 }
 fn boolean(v: Var) -> Result<bool> {

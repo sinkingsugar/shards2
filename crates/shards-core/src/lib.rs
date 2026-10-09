@@ -43,4 +43,4 @@ pub use reload::{ReloadReport, ResetPolicy};
 pub use shard::{ActivationCtx, Composed, Flow, ParamValue, Shard, ShardDef, ShardType, Step};
 pub use stackless::Mesh;
 pub use types::{Shape, Type, TypeDesc};
-pub use var::{Float2, Float3, Float4, Table, TableBuilder, Var};
+pub use var::{Float2, Float3, Float4, Keys, Table, TableBuilder, Values, Var};

@@ -70,6 +70,7 @@ The prototype milestone is complete. Next is porting the language front end and 
 - release nesting: `cargo test --release -p shards-lang --test lang nesting_up_to_the_limit`
 - TLS: `cargo clippy -p shards-io --all-targets --features rustls-ring -- -D warnings`
 - wasm lint: `cargo clippy -p shards-core -p shards-lang --target wasm32-wasip1 --lib --tests -- -D warnings`
+- hot code: `python3 scripts/hot-asm.py --check bench/hot-asm/aarch64-apple-darwin.txt` (on Apple Silicon) summarizes the disassembly of the VM loop and the engine step; run it with `--compare REV` before and after any change to `inline.rs` or `stackless/engine.rs`, and refresh the baseline when the change is intended (`docs/runtime-performance-overview.md`, lesson 6)
 - compose costs: `cargo run --release -p shards-lang --example bench_compose -- --check bench/compose/baseline.txt` (CI's `bench` job; after an intended allocation change, regenerate with `--write` and say why in the commit, see `bench/compose/README.md`)
 - wasm tests: `cargo test -p shards-core --test prototype --test metadata --target wasm32-wasip1 --no-run` and `cargo test -p shards-lang --test lang --target wasm32-wasip1 --no-run`, then run each emitted test `.wasm` with `node scripts/run-wasi.mjs <path>`. Install the target with `rustup target add wasm32-wasip1` if needed. Benchmark examples are native-only; do not use `--all-targets` for wasm.
 

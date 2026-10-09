@@ -8,12 +8,12 @@ use crate::compose::CompiledWire;
 use crate::diagnostic::PathStep;
 use crate::error::{Error, Result};
 use crate::flow::CompiledFlow;
-use crate::function::{CallCompiled, CallTarget, CompiledFunction};
+use crate::function::{BlockArg, CallCompiled, CallTarget, CompiledFunction};
 use crate::instance::{CleanupCtx, InstanceCtx};
 use crate::reload::{FunctionKey, FunctionRegistry};
-use crate::shard::{ActivationCtx, CompiledNode, Step};
+use crate::shard::{ActivationCtx, CompiledNode, ControlStep, CustomControl, Step};
 use crate::shards::control::{
-  self, Condition, ConditionsCompiled, IfCompiled, MatchCompiled, MaybeCompiled,
+  Condition, ConditionsCompiled, IfCompiled, MatchCompiled, RunCompiled,
 };
 use crate::shards::{Predicated, RepeatCompiled};
 
@@ -32,19 +32,28 @@ pub enum Control<'a> {
   Repeat(&'a RepeatCompiled),
   If(&'a IfCompiled),
   Match(&'a MatchCompiled),
-  Maybe(&'a MaybeCompiled),
   Conditions(&'a ConditionsCompiled),
+  /// Runs a block its function's call passed (docs/metaprogramming.md
+  /// §3.2): its frame is built at entry, like a call's, for the block the
+  /// running invocation received.
+  Run(&'a RunCompiled),
+  /// A composite written against the public interface
+  /// ([`crate::shard::ControlShard`]): it says which child to enter and
+  /// what to output; its progress lives in `Continuation::custom`. A thin
+  /// reference (to the node's box), so `Control` stays two words.
+  #[allow(clippy::borrowed_box)]
+  Custom(&'a Box<dyn CustomControl>),
 }
 
 impl Control<'_> {
   fn len(&self) -> usize {
     match self {
-      Self::Call(_) => 0,
+      Self::Call(_) | Self::Run(_) => 0,
+      Self::Custom(c) => c.flows().len(),
       Self::Sub(_) | Self::Once(_) => 1,
       // Lowered to flat code at compose: never a node, never framed.
       Self::When(_) | Self::While(_) | Self::Repeat(_) | Self::If(_) => 0,
       Self::Match(c) => c.flows.len(),
-      Self::Maybe(c) => c.flows.len(),
       Self::Conditions(c) => c.flows.len(),
     }
   }
@@ -57,13 +66,18 @@ enum Code {
   Child(Arc<dyn CompiledNode>, u32),
   /// A function invocation: the frame owns the invocation's locals.
   Function(Arc<CompiledFunction>),
+  /// A block a call passed for a flow parameter (the call's node and the
+  /// block's index), run by `Run` inside the callee on the caller's scope.
+  Block(Arc<dyn CompiledNode>, u32),
 }
 impl Code {
   fn flow(&self) -> &CompiledFlow {
     match self {
       Self::Root(w) => &w.flow,
       // Resolve from the retained owner without borrowing the frame arena.
-      Self::Child(n, i) => child_flow(&n.control().expect("composite"), *i as usize),
+      Self::Child(n, i) | Self::Block(n, i) => {
+        child_flow(&n.control().expect("composite"), *i as usize)
+      }
       Self::Function(f) => &f.flow,
     }
   }
@@ -74,9 +88,15 @@ fn child_flow<'a>(control: &Control<'a>, i: usize) -> &'a CompiledFlow {
   match control {
     Control::Sub(c) | Control::Once(c) => c,
     Control::Match(c) => &c.flows[i],
-    Control::Maybe(c) => &c.flows[i],
     Control::Conditions(c) => &c.flows[i],
-    Control::Call(_) => unreachable!("a call's frame holds its function"),
+    // A call's children are its blocks (`Code::Block`); its invocation
+    // frame holds its function.
+    Control::Call(c) => match &c.blocks[i] {
+      BlockArg::Flow(flow) => flow,
+      BlockArg::Forward(_) => unreachable!("a forwarded block runs from the call that wrote it"),
+    },
+    Control::Run(_) => unreachable!("Run's frame runs a call's block"),
+    Control::Custom(c) => &c.flows()[i],
     Control::When(_) | Control::While(_) | Control::Repeat(_) | Control::If(_) => {
       unreachable!("lowered to flat code at compose")
     }
@@ -103,6 +123,15 @@ struct Continuation {
   /// `None` until a reload offered one.
   function: Option<Arc<CompiledFunction>>,
   revision: u64,
+  /// A `Control::Custom` composite's progress (one word: boxed).
+  custom: Option<Box<Custom>>,
+}
+
+/// A `Control::Custom` composite's progress: the shard's own state, and the
+/// input of the child it asked to enter (taken when the child is entered).
+struct Custom {
+  state: Box<dyn Any>,
+  input: Var,
 }
 impl Continuation {
   fn reset(&mut self) {
@@ -342,7 +371,7 @@ pub(crate) fn rebasable(old: &CompiledFlow, new: &CompiledFlow) -> bool {
     for (o, n) in pairs {
       if let (Unit::Own(i), Unit::Own(j)) = (o, n)
         && let (Some(x), Some(y)) = (old.nodes[i].control(), new.nodes[j].control())
-        && !matches!(x, Control::Call(_))
+        && !matches!(x, Control::Call(_) | Control::Run(_))
       {
         for k in 0..x.len() {
           work.push((child_flow(&x, k), child_flow(&y, k)));
@@ -398,13 +427,30 @@ pub(crate) fn failure_path(meter: &crate::compose_time::Meter) -> Vec<PathStep> 
       .map_or_else(Vec::new, |o| o.prefix.iter().map(|s| s.path()).collect())
   };
   let mut path = Vec::new();
-  for Failed(at) in meter.trace.borrow().iter().rev() {
+  let trace = meter.trace.borrow();
+  // Each level's flow, and the path's length up to its failing shard.
+  let mut levels: Vec<(&CompiledFlow, usize)> = Vec::new();
+  for Failed(at) in trace.iter().rev() {
     let (flow, pc) = match at {
       Location::Frame(code, pc) => {
         match code {
           Code::Root(_) => {}
           Code::Child(..) => path.extend(prefix(code.flow())),
           Code::Function(f) => path.push(PathStep::Function(f.def.name.clone())),
+          // A block is lexically where its call wrote it: back to the
+          // level that ran that call, below the call's own shard.
+          Code::Block(call, _) => {
+            let wrote = |flow: &CompiledFlow| {
+              flow
+                .nodes
+                .iter()
+                .any(|n| std::ptr::addr_eq(Arc::as_ptr(n), Arc::as_ptr(call)))
+            };
+            if let Some(&(_, len)) = levels.iter().rev().find(|(flow, _)| wrote(flow)) {
+              path.truncate(len);
+            }
+            path.extend(prefix(code.flow()));
+          }
         }
         (code.flow(), *pc)
       }
@@ -417,6 +463,7 @@ pub(crate) fn failure_path(meter: &crate::compose_time::Meter) -> Vec<PathStep> 
     if let Some(origins) = &flow.origins {
       origins.path(pc as usize, &mut path);
     }
+    levels.push((flow, path.len()));
   }
   path
 }
@@ -499,6 +546,12 @@ impl Engine {
             is_call: matches!(control, Control::Call(_)),
             ..Continuation::default()
           };
+          if let Control::Custom(custom) = control {
+            c.custom = Some(Box::new(Custom {
+              state: custom.new_state(),
+              input: Var::None,
+            }));
+          }
           for i in 0..control.len() {
             let mut child = Frame::new(Code::Child(node.clone(), i as u32));
             child.scope = scope;
@@ -580,7 +633,7 @@ impl Engine {
             (Unit::Own(i), Unit::Own(j)) => {
               let node = new_flow.nodes[j].clone();
               let state = match node.control() {
-                Some(control) if !matches!(control, Control::Call(_)) => {
+                Some(control) if !matches!(control, Control::Call(_) | Control::Run(_)) => {
                   let State::Control(old_c) = &self.frames.get(oh).expect("old frame").states[i]
                   else {
                     unreachable!("paired composites")
@@ -591,6 +644,13 @@ impl Engine {
                     once_done,
                     ..Continuation::default()
                   };
+                  // Between iterations: no activation is in progress.
+                  if let Control::Custom(custom) = control {
+                    c.custom = Some(Box::new(Custom {
+                      state: custom.new_state(),
+                      input: Var::None,
+                    }));
+                  }
                   for (k, old_child) in old_children.into_iter().enumerate() {
                     let child = self
                       .frames
@@ -957,6 +1017,142 @@ impl Engine {
     Ok(())
   }
 
+  /// The block flow parameter `param` of the invocation `scope` runs: the
+  /// frame of the call site that wrote it, the call's node there, the
+  /// block's index and the scope it runs on (the caller's). A running
+  /// invocation's frame has its caller as parent, stopped at the call; a
+  /// forwarded block is looked up the same way from the caller's own
+  /// invocation. Nothing is stored per call for this.
+  fn resolve_block(&self, scope: Handle, param: u32) -> (Handle, usize, u32, Option<Handle>) {
+    let (mut scope, mut param) = (scope, param);
+    loop {
+      let invocation = self.frames.get(scope).expect("running invocation");
+      let site = invocation.parent.expect("a running invocation's caller");
+      let caller = self.frames.get(site).expect("caller frame");
+      let node = caller.node();
+      let Some(Control::Call(call)) = caller.flow().nodes[node].control() else {
+        unreachable!("an invocation's caller is stopped at its call")
+      };
+      match &call.blocks[param as usize] {
+        BlockArg::Flow(_) => return (site, node, param, caller.scope),
+        BlockArg::Forward(outer) => {
+          scope = caller
+            .scope
+            .expect("a forwarded flow parameter is the calling function's");
+          param = *outer;
+        }
+      }
+    }
+  }
+
+  /// Entering `Run` (docs/metaprogramming.md §3.2): the frame running the
+  /// block the invocation received for the flow parameter, on its caller's
+  /// scope. The Run node keeps the last block's frame and enters it again
+  /// when the same block runs next; native state inside it lives for one
+  /// run (cleaned up at exit, instantiated again here), so a block starts
+  /// fresh each time. Another block replaces the frame.
+  ///
+  /// A block of leaf code (`CompiledFlow::leaf`) needs no frame: at run
+  /// time it runs right here, on its scope's locals, and the Run completes
+  /// in this step (`Ok(true)`; no value travels back through the step).
+  #[inline(never)]
+  fn prepare_run(
+    &mut self,
+    h: Handle,
+    node: usize,
+    run: &RunCompiled,
+    ctx: &mut ActivationCtx<'_>,
+  ) -> Result<bool> {
+    let frame = self.frames.get(h).expect("frame");
+    let scope = frame.scope.expect("Run runs inside a function");
+    let (site, call, block, block_scope) = self.resolve_block(scope, run.param);
+    let owner = &self.frames.get(site).expect("caller frame").flow().nodes[call];
+    let flow = child_flow(&owner.control().expect("a call"), block as usize);
+    // A compose-time evaluation keeps the frame, which locates a failure.
+    if flow.leaf && ctx.meter.is_none() {
+      let input = if run.ignores_input {
+        Var::None
+      } else {
+        frame.value.clone()
+      };
+      self.switch_scope(block_scope, ctx);
+      let result = crate::inline::run(
+        &flow.code,
+        0,
+        input,
+        ctx.locals,
+        ctx.mesh_frame,
+        &crate::inline::NoCalls,
+      );
+      if result.is_err() {
+        release_slots(flow, ctx.locals);
+      }
+      let scope = self.current_scope;
+      self.switch_scope(scope, ctx);
+      let (_, output) = result?;
+      self.ran_block(h, node, run, output);
+      return Ok(true);
+    }
+    let owner_ptr = Arc::as_ptr(owner);
+    let c = self.continuation(h);
+    if let Some(&child) = c.children.first() {
+      let resets = c.resets;
+      let frame = self.frames.get(child).expect("block frame");
+      if let Code::Block(n, i) = &frame.code
+        && std::ptr::addr_eq(Arc::as_ptr(n), owner_ptr)
+        && *i == block
+        && frame.scope == block_scope
+      {
+        if resets {
+          self.revive_invocation(child, ctx)?;
+        }
+        return Ok(false);
+      }
+      self.continuation(h).children.clear();
+      self.cleanup_tree(
+        child,
+        &mut CleanupCtx {
+          instance: ctx.instance(),
+        },
+      );
+    }
+    let owner = self.frames.get(site).expect("caller frame").flow().nodes[call].clone();
+    let child = self.build(
+      Code::Block(owner, block),
+      block_scope,
+      &mut InstanceCtx {
+        instance: ctx.instance(),
+      },
+    )?;
+    let resets = self
+      .frames
+      .get(child)
+      .expect("block frame")
+      .flow()
+      .analysis
+      .lifetime
+      != crate::signature::Lifetime::Stateless;
+    let c = self.continuation(h);
+    c.children.push(child);
+    c.resets = resets;
+    Ok(false)
+  }
+
+  /// A Run whose block ran in its prepare step (`prepare_run`): the Run
+  /// completes with the block's output, or its input when it passes it on.
+  fn ran_block(&mut self, h: Handle, node: usize, run: &RunCompiled, output: Var) {
+    let f = self.frames.get_mut(h).expect("live frame");
+    if let State::Control(c) = &mut f.states[node] {
+      c.reset();
+    }
+    if run.discards_output {
+      f.value = Var::None;
+    } else if !run.passthrough {
+      f.value = output;
+    }
+    f.pc += 1;
+  }
+
   /// A stateful call site adopting a new body (golden path §11): the new
   /// frame is built, `Keep` slots that match by name and type carry their
   /// values over (and count as applied), everything else starts fresh. The
@@ -1192,6 +1388,27 @@ impl Engine {
     Next::Continue
   }
 
+  /// Enters a child of a `Control::Custom` composite (node `node` of frame
+  /// `h`) with the input its `resume` chose. Out of line: rare, and the
+  /// step stays small without it.
+  #[inline(never)]
+  fn enter_custom(
+    &mut self,
+    h: Handle,
+    node: usize,
+    child: Handle,
+    ctx: &mut ActivationCtx<'_>,
+  ) -> Next {
+    let f = self.frames.get_mut(h).expect("live frame");
+    let depth = f.call_depth;
+    let State::Control(c) = &mut f.states[node] else {
+      unreachable!("a composite")
+    };
+    let custom = c.custom.as_mut().expect("a composite's state");
+    let input = std::mem::replace(&mut custom.input, Var::None);
+    self.enter_child(h, child, input, depth, ctx)
+  }
+
   /// One step of the current frame: dispatches its current node, or
   /// delivers a child's completion to it. Inlined into the activation loop
   /// (its only caller): a call per step is measurable.
@@ -1311,6 +1528,8 @@ impl Engine {
         Control::Call(call) if !call.stateful() => {
           Some(matches!(call.target, CallTarget::Lazy { .. }))
         }
+        // Its block's frame stays, its native state reset.
+        Control::Run(_) => Some(false),
         _ => None,
       };
       if let Control::Call(call) = &control {
@@ -1327,6 +1546,7 @@ impl Engine {
       );
       let result = match dispatched {
         Ok(Dispatch::Enter(i)) => Request::Enter(c.children[i]),
+        Ok(Dispatch::EnterCustom(i)) => Request::EnterCustom(c.children[i]),
         Ok(Dispatch::Complete(result)) => Request::Complete(result),
         Ok(Dispatch::Prepare) => Request::Prepare,
         Err(err) => Request::Complete(Err(err)),
@@ -1365,11 +1585,19 @@ impl Engine {
       Request::Prepare => {
         // The call site is read through the frame's flow, whose reference
         // is not tied to the frame borrow (the frame stays current).
-        let Some(Control::Call(call)) = flow.nodes[node].control() else {
-          unreachable!("only a call asks to be prepared")
+        let prepared = match flow.nodes[node].control() {
+          Some(Control::Call(call)) => self
+            .prepare_function_call(h, call, ctx)
+            .map(|()| (1, call_entry == Some(true))),
+          Some(Control::Run(run)) => match self.prepare_run(h, node, run, ctx) {
+            Ok(true) => return Next::Continue,
+            Ok(false) => Ok((0, run.ignores_input)),
+            Err(err) => Err(err),
+          },
+          _ => unreachable!("only a call or a Run asks to be prepared"),
         };
-        match self.prepare_function_call(h, call, ctx) {
-          Ok(()) => {
+        match prepared {
+          Ok((depth, ignores_input)) => {
             // Prepared: entered in this step, not the next (`dispatch`
             // would answer `enter(c, 0, 2)`).
             let f = self.frames.get_mut(h).expect("live frame");
@@ -1378,12 +1606,12 @@ impl Engine {
             };
             c.phase = 2;
             let child = c.children[0];
-            let input = if call_entry == Some(true) {
+            let input = if ignores_input {
               Var::None
             } else {
               f.value.clone()
             };
-            let depth = f.call_depth + 1;
+            let depth = f.call_depth + depth;
             self.enter_child(h, child, input, depth, ctx)
           }
           Err(err) => {
@@ -1423,6 +1651,7 @@ impl Engine {
         let depth = f.call_depth + u32::from(call_entry.is_some());
         self.enter_child(h, child, input, depth, ctx)
       }
+      Request::EnterCustom(child) => self.enter_custom(h, node, child, ctx),
       Request::Complete(Ok(Step::Suspend)) => Next::Finish(Ok(Step::Suspend)),
       Request::Complete(Ok(Step::Next(value))) if index < flow.code.len() => {
         f.pc += 1;
@@ -1433,6 +1662,9 @@ impl Engine {
         f.pc = 0;
         f.value = Var::None;
         let leaving_function = matches!(f.code, Code::Function(_));
+        // An invocation's or a block's frame runs on another scope than
+        // its parent (the caller's, or the callee's running the block).
+        let leaving_scope = leaving_function || matches!(f.code, Code::Block(..));
         // Every exit of an invocation passes here, its frame in hand.
         if leaving_function {
           f.release_locals();
@@ -1450,8 +1682,8 @@ impl Engine {
           }
           Some(parent) => {
             // A child shares its parent's scope unless it is an invocation
-            // frame, whose parent is the caller.
-            if leaving_function {
+            // frame, whose parent is the caller, or a block's.
+            if leaving_scope {
               let scope = self.frames.get(parent).expect("parent frame").scope;
               self.current_scope = scope;
               self.switch_scope(scope, ctx);
@@ -1483,6 +1715,7 @@ impl Engine {
 // through the same completion channel unwinds each continuation exactly once.
 enum Request {
   Enter(Handle),
+  EnterCustom(Handle),
   Complete(Result<Step>),
   /// A call site at phase 0: the step prepares the invocation (which
   /// needs the engine, not the continuation) and dispatches again.
@@ -1492,6 +1725,10 @@ enum Request {
 /// by index.
 enum Dispatch {
   Enter(usize),
+  /// Enter a child of a `Control::Custom` composite, with the input it
+  /// left in its state (`Custom::input`): no value travels through here,
+  /// which keeps the step's own frame small.
+  EnterCustom(usize),
   Complete(Result<Step>),
   Prepare,
 }
@@ -1530,7 +1767,7 @@ fn dispatch<const LOCATE: bool>(
     let Dispatch::Enter(i) = dispatched else {
       return Ok(dispatched);
     };
-    if matches!(control, Control::Call(_)) {
+    if matches!(control, Control::Call(_) | Control::Run(_)) {
       return Ok(dispatched);
     }
     let flow = child_flow(&control, i);
@@ -1604,26 +1841,16 @@ fn dispatch_once(
   input: &Var,
   completion: Option<Result<Step>>,
 ) -> Result<Dispatch> {
+  if let Control::Custom(custom) = control {
+    return dispatch_custom(custom.as_ref(), c, ctx, input, completion);
+  }
   let value = match completion {
     None => None,
     Some(result) => {
       if matches!(control, Control::Once(_)) && result.is_ok() {
         c.once_done = true;
       }
-      let step = match result {
-        Err(err) if matches!(control, Control::Maybe(_)) && c.phase == 1 => {
-          let Control::Maybe(m) = &control else {
-            unreachable!()
-          };
-          control::maybe_caught(m.silent, err)?;
-          return if m.flows.len() > 1 {
-            enter(c, 1, 2)
-          } else {
-            next(input.clone())
-          };
-        }
-        other => other?,
-      };
+      let step = result?;
       match step {
         Step::Next(v) => Some(v),
         // Return exits the nearest named invocation with its value.
@@ -1657,17 +1884,21 @@ fn dispatch_once(
     Control::When(_) | Control::While(_) | Control::If(_) | Control::Repeat(_) => {
       unreachable!("lowered to flat code at compose")
     }
-    Control::Maybe(m) => {
-      if let Some(value) = value {
-        next(if m.flows.len() < 2 {
-          input.clone()
-        } else {
-          value
-        })
+    Control::Run(r) => match value {
+      Some(value) => next(if r.passthrough {
+        input.clone()
+      } else if r.discards_output {
+        Var::None
       } else {
-        enter(c, 0, 1)
+        value
+      }),
+      None if c.phase == 0 => {
+        c.phase = 1;
+        Ok(Dispatch::Prepare)
       }
-    }
+      None => enter(c, 0, 2),
+    },
+    Control::Custom(_) => unreachable!(),
     Control::Conditions(conditions) => {
       let mut index = c.phase as usize;
       if let Some(value) = value
@@ -1688,6 +1919,70 @@ fn dispatch_once(
         index += 1;
       }
       next(Var::Bool(!conditions.stop_on))
+    }
+  }
+}
+
+/// A `Control::Custom` composite: its `resume` decides, with a child's
+/// output or error; a `Stop`, `Restart` or `Return` passes through. Its
+/// state goes back to its default whenever the node completes. Out of the
+/// step's way: what it carries (the child's input, a leaf child run here)
+/// would cost every other composite stack space in the step.
+fn dispatch_custom(
+  custom: &dyn CustomControl,
+  c: &mut Continuation,
+  ctx: &mut ActivationCtx<'_>,
+  input: &Var,
+  mut completion: Option<Result<Step>>,
+) -> Result<Dispatch> {
+  let held = c.custom.as_mut().expect("a composite's state");
+  loop {
+    let state = held.state.as_mut();
+    let outcome = match completion.take() {
+      None => None,
+      Some(Ok(Step::Next(value))) => Some(Ok(value)),
+      Some(Ok(signal)) => {
+        custom.reset_state(state);
+        return Ok(Dispatch::Complete(Ok(signal)));
+      }
+      Some(Err(err)) => Some(Err(err)),
+    };
+    match custom.resume(state, ctx, input, outcome) {
+      Ok(ControlStep::Enter(child, child_input)) => {
+        let Some(flow) = custom.flows().get(child) else {
+          custom.reset_state(state);
+          return Err(Error::Activation(format!(
+            "a composite entered flow {child} of {}",
+            custom.flows().len()
+          )));
+        };
+        // Leaf code runs right here, at run time (a compose-time
+        // evaluation never reaches a host composite).
+        if !flow.leaf || ctx.meter.is_some() {
+          held.input = child_input;
+          return Ok(Dispatch::EnterCustom(child));
+        }
+        let result = crate::inline::run(
+          &flow.code,
+          0,
+          child_input,
+          ctx.locals,
+          ctx.mesh_frame,
+          &crate::inline::NoCalls,
+        );
+        if result.is_err() {
+          release_slots(flow, ctx.locals);
+        }
+        completion = Some(result.map(|(_, value)| Step::Next(value)));
+      }
+      Ok(ControlStep::Complete(value)) => {
+        custom.reset_state(state);
+        return next(value);
+      }
+      Err(err) => {
+        custom.reset_state(state);
+        return Err(err);
+      }
     }
   }
 }
@@ -1819,7 +2114,8 @@ mod layout {
       assert_eq!(std::mem::size_of::<super::Frame>(), 128);
       assert_eq!(std::mem::size_of::<Option<super::Frame>>(), 128);
       assert_eq!(std::mem::size_of::<super::State>(), 16);
-      assert_eq!(std::mem::size_of::<super::Continuation>(), 56);
+      // 56 before the state of host composites (`custom`, one word).
+      assert_eq!(std::mem::size_of::<super::Continuation>(), 64);
     }
   }
 }

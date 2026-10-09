@@ -37,10 +37,13 @@ pub use compose_time::{EvalLimits, EvalUsage};
 pub use describe::ShardDesc;
 pub use diagnostic::Diagnostic;
 pub use error::{Error, Result};
-pub use function::{FunctionDef, FunctionParam};
+pub use function::{FlowType, FunctionDef, FunctionParam};
 pub use instance::{InstanceId, InstanceMemory, Outcome, WakeMode};
 pub use reload::{ReloadReport, ResetPolicy};
-pub use shard::{ActivationCtx, Composed, Flow, ParamValue, Shard, ShardDef, ShardType, Step};
+pub use shard::{
+  ActivationCtx, Composed, ControlShard, ControlStep, Flow, ParamValue, Shard, ShardDef, ShardType,
+  Step,
+};
 pub use stackless::Mesh;
 pub use types::{Shape, Type, TypeDesc};
 pub use var::{Float2, Float3, Float4, Keys, Table, TableBuilder, Values, Var};

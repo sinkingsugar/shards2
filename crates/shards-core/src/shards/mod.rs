@@ -51,9 +51,10 @@ pub static IS_MORE_EQUAL: ShardType = leaf_type::<leaf::IsMoreEqual>();
 pub static WHEN: ShardType = ShardType::new(WHEN_DESC).implemented_by::<sl::When>();
 pub static IF: ShardType = ShardType::new(control::IF_DESC).implemented_by::<sl::If>();
 pub static MATCH: ShardType = ShardType::new(control::MATCH_DESC).implemented_by::<sl::Match>();
-pub static MAYBE: ShardType = ShardType::new(control::MAYBE_DESC).implemented_by::<sl::Maybe>();
+pub static MAYBE: ShardType = ShardType::new(control::MAYBE_DESC).controlled_by::<control::Maybe>();
 pub static ALL: ShardType = ShardType::new(control::ALL_DESC).implemented_by::<sl::All>();
 pub static ANY: ShardType = ShardType::new(control::ANY_DESC).implemented_by::<sl::Any>();
+pub static RUN: ShardType = ShardType::new(control::RUN_DESC).implemented_by::<sl::Run>();
 pub static SUB: ShardType = ShardType::new(SUB_DESC).implemented_by::<sl::Sub>();
 pub static ONCE: ShardType = ShardType::new(ONCE_DESC).implemented_by::<sl::Once>();
 pub static REPEAT: ShardType = ShardType::new(REPEAT_DESC).implemented_by::<sl::Repeat>();
@@ -84,6 +85,7 @@ pub static CATALOG: &[&ShardType] = &[
   &MAYBE,
   &ALL,
   &ANY,
+  &RUN,
   &ONCE,
   &SUB,
   &data::TAKE,
@@ -305,6 +307,16 @@ pub(crate) fn check_declaration(args: &Args, ctx: &mut ComposeCtx<'_>, shard: &s
   if name.starts_with('%') {
     return Ok(());
   }
+  if ctx.flow_param(name).is_some() {
+    return Err(param_error(
+      args,
+      shard,
+      "variable",
+      "compose-error",
+      "duplicate-binding",
+      format!("{name} is already a flow parameter of this function; pick another name"),
+    ));
+  }
   if name == "input" {
     return Err(param_error(
       args,
@@ -357,6 +369,9 @@ pub(crate) fn assignable(
   shard: &str,
 ) -> Result<crate::compose::VarInfo> {
   let name = variable(args, "variable");
+  if let Some(err) = ctx.flow_escapes(name, shard) {
+    return Err(err);
+  }
   let Some(info) = ctx.var(name) else {
     let mut err = param_error(
       args,
@@ -1024,6 +1039,17 @@ pub(crate) fn compose_once(
   args: &Args,
   ctx: &mut ComposeCtx<'_>,
 ) -> Result<Composed<CompiledFlow>> {
+  if ctx.in_flow_argument() {
+    return Err(Error::Diagnostic(Box::new(
+      Diagnostic::new(
+        Phase::Compose,
+        "compose-error",
+        "once-in-stateless",
+        "Once remembers that it ran, but a block passed to a call starts fresh each time it runs; put the Once around the call",
+      )
+      .shard("Once"),
+    )));
+  }
   if !ctx.allows_persistent_state() {
     return Err(Error::Diagnostic(Box::new(
       Diagnostic::new(
@@ -1334,6 +1360,17 @@ pub(crate) fn compose_return(ctx: &mut ComposeCtx<'_>) -> Result<Composed<()>> {
         "compose-error",
         "not-compose-time",
         "Return cannot end a `#( )` evaluation: its value is what the pipeline outputs",
+      )
+      .shard("Return"),
+    )));
+  }
+  if ctx.in_flow_argument() {
+    return Err(Error::Diagnostic(Box::new(
+      Diagnostic::new(
+        Phase::Compose,
+        "compose-error",
+        "control-in-flow",
+        "Return cannot leave a block passed to a call: the block runs inside the called function, which it would have to end too; return from a function the block calls, or end the block with a value",
       )
       .shard("Return"),
     )));

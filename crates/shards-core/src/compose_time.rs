@@ -382,6 +382,9 @@ static SAFE: &[(&ShardType, u32)] = {
     (&SUB, 1),
     (&REPEAT, 1),
     (&WHILE, 1),
+    // Runs the block its call passed, which composes (and is checked)
+    // at the call site like any other code there.
+    (&RUN, 1),
     (&CALL, 1),
     // Charged by size: allocation, traversal, or a string's bytes.
     (&data::PUSH, 1),

@@ -387,6 +387,30 @@ impl Instruction {
     }
   }
 
+  /// Whether the instruction replaces the accumulator without reading it:
+  /// the value before it is dead there.
+  pub(crate) fn ignores_accumulator(&self) -> bool {
+    matches!(
+      self.op,
+      Op::Const(_)
+        | Op::GetLocal(_)
+        | Op::GetMesh(_)
+        | Op::Inc(_)
+        | Op::ConstDrop(_)
+        | Op::GetLocalDrop(_)
+        | Op::GetMeshDrop(_)
+        | Op::IncDrop(_)
+    )
+  }
+
+  /// A jump's target; `None` for any other instruction.
+  pub(crate) fn jump_target(&self) -> Option<u32> {
+    match self.op {
+      Op::Jump(t) | Op::JumpIfNot(t) | Op::JumpIf(t) | Op::LoopTest(_, t) => Some(t),
+      _ => None,
+    }
+  }
+
   /// Offsets a jump target by `base`: the instruction moved into a parent
   /// flow's code at that index.
   pub(crate) fn relocate(&mut self, base: u32) {

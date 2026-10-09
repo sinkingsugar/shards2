@@ -60,8 +60,13 @@ pub(crate) const NO_ORIGIN: u32 = u32::MAX;
 /// copying them.
 #[derive(Clone, Debug)]
 pub(crate) enum OriginStep {
-  Shard { index: u32, name: OriginName },
-  Param(&'static str),
+  Shard {
+    index: u32,
+    name: OriginName,
+  },
+  /// A declared parameter's name (a shard's is static; a function's flow
+  /// parameter is named by its definition).
+  Param(std::borrow::Cow<'static, str>),
   Item(u32),
   Function(Arc<str>),
 }
@@ -82,7 +87,7 @@ impl OriginStep {
           OriginName::Call(name) => name.to_string(),
         },
       },
-      OriginStep::Param(name) => PathStep::Param((*name).to_string()),
+      OriginStep::Param(name) => PathStep::Param(name.to_string()),
       OriginStep::Item(item) => PathStep::Item(*item as usize),
       OriginStep::Function(name) => PathStep::Function(name.to_string()),
     }

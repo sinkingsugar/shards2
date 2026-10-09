@@ -198,11 +198,11 @@ composite!(
   Match
 );
 composite!(
-  Maybe,
-  control::MaybeCompiled,
-  control::MAYBE_DESC,
-  control::compose_maybe,
-  Maybe
+  Run,
+  control::RunCompiled,
+  control::RUN_DESC,
+  control::compose_run,
+  Run
 );
 composite!(
   All,

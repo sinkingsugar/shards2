@@ -20,9 +20,10 @@ use std::sync::Arc;
 use shards_core::describe::{self, Forms, ParamDecl};
 use shards_core::diagnostic::{Diagnostic, PathStep};
 use shards_core::shards::data::{SEQ_MAKE, STRING_FORMAT, TABLE_MAKE, TAKE};
-use shards_core::shards::{BIND, CONST, GET, SUB};
+use shards_core::shards::{BIND, CONST, GET, RUN, SUB};
 use shards_core::{
   Arg, Catalog, FunctionDef, FunctionParam, ParamValue, ShardDef, Type, Var, WireDef,
+  function::FlowType,
 };
 
 use crate::ast::*;
@@ -193,6 +194,9 @@ struct Lowerer<'a> {
   /// The read that took those past [`EVAL_CONST_NODES`]; kept apart from
   /// `problems`, which a repeated read truncates.
   const_overflow: Option<Problem>,
+  /// The flow parameters of the function whose body is being lowered: a
+  /// shard's flow argument naming one runs it (`{ Run(name) }`).
+  flow_params: Vec<String>,
 }
 
 /// What a value constant built from others may expand to, by its size as
@@ -215,8 +219,8 @@ const EVAL_CONST_NODES: usize = if cfg!(target_os = "espidf") {
   32_768
 };
 
-/// What lowering needs of a declared function: its parameter names and
-/// whether each has a default.
+/// What lowering needs of a declared function: its parameter names, and
+/// whether each is a flow parameter.
 struct FnShape {
   params: Vec<(String, bool)>,
 }
@@ -238,10 +242,16 @@ impl DeclView {
     }
   }
 
-  fn function(name: &str) -> DeclView {
+  /// A function's parameter: a value, or a block (`{...}`, or a flow
+  /// parameter of the calling function, passed on by name).
+  fn function(name: &str, flow: bool) -> DeclView {
     DeclView {
       name: name.to_string(),
-      forms: Forms::LITERAL.or(Forms::VARIABLE),
+      forms: if flow {
+        Forms::FLOW.or(Forms::VARIABLE)
+      } else {
+        Forms::LITERAL.or(Forms::VARIABLE)
+      },
       variadic: false,
     }
   }
@@ -283,6 +293,7 @@ pub fn lower(
     const_reads: 0,
     const_expansion: 0,
     const_overflow: None,
+    flow_params: Vec::new(),
   };
   let mut out = Lowered::default();
   // Function signatures first: a call may precede its declaration, and
@@ -320,11 +331,18 @@ pub fn lower(
     l.wire = function_key(&name);
     l.temps = 0;
     l.map.wires.insert(l.wire.clone(), span);
+    l.flow_params = out.functions[index]
+      .params
+      .iter()
+      .filter(|p| p.is_flow())
+      .map(|p| p.name.clone())
+      .collect();
     out.functions[index].body = match body {
       Some(stmts) => l.statements(stmts.iter(), &[]),
       None => Vec::new(),
     };
   }
+  l.flow_params.clear();
   let mut loose: Vec<&Statement> = Vec::new();
   for stmt in &program.statements {
     match top_level_func(stmt) {
@@ -677,7 +695,7 @@ impl Lowerer<'_> {
         params: def
           .params
           .iter()
-          .map(|p| (p.name.clone(), p.default.is_some()))
+          .map(|p| (p.name.clone(), p.is_flow()))
           .collect(),
       },
     );
@@ -822,17 +840,57 @@ impl Lowerer<'_> {
             name,
             ty: default.type_of(),
             default: Some(default),
+            flow: None,
+          }
+        }
+        [b] if matches!(&b.kind, BlockKind::Shard { name, .. } if name.node == "Flow") => {
+          FunctionParam {
+            name,
+            ty: Type::any(),
+            default: None,
+            flow: Some(self.flow_type(b)?),
           }
         }
         _ => FunctionParam {
           name,
           ty: self.type_expr(value)?,
           default: None,
+          flow: None,
         },
       };
       params.push(param);
     }
     Some(params)
+  }
+
+  /// A flow parameter's type: `Flow` (any input, Run passes its input
+  /// through), `Flow(input: T)`, or `Flow(input: T output: U)` (Run outputs
+  /// the block's output).
+  fn flow_type(&mut self, block: &Block) -> Option<FlowType> {
+    let usage = "`Flow`, `Flow(input: Int)` or `Flow(input: Int output: Int)`";
+    let BlockKind::Shard { params, .. } = &block.kind else {
+      unreachable!("a Flow block")
+    };
+    let mut ty = FlowType {
+      input: Type::any(),
+      output: None,
+    };
+    for param in params.as_ref().map(|p| &p.items[..]).unwrap_or(&[]) {
+      match param.name.as_ref().map(|n| n.node.as_str()) {
+        Some("input") => ty.input = self.type_expr(&param.value)?,
+        Some("output") => ty.output = Some(self.type_expr(&param.value)?),
+        _ => {
+          self.problem(Problem::construct(
+            param.value.span,
+            "generic",
+            "declaration",
+            format!("a flow parameter's type names its `input:` and `output:` types: {usage}"),
+          ));
+          return None;
+        }
+      }
+    }
+    Some(ty)
   }
 
   /// `uses: [gain]` or `uses: gain`: mesh variable names.
@@ -1897,7 +1955,7 @@ impl Lowerer<'_> {
           shape
             .params
             .iter()
-            .map(|(name, _)| DeclView::function(name))
+            .map(|(name, flow)| DeclView::function(name, *flow))
             .collect(),
         ),
       )
@@ -2147,6 +2205,18 @@ impl Lowerer<'_> {
       }
       BlockKind::Flow(stmts) => Some(ParamValue::Flow(self.statements(stmts.iter(), nested))),
       BlockKind::EmptyBraces if flow_accepted => Some(ParamValue::Flow(Vec::new())),
+      // A shard's flow argument naming a flow parameter runs its block.
+      BlockKind::Var { name, path }
+        if path.is_empty()
+          && flow_accepted
+          && !accepts(Forms::VARIABLE)
+          && self.flow_params.contains(&name.node) =>
+      {
+        let mut flow = Vec::new();
+        let run = ShardDef::with_args(&RUN, vec![Arg::pos(ParamValue::Var(name.node.clone()))]);
+        self.emit(&mut flow, nested, b.span, run);
+        Some(ParamValue::Flow(flow))
+      }
       BlockKind::Var { name, path } if path.is_empty() => {
         if accepts(Forms::WIRE) && !accepts(Forms::VARIABLE) {
           Some(ParamValue::Wire(name.node.clone()))

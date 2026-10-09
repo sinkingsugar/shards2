@@ -27,8 +27,38 @@ use crate::var::Var;
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct FunctionParam {
   pub name: String,
+  /// A value parameter's type (`Any` for a flow parameter).
   pub ty: Type,
   pub default: Option<Var>,
+  /// A flow parameter (docs/metaprogramming.md §3): the call passes a
+  /// block, which the body runs with `Run`. It is not a local of the body.
+  pub flow: Option<FlowType>,
+}
+
+impl FunctionParam {
+  pub fn is_flow(&self) -> bool {
+    self.flow.is_some()
+  }
+}
+
+/// The type of a flow parameter: `Flow(input: T output: U)`. The block
+/// composes with input `T` at the call site; with an output, `Run`
+/// outputs the block's (which `U` must accept), without one `Run` passes
+/// its input through, like `SubFlow`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct FlowType {
+  pub input: Type,
+  pub output: Option<Type>,
+}
+
+impl std::fmt::Display for FlowType {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    match (self.input == Type::any(), self.output) {
+      (true, None) => write!(f, "Flow"),
+      (false, None) => write!(f, "Flow(input: {})", self.input),
+      (_, Some(output)) => write!(f, "Flow(input: {} output: {output})", self.input),
+    }
+  }
 }
 
 /// A function as the loader produces it. Immutable; part of the compose
@@ -71,6 +101,7 @@ impl FunctionDef {
       name: name.to_string(),
       ty,
       default: None,
+      flow: None,
     });
     self
   }
@@ -81,8 +112,38 @@ impl FunctionDef {
       name: name.to_string(),
       ty: default.type_of(),
       default: Some(default),
+      flow: None,
     });
     self
+  }
+
+  /// A flow parameter: the call passes a block, the body runs it with
+  /// `Run(name)`.
+  pub fn flow_param(mut self, name: &str, ty: FlowType) -> FunctionDef {
+    self.params.push(FunctionParam {
+      name: name.to_string(),
+      ty: Type::any(),
+      default: None,
+      flow: Some(ty),
+    });
+    self
+  }
+
+  /// The flow parameter `name`: its index among the flow parameters and
+  /// its type.
+  pub fn flow_param_index(&self, name: &str) -> Option<(usize, FlowType)> {
+    self
+      .params
+      .iter()
+      .filter_map(|p| Some((p.name.as_str(), p.flow?)))
+      .enumerate()
+      .find(|(_, (n, _))| *n == name)
+      .map(|(i, (_, ty))| (i, ty))
+  }
+
+  /// Whether the function takes a block.
+  pub fn has_flow_params(&self) -> bool {
+    self.params.iter().any(FunctionParam::is_flow)
   }
 
   pub fn stateful(mut self) -> FunctionDef {
@@ -146,8 +207,15 @@ impl FunctionDef {
           .iter()
           .map(|p| Parameter {
             name: p.name.clone().into(),
-            help: "".into(),
-            forms: Forms::LITERAL.or(Forms::VARIABLE),
+            help: match p.flow {
+              Some(flow) => flow.to_string().into(),
+              None => "".into(),
+            },
+            forms: if p.is_flow() {
+              Forms::FLOW
+            } else {
+              Forms::LITERAL.or(Forms::VARIABLE)
+            },
             ty: p.ty,
             requirement: match &p.default {
               Some(v) => ParameterRequirement::Default(v.clone()),
@@ -196,7 +264,8 @@ pub struct CompiledFunction {
   /// (`Keep` slots among them, listed in `keeps`).
   pub locals: FrameLayout,
   pub input_slot: usize,
-  /// One slot per declared parameter, in declaration order.
+  /// One slot per declared value parameter, in declaration order (flow
+  /// parameters have none: their blocks run on the caller's locals).
   pub param_slots: Vec<usize>,
   pub keeps: Vec<KeepSlot>,
   /// Everything the body's compose read, for revalidation by callers.
@@ -214,6 +283,10 @@ pub struct CompiledFunction {
   /// A straight-line body with no call site or loop of its own: nothing
   /// to check for readiness at entry.
   pub(crate) vm_leaf: bool,
+  /// A body with flow parameters that is straight-line except for the
+  /// `Run`s of its blocks: a site passing straight-line blocks inlines it
+  /// with the blocks in place of the `Run`s (docs/metaprogramming.md §3.2).
+  pub(crate) block_leaf: bool,
   /// Functions this body (or a callee's) calls lazily, by name: members of
   /// a recursive group not closed when the body was composed. A caller
   /// still composing one of them is inside that group, and calls this
@@ -279,11 +352,22 @@ pub enum CallTarget {
   },
 }
 
-/// A call site: the target and the argument operands, one per declared
-/// parameter, in declaration order.
+/// A call site: the target, the argument operands (one per declared value
+/// parameter) and the blocks (one per flow parameter), in declaration order.
 pub struct CallCompiled {
   pub target: CallTarget,
   pub args: Vec<Operand>,
+  pub blocks: Vec<BlockArg>,
+}
+
+/// What a call passes for a flow parameter (docs/metaprogramming.md §3.2).
+pub enum BlockArg {
+  /// A block written at the call site, composed against the caller's
+  /// scope: it runs on the caller's locals.
+  Flow(CompiledFlow),
+  /// A flow parameter of the calling function, passed on: the block its
+  /// own caller passed (an index among the caller's flow parameters).
+  Forward(u32),
 }
 
 impl CallCompiled {

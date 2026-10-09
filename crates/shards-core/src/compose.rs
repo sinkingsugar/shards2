@@ -16,7 +16,9 @@ use crate::args::{Args, decode};
 use crate::diagnostic::{Diagnostic, PathStep, Phase, TypeRef};
 use crate::error::{Error, Result};
 use crate::flow::{CompiledFlow, NO_ORIGIN, OriginName, OriginStep};
-use crate::function::{CallCompiled, CallTarget, CompiledFunction, FunctionDef, KeepSlot};
+use crate::function::{
+  BlockArg, CallCompiled, CallTarget, CompiledFunction, FlowType, FunctionDef, KeepSlot,
+};
 use crate::reload::{FunctionKey, FunctionRegistry};
 use crate::shard::{CompiledNode, Composed, ParamValue, ShardDef, ShardType};
 use crate::shards::Operand;
@@ -264,6 +266,118 @@ impl Flat {
     self.append_rebased(flow, slots, &prefix);
   }
 
+  /// `inline` for a callee that runs blocks its call passed: each `Run`
+  /// of the callee's code is replaced by its block's code, which addresses
+  /// the caller's slots as composed at the call site; a `Run` without an
+  /// output saves its input in `saved` and restores it after the block.
+  /// The callee's own nodes and the blocks' all count as the inlined call.
+  fn inline_blocks(
+    &mut self,
+    flow: &CompiledFlow,
+    slots: usize,
+    function: impl FnOnce() -> Arc<str>,
+    blocks: &[(&CompiledFlow, &str)],
+    saved: Option<Binding>,
+  ) {
+    let start = self.node_base();
+    // The callee's nodes, without its `Run`s.
+    let mut node_map = vec![crate::flow::NO_NODE; flow.nodes.len()];
+    for (i, node) in flow.nodes.iter().enumerate() {
+      if !matches!(node.control(), Some(Control::Run(_))) {
+        node_map[i] = self.node_base();
+        self.nodes.push(node.clone());
+      }
+    }
+    // The callee's origins hang below the call through the function.
+    let (root, steps) = if self.record {
+      let root = self.step(OriginStep::Function(function()), self.current);
+      let steps = u32::try_from(self.steps.len()).expect("origin count fits u32");
+      if let Some(origins) = &flow.origins {
+        let rebase = |at: u32| if at == NO_ORIGIN { root } else { at + steps };
+        self.steps.extend(
+          origins
+            .steps
+            .iter()
+            .map(|(step, parent)| (step.clone(), rebase(*parent))),
+        );
+      }
+      (root, steps)
+    } else {
+      (NO_ORIGIN, 0)
+    };
+    let mut pcs = Vec::with_capacity(flow.code.len() + 1);
+    let mut jumps = Vec::new();
+    for (pc, (instruction, node)) in flow.code.iter().zip(&flow.pc_nodes).enumerate() {
+      pcs.push(self.here());
+      let run = match *node {
+        crate::flow::NO_NODE => None,
+        node => match flow.nodes[node as usize].control() {
+          Some(Control::Run(run)) => Some(run),
+          _ => None,
+        },
+      };
+      if let Some(run) = run {
+        let (block, param) = blocks[run.param as usize];
+        // Run passes its input on unless what follows replaces it anyway.
+        let restored = run.passthrough
+          && !flow
+            .code
+            .get(pc + 1)
+            .is_some_and(crate::inline::Instruction::ignores_accumulator);
+        let saved = restored.then(|| saved.expect("a hidden slot for the input"));
+        if let Some(saved) = saved {
+          self.op(crate::inline::Op::Set(saved), Type::any());
+        }
+        if run.ignores_input {
+          self.op(crate::inline::Op::Const(Var::None), Type::none());
+        }
+        // Lexically the caller's: below the call, at its parameter.
+        self
+          .released_slots
+          .extend(block.released_slots().iter().copied());
+        self.append_rebased(block, 0, &[OriginStep::Param(param.to_string().into())]);
+        if let Some(saved) = saved {
+          self.op(crate::inline::Op::get(saved), Type::any());
+        } else if run.discards_output
+          && !flow
+            .code
+            .get(pc + 1)
+            .is_some_and(crate::inline::Instruction::ignores_accumulator)
+        {
+          self.op(crate::inline::Op::Const(Var::None), Type::none());
+        }
+        continue;
+      }
+      if self.record {
+        let at = flow.origins.as_ref().map_or(NO_ORIGIN, |o| o.at[pc]);
+        self
+          .origins
+          .push(if at == NO_ORIGIN { root } else { at + steps });
+      }
+      let mut instruction = instruction.clone();
+      if slots != 0 {
+        instruction.rebase_locals(slots);
+      }
+      if instruction.jump_target().is_some() {
+        jumps.push(self.code.len());
+      }
+      self.code.push(instruction);
+      self.pc_nodes.push(match *node {
+        crate::flow::NO_NODE => crate::flow::NO_NODE,
+        node => node_map[node as usize],
+      });
+    }
+    pcs.push(self.here());
+    for at in jumps {
+      let target = self.code[at].jump_target().expect("a jump");
+      self.code[at].retarget(pcs[target as usize]);
+    }
+    if let Some(saved) = saved {
+      self.release(saved, Type::any());
+    }
+    self.inlined.push((start, self.node_base() - start));
+  }
+
   /// Ends the value of a hidden slot holding a value of type `ty` here
   /// (`Op::Clear`; the accumulator keeps it if it reads the slot), unless
   /// the value owns no heap storage.
@@ -496,6 +610,14 @@ pub struct ComposeCtx<'a> {
   lazy_refs: Vec<String>,
   /// `CompiledFunction::inline_depth` of the body being composed.
   inline_depth: u8,
+  /// How many blocks passed to a call (flow arguments) enclose the shard
+  /// being composed: a `Return` there would leave the block
+  /// (`control-in-flow`), and `Once` would not persist.
+  flow_args: usize,
+  /// The block being composed for a call's flow parameter, with the
+  /// parameter's name: what a diagnostic path names for it (a call has no
+  /// decoded `Args` to find it in).
+  block_param: Option<(*const ShardDef, Arc<str>)>,
 }
 
 /// How deeply flows may nest, counting function bodies and wires composed
@@ -589,6 +711,35 @@ impl ComposeCtx<'_> {
     matches!(self.owner, Owner::Eval)
   }
 
+  /// The flow parameter `name` of the function being composed: its index
+  /// among the function's flow parameters, and its type.
+  pub fn flow_param(&self, name: &str) -> Option<(usize, FlowType)> {
+    match &self.owner {
+      Owner::Function(def) => def.flow_param_index(name),
+      Owner::Wire | Owner::Eval => None,
+    }
+  }
+
+  /// Whether the shard being composed is inside a block passed to a call
+  /// (docs/metaprogramming.md §3.1): it runs inside the callee.
+  pub fn in_flow_argument(&self) -> bool {
+    self.flow_args > 0
+  }
+
+  /// `flow-escapes`: a flow parameter used other than run or passed on.
+  pub(crate) fn flow_escapes(&self, name: &str, shard: &str) -> Option<Error> {
+    self.flow_param(name)?;
+    Some(Error::Diagnostic(Box::new(
+      compose_diagnostic(
+        "flow-escapes",
+        format!(
+          "{name} is a flow parameter: it can only be run (`Run({name})`) or passed on as a flow argument to another call, not read, bound, assigned, returned or stored"
+        ),
+      )
+      .shard(shard),
+    )))
+  }
+
   /// The function being composed, if any (for messages).
   pub fn function_name(&self) -> Option<&str> {
     match &self.owner {
@@ -630,6 +781,9 @@ impl ComposeCtx<'_> {
         .shard(shard),
       )))
     };
+    if let Some(err) = self.flow_escapes(name, shard) {
+      return Err(err);
+    }
     match self.var(name) {
       None => {
         if let Owner::Function(def) = &self.owner
@@ -777,8 +931,49 @@ impl ComposeCtx<'_> {
         let CallTarget::Direct(body) = &c.target else {
           return false;
         };
+        // The blocks written at the site, with their parameters' names,
+        // when they can stand in for the callee's `Run`s: straight-line
+        // code, and a block run more than once copied within the budget.
+        let mut blocks = Vec::with_capacity(c.blocks.len());
+        let names = body.def.params.iter().filter(|p| p.is_flow());
+        for (block, param) in c.blocks.iter().zip(names) {
+          match block {
+            BlockArg::Flow(flow)
+              if crate::inline::straight_line(&flow.code)
+                && !flow
+                  .code
+                  .iter()
+                  .any(|i| matches!(i.op, crate::inline::Op::VmCall)) =>
+            {
+              blocks.push((flow, param.name.as_str()));
+            }
+            _ => return false,
+          }
+        }
+        // A block is the site's own code; a second `Run` of it copies it.
+        let mut runs = vec![0usize; blocks.len()];
+        for node in &body.flow.pc_nodes {
+          if let Some(Control::Run(run)) = body
+            .flow
+            .nodes
+            .get(*node as usize)
+            .and_then(|n| n.control())
+          {
+            runs[run.param as usize] += 1;
+          }
+        }
+        let copies: usize = blocks
+          .iter()
+          .zip(&runs)
+          .map(|((block, _), runs)| block.code.len() * runs.saturating_sub(1))
+          .sum();
+        let leaf = if blocks.is_empty() {
+          body.vm_leaf
+        } else {
+          body.block_leaf && copies <= INLINE_BUDGET
+        };
         if c.stateful()
-          || !body.vm_leaf
+          || !leaf
           || !body.keeps.is_empty()
           || !body.lazy_refs.is_empty()
           || body.flow.code.len() > INLINE_BUDGET
@@ -816,7 +1011,36 @@ impl ComposeCtx<'_> {
         } else if !c.args.is_empty() {
           flat.op(Op::get(input_slot), input);
         }
-        flat.inline(&body.flow, base, || Arc::from(fdef.name.as_str()));
+        if blocks.is_empty() {
+          flat.inline(&body.flow, base, || Arc::from(fdef.name.as_str()));
+        } else {
+          // A slot for the input of a `Run` that passes it on, unless
+          // what follows each such `Run` replaces it anyway.
+          let passthrough = body
+            .flow
+            .code
+            .iter()
+            .zip(&body.flow.pc_nodes)
+            .enumerate()
+            .any(|(pc, (_, node))| {
+              matches!(
+                body.flow.nodes.get(*node as usize).and_then(|n| n.control()),
+                Some(Control::Run(run)) if run.passthrough
+              ) && !body
+                .flow
+                .code
+                .get(pc + 1)
+                .is_some_and(crate::inline::Instruction::ignores_accumulator)
+            });
+          let saved = passthrough.then(|| Binding::Local(self.declare_hidden(Type::any())));
+          flat.inline_blocks(
+            &body.flow,
+            base,
+            || Arc::from(fdef.name.as_str()),
+            &blocks,
+            saved,
+          );
+        }
         // The call's values end with it: every slot it used that may hold
         // a heap value is cleared, unless the callee's own code already
         // ended it last (a call inlined into the callee, whose slots then
@@ -959,9 +1183,24 @@ impl ComposeCtx<'_> {
     result
   }
 
+  /// The parameter holding a nested flow or wire (and the item, for a case
+  /// or a variadic argument): the decoded arguments of the shard being
+  /// composed, or the call whose block this is.
+  fn held(&self, child: &Child) -> Option<(std::borrow::Cow<'static, str>, Option<usize>)> {
+    if let Some((param, item)) = self.current_args.as_ref().and_then(|a| a.param_of(child)) {
+      return Some((param.into(), item));
+    }
+    match (child, &self.block_param) {
+      (Child::Flow(ptr), Some((block, name))) if std::ptr::eq(*ptr, *block) => {
+        Some((name.to_string().into(), None))
+      }
+      _ => None,
+    }
+  }
+
   fn child_prefix(&self, child: &Child) -> Vec<PathStep> {
     let mut path = Vec::new();
-    if let Some((param, item)) = self.current_args.as_ref().and_then(|a| a.param_of(child)) {
+    if let Some((param, item)) = self.held(child) {
       path.push(PathStep::Param(param.into()));
       if let Some(item) = item {
         path.push(PathStep::Item(item));
@@ -1002,14 +1241,13 @@ impl ComposeCtx<'_> {
       ));
     }
     let path_len = self.diagnostic_path.len();
-    let held = self
-      .current_args
-      .as_ref()
-      .and_then(|args| args.param_of(&Child::Flow(flow.as_ptr())));
-    if let Some((param, item)) = held {
-      self.diagnostic_path.push(PathStep::Param(param.into()));
+    let held = self.held(&Child::Flow(flow.as_ptr()));
+    if let Some((param, item)) = &held {
+      self
+        .diagnostic_path
+        .push(PathStep::Param(param.to_string()));
       if let Some(item) = item {
-        self.diagnostic_path.push(PathStep::Item(item));
+        self.diagnostic_path.push(PathStep::Item(*item));
       }
     }
     self.depth += 1;
@@ -1303,8 +1541,14 @@ impl ComposeCtx<'_> {
       ));
     }
     // Labels are validated against the parameter list first; then each
-    // argument is a literal or a variable read once at entry.
-    let mut given: Vec<Option<Operand>> = vec![None; fdef.params.len()];
+    // argument is a literal or a variable read once at entry, or, for a
+    // flow parameter, a block composed here against this scope (or a flow
+    // parameter of this function, passed on).
+    enum Given {
+      Value(Operand),
+      Block(BlockArg),
+    }
+    let mut given: Vec<Option<Given>> = (0..fdef.params.len()).map(|_| None).collect();
     let mut seen_named = false;
     for (position, arg) in def.args.iter().enumerate() {
       let index = match &arg.name {
@@ -1359,6 +1603,11 @@ impl ComposeCtx<'_> {
           .with_param(&param.name, index),
         );
       }
+      if let Some(flow) = param.flow {
+        let block = self.compose_block(name, &param.name, index, flow, &arg.value)?;
+        given[index] = Some(Given::Block(block));
+        continue;
+      }
       let (operand, ty) = match &arg.value {
         ParamValue::Value(v) => (Operand::Const(v.clone().into_struct_tables()), v.type_of()),
         ParamValue::Var(var) => {
@@ -1403,12 +1652,17 @@ impl ComposeCtx<'_> {
           vec![TypeRef::of(param.ty)],
         ));
       }
-      given[index] = Some(operand);
+      given[index] = Some(Given::Value(operand));
     }
     let mut args = Vec::with_capacity(fdef.params.len());
-    for (index, (param, operand)) in fdef.params.iter().zip(given).enumerate() {
-      args.push(match (operand, &param.default) {
-        (Some(operand), _) => operand,
+    let mut blocks = Vec::new();
+    for (index, (param, given)) in fdef.params.iter().zip(given).enumerate() {
+      args.push(match (given, &param.default) {
+        (Some(Given::Value(operand)), _) => operand,
+        (Some(Given::Block(block)), _) => {
+          blocks.push(block);
+          continue;
+        }
         (None, Some(default)) => Operand::Const(default.clone().into_struct_tables()),
         (None, None) => {
           return Err(
@@ -1497,6 +1751,7 @@ impl ComposeCtx<'_> {
               def: fdef,
             },
             args,
+            blocks,
           },
           Lifetime::Stateless,
         ),
@@ -1571,11 +1826,102 @@ impl ComposeCtx<'_> {
     };
     Ok(Composed {
       compiled: crate::shard::erase::<crate::stackless::shards::Call>(
-        CallCompiled { target, args },
+        CallCompiled {
+          target,
+          args,
+          blocks,
+        },
         lifetime,
       ),
       output: fdef.output,
     })
+  }
+
+  /// The argument of flow parameter `param` (of type `ty`, at `index`) of
+  /// a call to `function`: a block, composed here against the caller's
+  /// scope with the parameter's input type (it may run any number of
+  /// times, so what it assigns is not definitely assigned after the call),
+  /// or a flow parameter of the function being composed, passed on.
+  fn compose_block(
+    &mut self,
+    function: &str,
+    param: &str,
+    index: usize,
+    ty: FlowType,
+    value: &ParamValue,
+  ) -> Result<BlockArg> {
+    match value {
+      ParamValue::Flow(defs) => {
+        let args = self.current_args.take();
+        let held = self.block_param.replace((defs.as_ptr(), Arc::from(param)));
+        self.flow_args += 1;
+        let result = self.compose_flow_conditional(defs, ty.input);
+        self.flow_args -= 1;
+        self.block_param = held;
+        self.current_args = args;
+        let flow = result.map_err(|err| err.prefix_path(PathStep::Param(param.to_string())))?;
+        // `output: None`: whatever the block outputs is discarded.
+        if let Some(output) = ty.output
+          && output != Type::none()
+          && !output.accepts(flow.output)
+        {
+          return Err(typed_error(
+            "compose-error",
+            "output-type-mismatch",
+            format!(
+              "{function}: the block for {param} outputs {}, but {param} is declared `{ty}`",
+              flow.output
+            ),
+            function,
+            Some((param, index)),
+            flow.output,
+            vec![TypeRef::of(output)],
+          ));
+        }
+        Ok(BlockArg::Flow(flow))
+      }
+      ParamValue::Var(name) => {
+        let Some((outer_index, outer)) = self.flow_param(name) else {
+          return Err(
+            fn_error(
+              function,
+              "wrong-argument-form",
+              format!(
+                "{function}: {param} takes a block `{{...}}` or a flow parameter of the calling function, got the variable {name}"
+              ),
+            )
+            .with_param(param, index),
+          );
+        };
+        // Every value Run passes must suit the block, and the block's
+        // output must suit what Run declares.
+        let fits = outer.input.accepts(ty.input)
+          && ty
+            .output
+            .is_none_or(|u| outer.output.is_some_and(|o| u.accepts(o)));
+        if !fits {
+          return Err(
+            fn_error(
+              function,
+              "wrong-argument-type",
+              format!("{function}: {param} is declared `{ty}`, but {name} is `{outer}`"),
+            )
+            .with_param(param, index),
+          );
+        }
+        Ok(BlockArg::Forward(
+          u32::try_from(outer_index).expect("flow parameter index fits u32"),
+        ))
+      }
+      _ => Err(
+        fn_error(
+          function,
+          "wrong-argument-form",
+          format!("{function}: {param} takes a block `{{...}}`"),
+        )
+        .with_param(param, index),
+      ),
+    }
   }
 
   /// An `unknown-variable` inside a callee that names one of the caller's
@@ -1913,6 +2259,8 @@ impl ComposeCache {
         keeps: Vec::new(),
         lazy_refs: Vec::new(),
         inline_depth: 0,
+        flow_args: 0,
+        block_param: None,
       });
       ctx
         .compose_flow_unscoped(&def.flow, input)
@@ -2013,6 +2361,8 @@ impl ComposeCache {
         keeps: Vec::new(),
         lazy_refs: Vec::new(),
         inline_depth: 0,
+        flow_args: 0,
+        block_param: None,
       });
       let slot_of = |info: VarInfo| match info.binding {
         Binding::Local(i) => i,
@@ -2021,6 +2371,7 @@ impl ComposeCache {
       let param_slots: Vec<usize> = def
         .params
         .iter()
+        .filter(|p| !p.is_flow())
         .map(|p| slot_of(ctx.declare_local(&p.name, p.ty, false)))
         .collect();
       let input_slot = slot_of(ctx.declare_local("input", input, false));
@@ -2120,18 +2471,35 @@ impl ComposeCache {
     }
     let native_state =
       flow.analysis.lifetime != Lifetime::Stateless || functions.values().any(|f| f.native_state);
-    let vm_only = !def.stateful && crate::inline::straight_line(&flow.code);
+    // A body that runs blocks needs its caller's frame for them: never a
+    // VM call (it may be inlined with its blocks in place, `block_leaf`).
+    let vm_only =
+      !def.stateful && !def.has_flow_params() && crate::inline::straight_line(&flow.code);
     let vm_leaf = vm_only
       && !flow
         .code
         .iter()
         .any(|i| matches!(i.op, crate::inline::Op::VmCall));
+    let block_leaf = !def.stateful
+      && def.has_flow_params()
+      && flow
+        .code
+        .iter()
+        .zip(&flow.pc_nodes)
+        .all(|(i, node)| match i.op {
+          crate::inline::Op::Fallback => {
+            matches!(flow.nodes[*node as usize].control(), Some(Control::Run(_)))
+          }
+          crate::inline::Op::VmCall => false,
+          _ => true,
+        });
     let compiled = Arc::new(CompiledFunction {
       def: def.clone(),
       input,
       native_state,
       vm_only,
       vm_leaf,
+      block_leaf,
       lazy_refs,
       inline_depth,
       flow,

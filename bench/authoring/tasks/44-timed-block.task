@@ -1,0 +1,16 @@
+=== prompt
+Write a function `Timed` with a block parameter `action`. It runs `action` once and outputs, as a Float, how many seconds that took (`Time.Now` outputs a time in seconds).
+
+Use it on an action that adds 1 to a counter starting at 0 and then pauses for 0.05 seconds, repeated 3 times inside the action. Log whether the measured time is at least 0.15 seconds (a Bool), then log the counter.
+=== expected
+true
+3
+=== reference
+@fn(Timed input: None output: Float params: {action: Flow(input: None)} {
+  Time.Now = start
+  Run(action)
+  Time.Now | Math.Subtract(start)
+})
+0 | Var(n)
+Timed(action: {Repeat({Inc(n) Pause(0.05)} times: 3)}) | IsMoreEqual(0.15) | Log
+n | Log

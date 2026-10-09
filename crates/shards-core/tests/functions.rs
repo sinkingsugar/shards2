@@ -1568,3 +1568,113 @@ fn evaluated_floats_keep_their_bits_and_print_back() {
     }
   }
 }
+
+// M9: flow parameters (docs/metaprogramming.md §3).
+
+fn run_action() -> ShardDef {
+  ShardDef::new(&shards_core::shards::RUN, vec![var("action")])
+}
+
+/// `Twice`: runs its block twice, the first result feeding the second.
+fn twice() -> FunctionDef {
+  FunctionDef::new("Twice", Type::int(), Type::int())
+    .flow_param(
+      "action",
+      shards_core::FlowType {
+        input: Type::int(),
+        output: Some(Type::int()),
+      },
+    )
+    .body(vec![run_action(), run_action()])
+}
+
+#[test]
+fn a_straight_line_block_is_inlined_with_its_callee_and_any_other_is_framed() {
+  for (block, inlined) in [
+    (vec![add(val(Var::Int(1)))], true),
+    (vec![probe("b"), add(val(Var::Int(1)))], false),
+  ] {
+    let mut mesh = Mesh::new();
+    mesh.add_function(twice());
+    mesh.add_wire(wire(
+      "root",
+      false,
+      vec![
+        konst(Var::Int(1)),
+        call("Twice", vec![named("action", ParamValue::Flow(block))]),
+      ],
+    ));
+    let root = mesh.compile("root", Type::none()).unwrap();
+    // Inlined: the callee's code and the block's, in place of the call and
+    // its `Run`s, all VM instructions.
+    let kinds = root.flow.instruction_kinds();
+    assert_eq!(!kinds.contains(&"fallback"), inlined, "{kinds:?}");
+    let (outcome, _) = run_logging(&mut mesh, 10);
+    assert_eq!(
+      outcome,
+      Outcome::Completed(Var::Int(3)),
+      "inlined: {inlined}"
+    );
+  }
+}
+
+#[test]
+fn a_loop_over_a_block_is_inlined_with_a_straight_line_block() {
+  // `Each`: runs the block on each of the first `n` elements.
+  let each = FunctionDef::new("Each", Type::seq(Type::int()), Type::seq(Type::int()))
+    .param("n", Type::int())
+    .flow_param(
+      "action",
+      shards_core::FlowType {
+        input: Type::int(),
+        output: None,
+      },
+    )
+    .body(vec![
+      bind("xs"),
+      konst(Var::Int(0)),
+      declare("i"),
+      while_(
+        vec![get("i"), is_less(var("n"))],
+        vec![get("xs"), take(var("i")), run_action(), inc("i")],
+      ),
+      get("xs"),
+    ]);
+  for (block, inlined) in [
+    (vec![add(var("total")), update("total")], true),
+    (vec![probe("b"), add(var("total")), update("total")], false),
+  ] {
+    let mut mesh = Mesh::new();
+    mesh.add_function(each.clone());
+    mesh.add_wire(wire(
+      "root",
+      false,
+      vec![
+        konst(Var::Int(0)),
+        declare("total"),
+        konst(Var::Seq(std::sync::Arc::new(vec![
+          Var::Int(1),
+          Var::Int(2),
+          Var::Int(3),
+        ]))),
+        call(
+          "Each",
+          vec![
+            named("n", val(Var::Int(3))),
+            named("action", ParamValue::Flow(block)),
+          ],
+        ),
+        get("total"),
+      ],
+    ));
+    let root = mesh.compile("root", Type::none()).unwrap();
+    let kinds = root.flow.instruction_kinds();
+    assert_eq!(!kinds.contains(&"fallback"), inlined, "{kinds:?}");
+    let (outcome, _) = run_logging(&mut mesh, 10);
+    assert_eq!(
+      outcome,
+      Outcome::Completed(Var::Int(6)),
+      "inlined: {inlined}"
+    );
+  }
+}

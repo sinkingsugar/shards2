@@ -1,0 +1,32 @@
+=== prompt
+Write a function `Retry` with an Int parameter `times` and a block parameter `action`. It runs `action` until a run succeeds, at most `times` times, and stops at the first success; if every run fails, `Retry` fails with the error of the last run. (`"x" | ParseInt` fails.)
+
+Use it twice. First, with `times: 5`, an action that adds 1 to a counter starting at 0, logs it with the label `attempt`, and fails while the counter is below 3; log `done` after the call. Second, with a new counter starting at 0 and `times: 2`, an action that adds 1 to that counter, logs it with the label `attempt`, and always fails; the call must not stop the program: log the counter with the label `failed after` afterwards.
+=== expected
+attempt: 1
+attempt: 2
+attempt: 3
+done
+attempt: 1
+attempt: 2
+failed after: 2
+=== reference
+@fn(Retry input: None output: None params: {times: Int action: Flow(input: None)} {
+  false | Var(done)
+  1 | Var(attempt)
+  While({All({done | Not} {attempt | IsLess(times)})} {
+    Maybe({Run(action) true | Update(done)} silent: true)
+    Inc(attempt)
+  })
+  When({done | Not} {Run(action)})
+  none
+})
+0 | Var(a)
+Retry(times: 5 action: {
+  Inc(a) a | Log("attempt")
+  When({a | IsLess(3)} {"x" | ParseInt})
+})
+"done" | Log
+0 | Var(b)
+Maybe({Retry(times: 2 action: {Inc(b) b | Log("attempt") "x" | ParseInt})} silent: true)
+b | Log("failed after")

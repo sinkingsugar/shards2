@@ -227,6 +227,8 @@ fn pipeline(
     keeps: Vec::new(),
     lazy_refs: Vec::new(),
     inline_depth: 0,
+    flow_args: 0,
+    block_param: None,
   });
   let compiled = ctx.compose_flow_unscoped(flow, Type::none())?;
   if let Some(err) = not_compose_time(&compiled.analysis) {

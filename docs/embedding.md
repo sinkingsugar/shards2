@@ -25,8 +25,17 @@ Choose the trait by what the shard does:
 | Returns at once (reads, computes, converts) | `LeafShard` | "Leaf" means it never suspends, not that it does little work. |
 | Does slow or blocking work (a long scan, a blocking library call, human-paced input) | `AsyncShard`, with `shards_io::runtime::spawn_blocking` | The work runs on the blocking pool. Only the waiting instance suspends; other wires keep running. |
 | Waits on async I/O | `AsyncShard`, with `shards_io::runtime::spawn` | Race every await against the cancellation token. |
+| Runs nested flows: a retry, a timeout, a lock, a UI container | `ControlShard` | Its flows are parameters; the engine runs them, suspensions included. See below. |
 
-Host shards do not implement the full `Shard` contract: control flow (running a nested flow, suspending in the middle of one) is core-only, because the engine enters children through a closed `Control` description and `activate` cannot run child flows. A host shard that needs a flow takes it as a parameter and hands it to a core control shard, or declares it as a function parameter; a public continuation protocol is an open design item (`docs/current-state.md`).
+### Control flow
+
+A shard that runs flows the script passes it implements `ControlShard` and is attached with `ShardType::new(desc).controlled_by::<S>()`. Declare each flow parameter with `Forms::FLOW` and compose it in `compose` with `ctx.compose_flow(flow, input_type)` (or `compose_flow_conditional` for a flow that may not run, so what it assigns is not definitely assigned after the shard): the flow composes against the caller's scope, reads and writes the caller's variables, and its effects become the shard's at that site. `flows(compiled)` returns the composed flows in a fixed order.
+
+The engine runs the flows; the shard decides. `resume(compiled, state, ctx, input, completion)` is called when the shard is reached (`completion` is `None`) and again with each flow's outcome, `Ok(output)` or the error it failed with. It returns `ControlStep::Enter(index, input)` to run flow `index` with that input, or `ControlStep::Complete(value)` to finish; returning an error fails the shard, and returning an error it received propagates it. A flow may suspend: the instance yields, and `resume` is called again only when the flow finishes. A `Stop`, `Restart` or `Return` inside a flow propagates without calling `resume`. `State` (a `Default` type) holds the progress of one activation, such as an attempt count or a start time; the engine sets it back to its default whenever the shard completes or a signal passes through, and drops it on cleanup, so it never holds a resource. Cancellation while a flow is suspended cleans up that flow's state like any other.
+
+The core's `Maybe` is written this way (`shards/control.rs`), as is the `Test.Retry` example in `crates/shards-lang/tests/lang.rs`. The full `Shard` contract's `control` hook remains the core's own.
+
+A script can also write control flow itself: a function parameter declared `Flow(input: T output: U)` takes a block, which the body runs with `Run` ([metaprogramming.md §3](metaprogramming.md#3-m9-flow-parameters)).
 
 ### Parameters
 

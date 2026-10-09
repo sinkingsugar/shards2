@@ -1,0 +1,4 @@
+Task,Model,ModelId,Variant,Trial,SemanticSuccess,FirstPassSuccess,FirstFailure,RepairRounds,Tokens,OutputTokens,LatencyMs,Failure
+44-timed-block,claude-sonnet-5-5,claude-sonnet-5-5,functions,1,true,true,,0,45656,602,6433,
+44-timed-block,claude-sonnet-5-5,claude-sonnet-5-5,functions,2,true,true,,0,45633,579,6509,
+44-timed-block,claude-sonnet-5-5,claude-sonnet-5-5,functions,3,true,true,,0,45645,591,6824,

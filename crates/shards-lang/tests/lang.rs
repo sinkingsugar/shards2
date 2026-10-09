@@ -2784,6 +2784,28 @@ fn compose_time_failures_point_at_the_shard_that_failed() {
       (1, "Math.Divide"),
       "root/0:Const/value/#()/2:Repeat/action/1:Big/Big()/27:Math.Divide",
     ),
+    // A block a function runs, where the call wrote it: in a frame of its
+    // own, inlined with its callee, and passed on through another function.
+    (
+      format!("{TWICE}#( 1 | Twice(action: {{\"x\" | ParseInt}}) ) | Log"),
+      "is not an Int",
+      (4, "ParseInt"),
+      "root/0:Const/value/#()/1:Twice/action/1:ParseInt",
+    ),
+    (
+      format!("{TWICE}#( 1 | Twice(action: {{Math.Divide(0)}}) ) | Log"),
+      "division by zero",
+      (4, "Math.Divide"),
+      "root/0:Const/value/#()/1:Twice/action/0:Math.Divide",
+    ),
+    (
+      format!(
+        "{TWICE}@fn(Outer input: Int output: Int params: {{action: Flow(input: Int output: Int)}} {{ Twice(action: action) }})\n#( 1 | Outer(action: {{\"x\" | ParseInt}}) ) | Log"
+      ),
+      "is not an Int",
+      (5, "ParseInt"),
+      "root/0:Const/value/#()/1:Outer/action/1:ParseInt",
+    ),
   ] {
     let d = compose_errors(&source);
     assert_eq!(d[0].code, "compose-time-error", "{source}: {d:?}");
@@ -2918,4 +2940,367 @@ fn preserving_reload_updates_compose_time_values() {
     session.tick();
   });
   assert_eq!(lines, ["10", "11", "20", "21"]);
+}
+
+// --- M9: flow parameters (docs/metaprogramming.md §3) ---
+
+/// `Retry` as a function: runs the block up to `times` times, stops at the
+/// first success, and fails with the last attempt's error.
+const RETRY: &str = r#"@fn(Retry input: None output: None params: {times: Int action: Flow(input: None)} {
+  false | Var(done)
+  1 | Var(attempt)
+  While({All({done | Not} {attempt | IsLess(times)})} {
+    Maybe({Run(action) true | Update(done)} silent: true)
+    Inc(attempt)
+  })
+  When({done | Not} {Run(action)})
+  none
+})
+"#;
+
+/// `Timed` as a function: the seconds the block took.
+const TIMED: &str = r#"@fn(Timed input: None output: Float params: {action: Flow(input: None)} {
+  Time.Now = start
+  Run(action)
+  Time.Now | Math.Subtract(start)
+})
+"#;
+
+/// The same `Retry`, as a native composite a host crate writes against the
+/// public interface (`ControlShard`): this test crate is not shards-core.
+mod host_retry {
+  use shards_core::describe::{
+    Forms, InputDesc, OutputDesc, ParamDecl, Params, Requirement, ShardDesc, Targets, TypeName,
+  };
+  use shards_core::flow::CompiledFlow;
+  use shards_core::{ActivationCtx, Args, ComposeCtx, Composed, ControlShard, ControlStep};
+  use shards_core::{Result, ShardType, Var};
+
+  static PARAMS: &[ParamDecl] = &[
+    ParamDecl::new(
+      "times",
+      "",
+      Forms::LITERAL,
+      &[TypeName::Int],
+      Requirement::Required,
+    ),
+    ParamDecl::new("action", "", Forms::FLOW, &[], Requirement::Required),
+  ];
+
+  pub static RETRY: ShardType = ShardType::new(ShardDesc {
+    params: Params::Declared(PARAMS),
+    input: InputDesc::Any,
+    output: OutputDesc::Passthrough,
+    targets: Targets::All,
+    effects: shards_core::signature::Effects::NONE,
+    lifetime: shards_core::signature::Lifetime::Stateless,
+    ..ShardDesc::undocumented("Test.Retry", 1)
+  })
+  .controlled_by::<Retry>();
+
+  pub struct Retry;
+
+  pub struct Compiled {
+    flows: Vec<CompiledFlow>,
+    times: i64,
+  }
+
+  /// The attempt running.
+  #[derive(Default)]
+  pub struct Attempt(i64);
+
+  impl ControlShard for Retry {
+    type Compiled = Compiled;
+    type State = Attempt;
+    const NAME: &'static str = "Test.Retry";
+
+    fn compose(args: &Args, ctx: &mut ComposeCtx<'_>) -> Result<Composed<Compiled>> {
+      let input = ctx.input();
+      let action = ctx.compose_flow_conditional(args.flow("action").expect("decoded"), input)?;
+      Ok(Composed {
+        compiled: Compiled {
+          flows: vec![action],
+          times: args.int("times").expect("decoded"),
+        },
+        output: input,
+      })
+    }
+
+    fn flows(compiled: &Compiled) -> &[CompiledFlow] {
+      &compiled.flows
+    }
+
+    fn resume(
+      compiled: &Compiled,
+      attempt: &mut Attempt,
+      _: &mut ActivationCtx<'_>,
+      input: &Var,
+      completion: Option<Result<Var>>,
+    ) -> Result<ControlStep> {
+      match completion {
+        None => {
+          attempt.0 = 1;
+          Ok(ControlStep::Enter(0, input.clone()))
+        }
+        Some(Ok(_)) => Ok(ControlStep::Complete(input.clone())),
+        Some(Err(_)) if attempt.0 < compiled.times => {
+          attempt.0 += 1;
+          Ok(ControlStep::Enter(0, input.clone()))
+        }
+        Some(Err(err)) => Err(err),
+      }
+    }
+  }
+}
+
+/// Compose (or load) errors of a source, located.
+fn check_errors(text: &str) -> Vec<Diagnostic> {
+  let report = check(text);
+  assert!(!report.ok(), "expected errors");
+  report.diagnostics
+}
+
+fn host_catalog() -> Catalog {
+  Catalog::new(&[shards_core::shards::CATALOG, &[&host_retry::RETRY]]).unwrap()
+}
+
+fn run_with(catalog: &Catalog, text: &str) -> shards_lang::RunReport {
+  match Program::load(Source::new("t.shs", text), catalog, &no_defines()) {
+    Ok(p) => p.run().unwrap_or_else(|d| panic!("run failed: {d:?}")),
+    Err((_, d)) => panic!("load failed: {d:?}"),
+  }
+}
+
+/// A call of the script `Retry`, or the same through the host composite.
+fn retry_call(host: bool, times: u32, block: &str) -> String {
+  if host {
+    format!("Test.Retry(times: {times} action: {{{block}}})")
+  } else {
+    format!("Retry(times: {times} action: {{{block}}})")
+  }
+}
+
+#[test]
+fn retry_stops_at_the_first_success_and_updates_the_callers_variables() {
+  for host in [false, true] {
+    // Fails on the first two attempts, through a suspension each.
+    let block = r#"Inc(tries) tries | Log("try") Pause When({tries | IsLess(3)} {"x" | ParseInt})"#;
+    let text = format!(
+      "{RETRY}0 | Var(tries)\nnone | {}\ntries",
+      retry_call(host, 5, block)
+    );
+    let (report, lines) = shards_core::log::capture(|| run_with(&host_catalog(), &text));
+    assert_eq!(completed(&report, "root"), Var::Int(3), "host: {host}");
+    assert_eq!(lines, ["try: 1", "try: 2", "try: 3"], "host: {host}");
+  }
+}
+
+#[test]
+fn retry_fails_with_the_last_attempts_error_which_a_maybe_around_it_catches() {
+  for host in [false, true] {
+    let block = r#"Inc(tries) f"x{tries}" | ParseInt"#;
+    let text = format!(
+      "{RETRY}0 | Var(tries)\nMaybe({{none | {}}} {{-1}})\ntries",
+      retry_call(host, 3, block)
+    );
+    let (report, lines) = shards_core::log::capture(|| run_with(&host_catalog(), &text));
+    assert_eq!(completed(&report, "root"), Var::Int(3), "host: {host}");
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(lines[0].contains("\"x3\""), "host: {host}: {lines:?}");
+  }
+}
+
+#[test]
+fn cancelling_a_suspended_block_cleans_every_state_once() {
+  for host in [false, true] {
+    shards_core::shards::take_probe_events();
+    let text = format!(
+      "{RETRY}@wire(main {{ Probe(\"caller\") 0 | Var(tries) none | {} }} looped: true)\n@mesh(m) @schedule(m main) @run(m)",
+      retry_call(host, 3, r#"Probe("block") Inc(tries) Pause(10.0)"#)
+    );
+    let mut session = shards_lang::Session::new();
+    session
+      .reload(Source::new("t.shs", &text), &host_catalog(), &no_defines())
+      .unwrap_or_else(|(_, d)| panic!("load failed: {d:?}"));
+    session.tick();
+    session.tick();
+    session.stop();
+    let events = shards_core::shards::take_probe_events();
+    for tag in ["caller", "block"] {
+      let count = |kind| {
+        events
+          .iter()
+          .filter(|e| &*e.tag == tag && e.kind == kind)
+          .count()
+      };
+      use shards_core::shards::ProbeEventKind::*;
+      assert_eq!(count(Instantiate), 1, "host: {host}, {tag}");
+      assert_eq!(count(Cleanup), 1, "host: {host}, {tag}");
+    }
+  }
+}
+
+#[test]
+fn timed_outputs_the_seconds_its_block_took() {
+  let text = format!(
+    "{TIMED}0 | Var(n)\nTimed(action: {{Pause(0.02) Inc(n)}}) = took\n[took | IsMoreEqual(0.02) n]"
+  );
+  assert_eq!(
+    completed(&run(&text, &no_defines()), "root"),
+    Var::Seq(std::sync::Arc::new(vec![Var::Bool(true), Var::Int(1)]))
+  );
+}
+
+/// Runs its block twice, feeding the first result to the second.
+const TWICE: &str = "@fn(Twice input: Int output: Int params: {action: Flow(input: Int output: Int)} {\n  Run(action) | Run(action)\n})\n";
+
+/// A loop over the first `n` elements, as a function: inlined with its
+/// block when the block is straight-line code (`n` is a parameter because
+/// `Count` has no VM form), framed otherwise.
+const EACH: &str = r#"@fn(Each input: [Int] output: [Int] params: {n: Int action: Flow(input: Int)} {
+  = xs
+  0 | Var(i)
+  While({i | IsLess(n)} { xs | Take(i) | Run(action) Inc(i) })
+  xs
+})
+"#;
+
+/// `Each`, counting the sequence itself: `Count` has no VM form, so the
+/// call keeps its frame, and `Run` runs a block of leaf code in place.
+const EACH_COUNTED: &str = r#"@fn(Each input: [Int] output: [Int] params: {n: Int action: Flow(input: Int)} {
+  = xs
+  0 | Var(i)
+  xs | Count = m
+  While({i | IsLess(n)} { xs | Take(i) | Run(action) Inc(i) })
+  xs
+})
+"#;
+
+#[test]
+fn the_inlined_and_the_framed_paths_behave_the_same() {
+  // Inlined with its callee; run in place by a framed callee's `Run`; in a
+  // frame of its own (`Probe` is not leaf code).
+  for (each, framed) in [(EACH, ""), (EACH_COUNTED, ""), (EACH, r#"Probe("b")"#)] {
+    let case = format!("{framed:?} counted: {}", each == EACH_COUNTED);
+    // Caller mutation.
+    let text = format!(
+      "{each}0 | Var(total)\n[1 2 3] | Each(n: 3 action: {{{framed} Math.Add(total) | Update(total)}})\ntotal"
+    );
+    assert_eq!(
+      completed(&run(&text, &no_defines()), "root"),
+      Var::Int(6),
+      "{case}"
+    );
+    // A failure inside the block, after it updated the caller.
+    let text = format!(
+      "{each}0 | Var(total)\n[0 1 2] = ks\nMaybe({{[1 5 2] | Each(n: 3 action: {{{framed} = k ks | Take(k) | Math.Add(total) | Update(total)}})}} silent: true)\ntotal"
+    );
+    assert_eq!(
+      completed(&run(&text, &no_defines()), "root"),
+      Var::Int(1),
+      "{case}"
+    );
+    // Cancellation: the caller suspends after the call; nothing leaks.
+    shards_core::shards::take_probe_events();
+    let text = format!(
+      "{each}@wire(main {{ Probe(\"caller\") 0 | Var(total) [1 2] | Each(n: 2 action: {{{framed} Math.Add(total) | Update(total)}}) Pause(10.0) }} looped: true)\n@mesh(m) @schedule(m main) @run(m)"
+    );
+    let mut session = shards_lang::Session::new();
+    session
+      .reload(Source::new("t.shs", &text), &catalog(), &no_defines())
+      .unwrap_or_else(|(_, d)| panic!("load failed: {d:?}"));
+    session.tick();
+    session.stop();
+    let events = shards_core::shards::take_probe_events();
+    let count = |kind| events.iter().filter(|e| e.kind == kind).count();
+    use shards_core::shards::ProbeEventKind::*;
+    assert_eq!(count(Instantiate), count(Cleanup), "{case}");
+  }
+}
+
+#[test]
+fn a_flow_parameter_passes_on_to_functions_and_native_shards() {
+  let text = format!(
+    "{RETRY}@fn(Twice input: None output: None params: {{action: Flow(input: None)}} {{ Retry(times: 2 action: action) When({{true}} action) none }})\n0 | Var(n)\nTwice(action: {{Inc(n)}})\nn"
+  );
+  assert_eq!(completed(&run(&text, &no_defines()), "root"), Var::Int(2));
+}
+
+#[test]
+fn return_and_stop_inside_blocks() {
+  // A Return leaving the block is refused, located at the Return.
+  let d = check_errors(&format!("{RETRY}Retry(times: 2 action: {{Return}})"));
+  assert_eq!((d[0].code, at(&d[0])), ("control-in-flow", (11, 25)));
+  // A Return inside a function the block calls ends that function.
+  let text = format!(
+    "{RETRY}@fn(Early input: None output: Int params: {{}} {{ 1 | Return 2 }})\n0 | Var(n)\nRetry(times: 2 action: {{Early | Update(n)}})\nn"
+  );
+  assert_eq!(completed(&run(&text, &no_defines()), "root"), Var::Int(1));
+  // Stop inside a block ends the wire.
+  let text = format!("{RETRY}Retry(times: 2 action: {{Stop}})\n\"after\" | Log");
+  let (report, lines) = shards_core::log::capture(|| run(&text, &no_defines()));
+  assert!(lines.is_empty(), "{lines:?}");
+  assert!(
+    matches!(&report.outcomes[0].1, Some(Outcome::Stopped)),
+    "{:?}",
+    report.outcomes
+  );
+}
+
+#[test]
+fn a_flow_parameter_cannot_escape_its_call() {
+  let header = "@fn(F input: Int output: Int params: {action: Flow(input: Int output: Int)} {";
+  for (body, column) in [
+    ("action = f 1", 79),                     // bound with `=`
+    ("action | Var(f) 1", 79),                // bound with Var
+    ("action | Return", 79),                  // returned
+    ("[action] | Count", 79),                 // stored in a collection
+    ("1 | Var(xs) [1] | Push(action) 1", 97), // assigned
+  ] {
+    let d = check_errors(&format!(
+      "{header} {body} }})\n1 | F(action: {{Math.Add(1)}})"
+    ));
+    assert_eq!(d[0].code, "flow-escapes", "{body}: {:?}", d[0]);
+    assert_eq!(at(&d[0]), (1, column), "{body}");
+  }
+  // Kept, or written to a mesh variable, from a stateful function.
+  let d = check_errors(
+    "@fn(F stateful: true input: Int output: Int params: {action: Flow(input: Int output: Int)} { Keep(action 0) })\n1 | F(action: {Math.Add(1)})",
+  );
+  assert_eq!(d[0].code, "duplicate-binding", "{:?}", d[0]);
+  let d = check_errors(
+    "@fn(F input: Int output: Int params: {action: Flow(input: Int output: Int)} { action | Update(level) })\n1 | F(action: {Math.Add(1)})",
+  );
+  assert_eq!(d[0].code, "flow-escapes", "{:?}", d[0]);
+}
+
+#[test]
+fn the_same_function_has_the_effects_of_each_sites_block() {
+  let report = check(
+    "@fn(Twice input: Int output: Int params: {action: Flow(input: Int output: Int)} { Run(action) | Run(action) })\n1 | Twice(action: {Math.Add(1)})\n2 | Twice(action: {Pause Math.Add(1)})",
+  );
+  assert!(report.ok(), "{}", report.to_json());
+  let sites: Vec<bool> = report.wires[0]
+    .occurrences
+    .iter()
+    .filter(|o| o.occurrence.path.len() == 2)
+    .filter(|o| {
+      matches!(&o.occurrence.path[1], shards_core::diagnostic::PathStep::Shard { name, .. } if name == "Twice")
+    })
+    .map(|o| o.occurrence.effects.suspends)
+    .collect();
+  assert_eq!(sites, [false, true]);
+  let json = report.to_json();
+  assert!(json.contains("\"suspends\":true"), "{json}");
+}
+
+#[test]
+fn ignored_inputs_and_outputs_of_blocks() {
+  // `input: None`: the block receives none, whatever Run's input; `output:
+  // None`: the block's output is discarded and Run outputs none.
+  let text = "@fn(Both input: Int output: None params: {action: Flow(input: None output: None)} { Run(action) })\n0 | Var(n)\n5 | Both(action: {Inc(n) n | Math.Add(10)}) = out\n[out n]";
+  assert_eq!(
+    completed(&run(text, &no_defines()), "root"),
+    Var::Seq(std::sync::Arc::new(vec![Var::None, Var::Int(1)]))
+  );
 }

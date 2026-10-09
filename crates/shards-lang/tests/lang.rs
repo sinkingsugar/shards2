@@ -2665,6 +2665,30 @@ fn a_lookup_table_constant_is_shared_by_every_read() {
 }
 
 #[test]
+fn a_table_constant_built_from_copies_composes_as_it_is_held() {
+  // A constant holding 8 copies of one holding 8 copies ..., of a table,
+  // read many times: compose converts, types, hashes and compares it as
+  // held (each level once), not expanded at every read. Natively about
+  // 850 KB as text, which each read once rebuilt in full. On the device
+  // 3 levels, within its value limit.
+  let (levels, reads) = if cfg!(target_os = "espidf") {
+    (3, 16)
+  } else {
+    (5, 400)
+  };
+  let mut source = String::from("@const(t0 {a: 1})\n");
+  for i in 1..=levels {
+    let p = format!("@t{}", i - 1);
+    source += &format!("@const(t{i} [{p} {p} {p} {p} {p} {p} {p} {p}])\n");
+  }
+  for i in 0..reads {
+    source += &format!("@t{levels} | Count = c{i}\n");
+  }
+  source += &format!("c{} | Log", reads - 1);
+  assert_eq!(lines_of(&source), ["8"]);
+}
+
+#[test]
 fn compose_time_cycles_are_reported_where_they_close() {
   // A function whose body evaluates itself.
   let d = compose_errors(

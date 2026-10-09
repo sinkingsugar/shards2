@@ -25,7 +25,7 @@ use crate::types::Type;
 use crate::var::Var;
 
 /// A parameter as the loader produces it. Immutable, and part of the cache key.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ParamValue {
   /// A constant value.
   Value(Var),
@@ -42,6 +42,29 @@ pub enum ParamValue {
   /// docs/metaprogramming.md §2): compose runs it with no input and passes
   /// its value on as a `Value`, wherever a literal is accepted.
   Eval(Vec<ShardDef>),
+}
+
+/// Values hash only their first [`Var::HASHED_NODES`] nodes: a cache key
+/// costs the same whatever constants a definition holds (a constant read in
+/// many places is one shared value, which a full hash would walk at every
+/// read). Equal values still hash equally; values differing only past the
+/// prefix cost an equality check.
+impl Hash for ParamValue {
+  fn hash<H: Hasher>(&self, state: &mut H) {
+    std::mem::discriminant(self).hash(state);
+    match self {
+      ParamValue::Value(v) => v.hash_prefix(state),
+      ParamValue::Var(name) | ParamValue::Wire(name) => name.hash(state),
+      ParamValue::Flow(flow) | ParamValue::Eval(flow) => flow.hash(state),
+      ParamValue::Cases(cases) => {
+        cases.len().hash(state);
+        for (value, flow) in cases {
+          value.hash_prefix(state);
+          flow.hash(state);
+        }
+      }
+    }
+  }
 }
 
 /// Result of a successful compose.

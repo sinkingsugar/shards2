@@ -306,3 +306,44 @@ fn shapes_intern_once() {
   );
   assert_eq!(empty, Var::Table(Table::new()));
 }
+
+#[test]
+fn values_built_from_one_shared_value_cost_what_they_hold() {
+  // 64 levels, each holding the level below twice: 2^64 tables if walked
+  // path by path, 64 sequences and one table as held. Conversion, typing,
+  // equality and cache-key hashing each visit what is held.
+  let build = |leaf: i64| {
+    let mut v = Var::table([("a", Var::Int(leaf))]);
+    for _ in 0..64 {
+      v = Var::Seq(Arc::new(vec![v.clone(), v]));
+    }
+    v
+  };
+  let (v, w) = (build(1), build(1));
+  let converted = v.clone().into_struct_tables();
+  let mut level = &converted;
+  for depth in 0..64 {
+    let items = level.as_seq().unwrap();
+    if depth < 63 {
+      let (Var::Seq(first), Var::Seq(second)) = (&items[0], &items[1]) else {
+        panic!("a sequence at depth {depth}");
+      };
+      assert!(Arc::ptr_eq(first, second), "both copies stay one value");
+    }
+    level = &items[0];
+  }
+  assert_eq!(level.as_table().unwrap().shape(), Some(Shape::new(["a"])));
+  assert_eq!(converted.type_of(), v.type_of());
+  assert!(v.type_of().admits(&w));
+  assert!(
+    !build(2)
+      .type_of()
+      .admits(&Var::Seq(Arc::new(vec![v.clone(), Var::Int(0)])))
+  );
+  // Separately built, so nothing is shared between the two sides.
+  assert_eq!(v, w);
+  assert_eq!(converted, w.clone().into_struct_tables());
+  assert_ne!(v, build(2));
+  let param = |v: &Var| hash_of(&shards_core::ParamValue::Value(v.clone()));
+  assert_eq!(param(&v), param(&w));
+}

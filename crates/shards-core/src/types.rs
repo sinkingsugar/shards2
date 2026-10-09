@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::sync::{Arc, OnceLock, RwLock};
 
-use crate::var::Var;
+use crate::var::{Seen, Storage, Var};
 
 /// Opaque handle to an interned type description. Cheap to copy and compare.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -353,45 +353,10 @@ impl Type {
 
   /// Whether a value fits this type, checked on the value itself: nothing is
   /// interned, so this is safe on every activation (unlike comparing
-  /// `value.type_of()`). An empty sequence fits every sequence type.
+  /// `value.type_of()`). An empty sequence fits every sequence type. A
+  /// sequence or table held in several places is checked once per type.
   pub fn admits(self, value: &Var) -> bool {
-    match (self.desc(), value) {
-      (TypeDesc::Any, _) => true,
-      (TypeDesc::Union(members), _) => members.iter().any(|m| m.admits(value)),
-      (TypeDesc::None, Var::None)
-      | (TypeDesc::Bool, Var::Bool(_))
-      | (TypeDesc::Int, Var::Int(_))
-      | (TypeDesc::Float, Var::Float(_))
-      | (TypeDesc::Float2, Var::Float2(_))
-      | (TypeDesc::Float3, Var::Float3(_))
-      | (TypeDesc::Float4, Var::Float4(_))
-      | (TypeDesc::String, Var::String(_)) => true,
-      (TypeDesc::Seq(e), Var::Seq(items)) => items.iter().all(|v| e.admits(v)),
-      (TypeDesc::Table(t), Var::Table(entries)) => {
-        if let (Some(expected), Some(actual)) = (t.shape, entries.shape()) {
-          // A struct value of a fixed type: the shape handle says whether
-          // the keys match (no lookups), then each slot is checked. The
-          // slot check is unconditional: `set_var` and `spawn` admit host
-          // values with this, in release too.
-          return expected == actual
-            && t
-              .keys
-              .iter()
-              .zip(entries.values())
-              .all(|((_, kt), v)| kt.admits(v));
-        }
-        t.keys
-          .iter()
-          .all(|(k, kt)| entries.get(k).is_some_and(|v| kt.admits(v)))
-          && entries.iter().all(|(k, v)| {
-            match t.keys.binary_search_by(|(name, _)| (**name).cmp(k)) {
-              Ok(_) => true,
-              Err(_) => t.rest.is_some_and(|r| r.admits(v)),
-            }
-          })
-      }
-      _ => false,
-    }
+    Admits::default().check(self, value)
   }
 
   /// Whether a value of type `actual` is acceptable where `self` is
@@ -576,6 +541,65 @@ impl fmt::Display for Type {
 impl fmt::Debug for Type {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     write!(f, "Type({self})")
+  }
+}
+
+/// One `admits` check: the result for each shared sequence or table already
+/// checked against a type (see [`crate::var::Storage`]).
+#[derive(Default)]
+struct Admits(Seen<(Type, Storage), bool>);
+
+impl Admits {
+  fn check(&mut self, ty: Type, value: &Var) -> bool {
+    let key = match value.storage() {
+      Some((storage, true)) => Some((ty, storage)),
+      _ => None,
+    };
+    if let Some(&known) = key.as_ref().and_then(|key| self.0.get(key)) {
+      return known;
+    }
+    let admitted = match (ty.desc(), value) {
+      (TypeDesc::Any, _) => true,
+      (TypeDesc::Union(members), _) => members.iter().any(|m| self.check(*m, value)),
+      (TypeDesc::None, Var::None)
+      | (TypeDesc::Bool, Var::Bool(_))
+      | (TypeDesc::Int, Var::Int(_))
+      | (TypeDesc::Float, Var::Float(_))
+      | (TypeDesc::Float2, Var::Float2(_))
+      | (TypeDesc::Float3, Var::Float3(_))
+      | (TypeDesc::Float4, Var::Float4(_))
+      | (TypeDesc::String, Var::String(_)) => true,
+      (TypeDesc::Seq(e), Var::Seq(items)) => items.iter().all(|v| self.check(*e, v)),
+      (TypeDesc::Table(t), Var::Table(entries)) => {
+        if let (Some(expected), Some(actual)) = (t.shape, entries.shape()) {
+          // A struct value of a fixed type: the shape handle says whether
+          // the keys match (no lookups), then each slot is checked. The
+          // slot check is unconditional: `set_var` and `spawn` admit host
+          // values with this, in release too.
+          expected == actual
+            && t
+              .keys
+              .iter()
+              .zip(entries.values())
+              .all(|((_, kt), v)| self.check(*kt, v))
+        } else {
+          t.keys
+            .iter()
+            .all(|(k, kt)| entries.get(k).is_some_and(|v| self.check(*kt, v)))
+            && entries.iter().all(|(k, v)| {
+              match t.keys.binary_search_by(|(name, _)| (**name).cmp(k)) {
+                Ok(_) => true,
+                Err(_) => t.rest.is_some_and(|r| self.check(r, v)),
+              }
+            })
+        }
+      }
+      _ => false,
+    };
+    if let Some(key) = key {
+      self.0.insert(key, admitted);
+    }
+    admitted
   }
 }
 

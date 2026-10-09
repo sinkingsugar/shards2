@@ -133,21 +133,203 @@ impl Var {
   }
 
   /// The value's type. A table is the fixed table of its keys; a sequence
-  /// of mixed element types is a sequence of their union.
+  /// of mixed element types is a sequence of their union. A sequence or
+  /// table held in several places is typed once.
   pub fn type_of(&self) -> Type {
+    Types::default().of(self)
+  }
+
+  /// How many nodes [`Var::hash_prefix`] hashes at most.
+  pub const HASHED_NODES: usize = 64;
+
+  /// Hashes the value's first [`Var::HASHED_NODES`] nodes (in order, each
+  /// sequence and table with its length): consistent with equality, and
+  /// bounded however large the value, or however many times it holds one
+  /// shared value.
+  pub fn hash_prefix<H: Hasher>(&self, state: &mut H) {
+    let mut left = Self::HASHED_NODES;
+    self.hash_nodes(state, &mut left);
+  }
+
+  fn hash_nodes<H: Hasher>(&self, state: &mut H, left: &mut usize) {
+    if *left == 0 {
+      return;
+    }
+    *left -= 1;
     match self {
-      Var::None => Type::none(),
-      Var::Bool(_) => Type::bool(),
-      Var::Int(_) => Type::int(),
-      Var::Float(_) => Type::float(),
-      Var::Float2(_) => Type::float2(),
-      Var::Float3(_) => Type::float3(),
-      Var::Float4(_) => Type::float4(),
-      Var::String(_) => Type::string(),
+      Var::Seq(items) => {
+        std::mem::discriminant(self).hash(state);
+        items.len().hash(state);
+        for item in items.iter() {
+          if *left == 0 {
+            break;
+          }
+          item.hash_nodes(state, left);
+        }
+      }
+      Var::Table(table) => {
+        std::mem::discriminant(self).hash(state);
+        table.len().hash(state);
+        for (key, value) in table.iter() {
+          if *left == 0 {
+            break;
+          }
+          key.hash(state);
+          value.hash_nodes(state, left);
+        }
+      }
+      scalar => scalar.hash(state),
+    }
+  }
+
+  /// Where a sequence's or table's contents are stored, and whether
+  /// another value shares that storage; `None` for other values. Lets one
+  /// walk over a value visit storage it holds in many places once (see
+  /// [`Storage`]).
+  pub(crate) fn storage(&self) -> Option<(Storage, bool)> {
+    let (at, shape, shared) = match self {
+      Var::Seq(items) => (
+        Arc::as_ptr(items) as *const (),
+        None,
+        Arc::strong_count(items) > 1,
+      ),
+      Var::Table(Table(TableRepr::Struct { shape, slots })) => (
+        Arc::as_ptr(slots) as *const (),
+        Some(*shape),
+        Arc::strong_count(slots) > 1,
+      ),
+      Var::Table(Table(TableRepr::Map(entries))) => (
+        Arc::as_ptr(entries) as *const (),
+        None,
+        Arc::strong_count(entries) > 1,
+      ),
+      _ => return None,
+    };
+    Some((Storage(at, shape), shared))
+  }
+
+  /// The same value with every table (at any depth) in struct
+  /// representation, its key shape interned. Compose applies this to
+  /// literals, so a fixed-typed value is a struct table at runtime
+  /// (golden path §7.3); hosts may apply it to values they build once and
+  /// pass many times. Interns a shape per distinct key set, so do not apply
+  /// it to values with unbounded key sets. A sequence or table held in
+  /// several places is converted once and stays shared, so a value built
+  /// from copies of another (a constant read in a constant) costs what it
+  /// holds, not what it expands to.
+  pub fn into_struct_tables(self) -> Var {
+    StructTables::default().convert(&self).unwrap_or(self)
+  }
+}
+
+/// A sequence's or table's storage, as a key for one walk over a value:
+/// its address, and a struct table's shape (its keys are not in the
+/// storage). Storage held once is reached once, through its one holder, so
+/// walks remember only storage shared elsewhere. The address stays valid
+/// because the value walked holds every node for the whole walk.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct Storage(*const (), Option<Shape>);
+
+/// What one walk over a value remembers per shared storage, created at the
+/// first insert: a walk over a value that shares nothing allocates nothing
+/// and seeds no hasher.
+pub(crate) struct Seen<K, V>(Option<std::collections::HashMap<K, V>>);
+
+impl<K, V> Default for Seen<K, V> {
+  fn default() -> Self {
+    Seen(None)
+  }
+}
+
+impl<K: Eq + Hash, V> Seen<K, V> {
+  pub(crate) fn get(&self, key: &K) -> Option<&V> {
+    self.0.as_ref()?.get(key)
+  }
+
+  pub(crate) fn insert(&mut self, key: K, value: V) {
+    self
+      .0
+      .get_or_insert_with(Default::default)
+      .insert(key, value);
+  }
+}
+
+/// One `into_struct_tables` conversion: the result for each shared
+/// [`Storage`] already converted.
+#[derive(Default)]
+struct StructTables(Seen<Storage, Option<Var>>);
+
+impl StructTables {
+  /// `v` with its tables in struct representation, or `None` when it holds
+  /// no map table (so the caller keeps `v`, sharing it).
+  fn convert(&mut self, v: &Var) -> Option<Var> {
+    let (key, shared) = v.storage()?;
+    if shared && let Some(done) = self.0.get(&key) {
+      return done.clone();
+    }
+    let converted = match v {
+      Var::Seq(items) => self.each(items).map(|items| Var::Seq(Arc::new(items))),
+      Var::Table(Table(TableRepr::Struct { shape, slots })) => self.each(slots).map(|slots| {
+        Var::Table(Table(TableRepr::Struct {
+          shape: *shape,
+          slots: slots.into(),
+        }))
+      }),
+      Var::Table(Table(TableRepr::Map(entries))) => {
+        let shape = Shape::new(entries.iter().map(|(k, _)| k.clone()));
+        let values: Vec<Var> = entries
+          .iter()
+          .map(|(_, v)| self.convert(v).unwrap_or_else(|| v.clone()))
+          .collect();
+        Some(Var::Table(Table::with_shape(shape, values)))
+      }
+      _ => unreachable!("only sequences and tables have storage"),
+    };
+    if shared {
+      self.0.insert(key, converted.clone());
+    }
+    converted
+  }
+
+  /// `items` with each converted, or `None` when none needed it.
+  fn each(&mut self, items: &[Var]) -> Option<Vec<Var>> {
+    let mut out: Option<Vec<Var>> = None;
+    for (i, item) in items.iter().enumerate() {
+      let converted = self.convert(item);
+      match &mut out {
+        Some(out) => out.push(converted.unwrap_or_else(|| item.clone())),
+        None => {
+          if let Some(converted) = converted {
+            let mut head = Vec::with_capacity(items.len());
+            head.extend_from_slice(&items[..i]);
+            head.push(converted);
+            out = Some(head);
+          }
+        }
+      }
+    }
+    out
+  }
+}
+
+/// One `type_of`: the type of each shared [`Storage`] already typed.
+#[derive(Default)]
+struct Types(Seen<Storage, Type>);
+
+impl Types {
+  fn of(&mut self, v: &Var) -> Type {
+    let (key, shared) = match v.storage() {
+      Some(storage) => storage,
+      None => return Self::scalar(v),
+    };
+    if shared && let Some(&ty) = self.0.get(&key) {
+      return ty;
+    }
+    let ty = match v {
       Var::Seq(items) => {
         let mut members: Vec<Type> = Vec::new();
         for item in items.iter() {
-          let ty = item.type_of();
+          let ty = self.of(item);
           if !members.contains(&ty) {
             members.push(ty);
           }
@@ -158,44 +340,36 @@ impl Var {
           Type::seq(Type::union(members))
         }
       }
-      Var::Table(table) => match &table.0 {
-        TableRepr::Struct { shape, slots } => {
-          Type::fixed_table_of(*shape, slots.iter().map(Var::type_of))
-        }
-        TableRepr::Map(entries) => {
-          Type::fixed_table(entries.iter().map(|(k, v)| (k.clone(), v.type_of())))
-        }
-      },
+      Var::Table(Table(TableRepr::Struct { shape, slots })) => {
+        let slots: Vec<Type> = slots.iter().map(|v| self.of(v)).collect();
+        Type::fixed_table_of(*shape, slots)
+      }
+      Var::Table(Table(TableRepr::Map(entries))) => {
+        let entries: Vec<(Arc<str>, Type)> = entries
+          .iter()
+          .map(|(k, v)| (k.clone(), self.of(v)))
+          .collect();
+        Type::fixed_table(entries)
+      }
+      _ => unreachable!("only sequences and tables have storage"),
+    };
+    if shared {
+      self.0.insert(key, ty);
     }
+    ty
   }
 
-  /// The same value with every table (at any depth) in struct
-  /// representation, its key shape interned. Compose applies this to
-  /// literals, so a fixed-typed value is a struct table at runtime
-  /// (golden path §7.3); hosts may apply it to values they build once and
-  /// pass many times. Interns a shape per distinct key set, so do not apply
-  /// it to values with unbounded key sets.
-  pub fn into_struct_tables(self) -> Var {
-    if !self.holds_map_table() {
-      return self;
-    }
-    match self {
-      Var::Seq(items) => Var::Seq(Arc::new(
-        items.iter().cloned().map(Var::into_struct_tables).collect(),
-      )),
-      Var::Table(table) => Var::Table(table.into_struct()),
-      other => other,
-    }
-  }
-
-  fn holds_map_table(&self) -> bool {
-    match self {
-      Var::Seq(items) => items.iter().any(Var::holds_map_table),
-      Var::Table(table) => match &table.0 {
-        TableRepr::Map(_) => true,
-        TableRepr::Struct { slots, .. } => slots.iter().any(Var::holds_map_table),
-      },
-      _ => false,
+  fn scalar(v: &Var) -> Type {
+    match v {
+      Var::None => Type::none(),
+      Var::Bool(_) => Type::bool(),
+      Var::Int(_) => Type::int(),
+      Var::Float(_) => Type::float(),
+      Var::Float2(_) => Type::float2(),
+      Var::Float3(_) => Type::float3(),
+      Var::Float4(_) => Type::float4(),
+      Var::String(_) => Type::string(),
+      Var::Seq(_) | Var::Table(_) => unreachable!("sequences and tables have storage"),
     }
   }
 }
@@ -258,19 +432,10 @@ impl Table {
   /// nested tables are converted too. Same contents, same storage when it
   /// already is one.
   pub fn into_struct(self) -> Table {
-    match self.0 {
-      TableRepr::Struct { shape, slots } => {
-        if !slots.iter().any(Var::holds_map_table) {
-          return Table(TableRepr::Struct { shape, slots });
-        }
-        let slots = slots.iter().cloned().map(Var::into_struct_tables).collect();
-        Table(TableRepr::Struct { shape, slots })
-      }
-      TableRepr::Map(entries) => {
-        let shape = Shape::new(entries.iter().map(|(k, _)| k.clone()));
-        let values = entries.iter().map(|(_, v)| v.clone().into_struct_tables());
-        Table::with_shape(shape, values)
-      }
+    let var = Var::Table(self);
+    match StructTables::default().convert(&var).unwrap_or(var) {
+      Var::Table(table) => table,
+      _ => unreachable!("a table converts to a table"),
     }
   }
 
@@ -437,12 +602,7 @@ impl From<Table> for Var {
 /// bitwise float identity), whichever representation holds them.
 impl PartialEq for Table {
   fn eq(&self, other: &Table) -> bool {
-    if let (TableRepr::Struct { shape: a, slots: x }, TableRepr::Struct { shape: b, slots: y }) =
-      (&self.0, &other.0)
-    {
-      return a == b && (Arc::ptr_eq(x, y) || x == y);
-    }
-    self.len() == other.len() && self.iter().eq(other.iter())
+    SameValues::default().tables(self, other)
   }
 }
 
@@ -637,10 +797,76 @@ impl PartialEq for Var {
       (Var::Float3(a), Var::Float3(b)) => same_bits(&a.0, &b.0),
       (Var::Float4(a), Var::Float4(b)) => same_bits(&a.0, &b.0),
       (Var::String(a), Var::String(b)) => a == b,
-      (Var::Seq(a), Var::Seq(b)) => a == b,
-      (Var::Table(a), Var::Table(b)) => a == b,
+      (Var::Seq(a), Var::Seq(b)) => SameValues::default().seqs(a, b),
+      (Var::Table(a), Var::Table(b)) => SameValues::default().tables(a, b),
       _ => false,
     }
+  }
+}
+
+/// One equality check: the pairs of shared sequences or tables already
+/// found equal, by storage address (as [`Storage`]), so two values
+/// built from copies of one value compare in what they hold, not in what
+/// they expand to. Only equal pairs are remembered: the first unequal pair
+/// ends the check.
+#[derive(Default)]
+struct SameValues(Seen<(*const (), *const ()), ()>);
+
+impl SameValues {
+  fn eq(&mut self, a: &Var, b: &Var) -> bool {
+    match (a, b) {
+      (Var::Seq(a), Var::Seq(b)) => self.seqs(a, b),
+      (Var::Table(a), Var::Table(b)) => self.tables(a, b),
+      _ => a == b,
+    }
+  }
+
+  fn seqs(&mut self, a: &Arc<Vec<Var>>, b: &Arc<Vec<Var>>) -> bool {
+    Arc::ptr_eq(a, b)
+      || a.len() == b.len()
+        && self.remember(a, b, |same| {
+          a.iter().zip(b.iter()).all(|(a, b)| same.eq(a, b))
+        })
+  }
+
+  fn tables(&mut self, a: &Table, b: &Table) -> bool {
+    match (&a.0, &b.0) {
+      (TableRepr::Struct { shape: s, slots: x }, TableRepr::Struct { shape: t, slots: y }) => {
+        s == t
+          && (Arc::ptr_eq(x, y)
+            || self.remember(x, y, |same| {
+              x.iter().zip(y.iter()).all(|(a, b)| same.eq(a, b))
+            }))
+      }
+      (TableRepr::Map(x), TableRepr::Map(y)) if Arc::ptr_eq(x, y) => true,
+      _ => {
+        a.len() == b.len()
+          && a
+            .iter()
+            .zip(b.iter())
+            .all(|((k, v), (l, w))| k == l && self.eq(v, w))
+      }
+    }
+  }
+
+  /// `compare()`, remembered for storage both sides share elsewhere (a
+  /// table's keys are compared before, so the storage pair decides).
+  fn remember<T: ?Sized, U: ?Sized>(
+    &mut self,
+    a: &Arc<T>,
+    b: &Arc<U>,
+    compare: impl FnOnce(&mut Self) -> bool,
+  ) -> bool {
+    let shared = Arc::strong_count(a) > 1 && Arc::strong_count(b) > 1;
+    let key = (Arc::as_ptr(a) as *const (), Arc::as_ptr(b) as *const ());
+    if shared && self.0.get(&key).is_some() {
+      return true;
+    }
+    let same = compare(self);
+    if same && shared {
+      self.0.insert(key, ());
+    }
+    same
   }
 }
 

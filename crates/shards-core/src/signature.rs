@@ -223,8 +223,10 @@ pub struct Occurrence {
   pub effects: Effects,
   pub lifetime: Lifetime,
   /// For a function call, how it runs: a call site that is not inlined
-  /// costs a frame, and its blocks may too (`check --json`).
-  pub call: Option<CallSite>,
+  /// costs a frame, and its blocks may too (`check --json`). Boxed: every
+  /// occurrence carries the field, and compose keeps them all (inline, it
+  /// cost the classic ESP32 5 KB of its lowest free heap).
+  pub call: Option<Box<CallSite>>,
 }
 
 /// How a call site runs: `inlined` (the callee's code, and its blocks, in

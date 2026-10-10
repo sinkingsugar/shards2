@@ -3326,7 +3326,12 @@ Counter"
       ),
     ]
   );
-  let json = report.to_json();
+  // In JSON (a small program: the whole report above is tens of KB, more
+  // than the device's largest free block).
+  let json = check(
+    "@fn(Noisy input: Int output: Int params: {} { Log(\"n\") })\n@fn(One input: Int output: Int params: {} { Math.Add(1) })\n1 | Noisy | One",
+  )
+  .to_json();
   assert!(json.contains("\"call\":{\"path\":\"inlined\"}"), "{json}");
   assert!(
     json.contains("\"call\":{\"path\":\"framed\",\"reason\":\"its body: Log has no VM form\"}"),

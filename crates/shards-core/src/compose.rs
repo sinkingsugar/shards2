@@ -1456,7 +1456,7 @@ impl ComposeCtx<'_> {
         }
       };
       let call = match composed.compiled.control() {
-        Some(Control::Call(c)) => Some(call_site(c)),
+        Some(Control::Call(c)) => Some(Box::new(call_site(c))),
         _ => None,
       };
       node_analysis.occurrences.insert(

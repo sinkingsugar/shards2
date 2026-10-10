@@ -53,6 +53,23 @@ pub struct Session {
   files: Box<dyn Files>,
   /// The files the last reload read, accepted or not.
   read: Vec<String>,
+  /// Every name the last reload looked at, found or not, with what it
+  /// found there (`Session::dependencies`).
+  dependencies: Vec<(String, Fingerprint)>,
+}
+
+/// What a file held when it was read: its length and a hash of its exact
+/// bytes, `None` when it could not be read (missing). Compared, never
+/// decoded, so any edit to a binary file is a change.
+pub(crate) type Fingerprint = Option<(usize, u64)>;
+
+pub(crate) fn fingerprint(bytes: Option<&[u8]>) -> Fingerprint {
+  use std::hash::{Hash, Hasher};
+  bytes.map(|bytes| {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    bytes.hash(&mut hasher);
+    (bytes.len(), hasher.finish())
+  })
 }
 
 impl Default for Session {
@@ -68,6 +85,7 @@ impl Session {
       reset_policy: ResetPolicy::default(),
       files: Box::new(FsFiles::default()),
       read: Vec::new(),
+      dependencies: Vec::new(),
     }
   }
 
@@ -83,6 +101,27 @@ impl Session {
     &self.read
   }
 
+  /// Every name the last reload looked at (a missing include, a file
+  /// searched before the one found) with what the load found there: a
+  /// watcher compares these with `observe_dependencies`.
+  pub(crate) fn dependencies(&self) -> &[(String, Fingerprint)] {
+    &self.dependencies
+  }
+
+  /// The same names, as they are now, through the session's files.
+  pub(crate) fn observe_dependencies(&self) -> Vec<(String, Fingerprint)> {
+    self
+      .dependencies
+      .iter()
+      .map(|(name, _)| {
+        (
+          name.clone(),
+          fingerprint(self.files.contents(name).as_deref()),
+        )
+      })
+      .collect()
+  }
+
   /// Loads a program through the session's files, recording what it read.
   fn load(
     &mut self,
@@ -93,9 +132,11 @@ impl Session {
     let recording = Recording {
       inner: &*self.files,
       read: std::cell::RefCell::new(Vec::new()),
+      dependencies: std::cell::RefCell::new(Vec::new()),
     };
     let program = Program::load_with(source, catalog, defines, &recording);
     self.read = recording.read.into_inner();
+    self.dependencies = recording.dependencies.into_inner();
     program
   }
 
@@ -132,6 +173,7 @@ impl Session {
       }),
       files: Box::new(FsFiles::default()),
       read: Vec::new(),
+      dependencies: Vec::new(),
     }
   }
 
@@ -361,20 +403,45 @@ fn compose_entries(
   }
 }
 
-/// A reader that remembers what it read (`Session::files_read`).
+/// A reader that remembers what it read (`Session::files_read`) and every
+/// name it looked at, with what it found (`Session::dependencies`).
 struct Recording<'a> {
   inner: &'a dyn Files,
   read: std::cell::RefCell<Vec<String>>,
+  dependencies: std::cell::RefCell<Vec<(String, Fingerprint)>>,
 }
 
 impl Files for Recording<'_> {
-  fn read(&self, from: &str, path: &str) -> Result<crate::files::File, String> {
-    let file = self.inner.read(from, path)?;
-    let mut read = self.read.borrow_mut();
-    if !read.contains(&file.name) {
-      read.push(file.name.clone());
+  fn resolve(
+    &self,
+    from: &str,
+    path: &str,
+    looked: &mut Vec<String>,
+  ) -> Result<crate::files::File, String> {
+    let start = looked.len();
+    let result = self.inner.resolve(from, path, looked);
+    let mut dependencies = self.dependencies.borrow_mut();
+    for name in &looked[start..] {
+      if dependencies.iter().any(|(n, _)| n == name) {
+        continue;
+      }
+      let found = match &result {
+        Ok(file) if file.name == *name => fingerprint(Some(&file.bytes)),
+        _ => None,
+      };
+      dependencies.push((name.clone(), found));
     }
-    Ok(file)
+    if let Ok(file) = &result {
+      let mut read = self.read.borrow_mut();
+      if !read.contains(&file.name) {
+        read.push(file.name.clone());
+      }
+    }
+    result
+  }
+
+  fn contents(&self, name: &str) -> Option<Vec<u8>> {
+    self.inner.contents(name)
   }
 
   fn key(&self, name: &str) -> String {

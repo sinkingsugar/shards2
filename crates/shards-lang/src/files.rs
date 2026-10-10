@@ -19,8 +19,21 @@ pub struct File {
 /// directory of the file that names it, then against the reader's own
 /// search paths.
 pub trait Files {
-  /// The file `path` names, written in the file named `from`.
-  fn read(&self, from: &str, path: &str) -> Result<File, String>;
+  /// The file `path` names, written in the file named `from`. Every name
+  /// it looks at goes to `looked`, in order, found or not: a watcher
+  /// observes them all, so creating a missing one (or one searched before
+  /// the one found) is a change.
+  fn resolve(&self, from: &str, path: &str, looked: &mut Vec<String>) -> Result<File, String>;
+
+  /// The current contents of a file by the name `resolve` gave, `None`
+  /// when it cannot be read: what a watcher compares with what a load
+  /// read.
+  fn contents(&self, name: &str) -> Option<Vec<u8>>;
+
+  /// `resolve`, without the names looked at.
+  fn read(&self, from: &str, path: &str) -> Result<File, String> {
+    self.resolve(from, path, &mut Vec::new())
+  }
 
   /// The identity of a file loaded by name (the program's first file).
   fn key(&self, name: &str) -> String {
@@ -36,7 +49,7 @@ pub struct FsFiles {
 }
 
 impl Files for FsFiles {
-  fn read(&self, from: &str, path: &str) -> Result<File, String> {
+  fn resolve(&self, from: &str, path: &str, looked: &mut Vec<String>) -> Result<File, String> {
     let path = Path::new(path);
     let mut candidates = Vec::new();
     if path.is_absolute() {
@@ -46,6 +59,7 @@ impl Files for FsFiles {
       candidates.extend(self.include_paths.iter().map(|dir| dir.join(path)));
     }
     for candidate in &candidates {
+      looked.push(candidate.to_string_lossy().into_owned());
       match std::fs::read(candidate) {
         Ok(bytes) => {
           let name = candidate.to_string_lossy().into_owned();
@@ -65,6 +79,10 @@ impl Files for FsFiles {
       path.display(),
       looked.join(", ")
     ))
+  }
+
+  fn contents(&self, name: &str) -> Option<Vec<u8>> {
+    std::fs::read(name).ok()
   }
 
   fn key(&self, name: &str) -> String {
@@ -95,8 +113,9 @@ impl MemoryFiles {
 }
 
 impl Files for MemoryFiles {
-  fn read(&self, from: &str, path: &str) -> Result<File, String> {
+  fn resolve(&self, from: &str, path: &str, looked: &mut Vec<String>) -> Result<File, String> {
     let name = normalize(&directory(from).join(path));
+    looked.push(name.clone());
     match self.files.get(&name) {
       Some(bytes) => Ok(File {
         key: name.clone(),
@@ -105,6 +124,10 @@ impl Files for MemoryFiles {
       }),
       None => Err(format!("{name} not found")),
     }
+  }
+
+  fn contents(&self, name: &str) -> Option<Vec<u8>> {
+    self.files.get(name).cloned()
   }
 
   fn key(&self, name: &str) -> String {

@@ -47,7 +47,7 @@ pub enum WatchEvent {
 /// Compilation and file reads are synchronous; no background thread is created.
 pub struct FileWatcher {
   path: PathBuf,
-  changes: Changes,
+  changes: Changes<Observation>,
   poll_at: Instant,
   tick_at: Instant,
 }
@@ -80,23 +80,14 @@ impl FileWatcher {
     mut event: impl FnMut(WatchEvent),
   ) -> Duration {
     if restart || Instant::now() >= self.poll_at {
-      let text = std::fs::read_to_string(&self.path).map_err(|e| e.to_string());
-      // The script and the files it included or read, as one observation:
-      // an edit to any of them is a new revision (of the script's text).
-      let read = text.map(|text| {
-        // `length:text`, then each file, so the text comes back exactly.
-        let mut observed = format!("{}:{text}", text.len());
-        for name in session.files_read() {
-          observed.push('\0');
-          observed.push_str(name);
-          observed.push('\0');
-          match std::fs::read(name) {
-            Ok(bytes) => observed.push_str(&String::from_utf8_lossy(&bytes)),
-            Err(e) => observed.push_str(&e.to_string()),
-          }
-        }
-        observed
-      });
+      // The script and every file its last load looked at, as one
+      // observation: an edit to any of them is a new revision (of the
+      // script's text). Files are compared by their exact bytes, and a
+      // missing one counts, so creating it is a change.
+      let read = Observation {
+        text: std::fs::read_to_string(&self.path).map_err(|e| e.to_string()),
+        files: session.observe_dependencies(),
+      };
       let change = if restart {
         self.changes.previous = Some(read.clone());
         self.changes.attempted = Some(read.clone());
@@ -105,16 +96,23 @@ impl FileWatcher {
         self.changes.observe(read)
       };
       if let Some(change) = change {
-        match change {
-          Ok(observed) => {
-            let (length, rest) = observed.split_once(':').expect("length-prefixed");
-            let text = rest[..length.parse::<usize>().expect("a length")].to_string();
-            let source = Source::new(self.path.to_string_lossy(), text);
+        match change.text {
+          Ok(text) => {
+            let source = Source::new(self.path.to_string_lossy(), text.clone());
             let result = if restart {
               session.reload(source, catalog, defines)
             } else {
               session.reload_preserving(source, catalog, defines)
             };
+            // What this load read is what the next sample is compared with
+            // (the observation above did not know a newly named file): a
+            // file edited since the load read it is still a change.
+            let consumed = Observation {
+              text: Ok(text),
+              files: session.dependencies().to_vec(),
+            };
+            self.changes.previous = Some(consumed.clone());
+            self.changes.attempted = Some(consumed);
             match result {
               Ok(finished) => {
                 let report = if restart {
@@ -178,17 +176,33 @@ impl FileWatcher {
   }
 }
 
+/// One sample: the script's text (or why it could not be read) and each
+/// file its last load looked at, with what is there now.
+#[derive(Clone, PartialEq)]
+struct Observation {
+  text: Result<String, String>,
+  files: Vec<(String, crate::session::Fingerprint)>,
+}
+
 /// Compare contents, not timestamps, to notice atomic saves and same-size
 /// edits. Require two identical samples before trying a revision; remember
 /// rejected text too, so it is diagnosed once until the contents change.
-#[derive(Default)]
-struct Changes {
-  previous: Option<Result<String, String>>,
-  attempted: Option<Result<String, String>>,
+struct Changes<T> {
+  previous: Option<T>,
+  attempted: Option<T>,
 }
 
-impl Changes {
-  fn observe(&mut self, read: Result<String, String>) -> Option<Result<String, String>> {
+impl<T> Default for Changes<T> {
+  fn default() -> Self {
+    Changes {
+      previous: None,
+      attempted: None,
+    }
+  }
+}
+
+impl<T: Clone + PartialEq> Changes<T> {
+  fn observe(&mut self, read: T) -> Option<T> {
     let stable = self.previous.as_ref() == Some(&read);
     self.previous = Some(read.clone());
     if stable && self.attempted.as_ref() != Some(&read) {
@@ -206,7 +220,7 @@ mod tests {
 
   #[test]
   fn changes_wait_for_stability_and_retry_after_read_errors() {
-    let mut changes = Changes::default();
+    let mut changes = Changes::<Result<String, String>>::default();
     let a = Ok("41".to_string());
     let b = Ok("42".to_string());
     let missing = Err("missing".to_string());

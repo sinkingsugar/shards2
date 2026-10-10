@@ -3664,3 +3664,141 @@ fn file_watcher_reloads_when_an_included_file_changes() {
   assert_eq!(revisions, 2);
   assert_eq!(lines, ["10", "20"]);
 }
+
+/// The watcher's view of the files a program reads (review
+/// 2026-10-10-e982fe9-codex-3bec98): exact bytes, files a load looked for
+/// and did not find, and files a load first named.
+#[cfg(not(any(target_arch = "wasm32", target_os = "espidf")))]
+mod watched_files {
+  use shards_core::Catalog;
+  use shards_lang::{FileWatcher, Session, WatchEvent};
+  use std::{collections::HashMap, path::PathBuf, time::Duration};
+
+  struct Fixture {
+    dir: PathBuf,
+    watcher: FileWatcher,
+    session: Session,
+    catalog: Catalog,
+  }
+  impl Fixture {
+    fn new(name: &str, script: &str) -> Self {
+      let dir = std::env::temp_dir().join(format!("shards-watched-{}-{name}", std::process::id()));
+      std::fs::create_dir_all(&dir).unwrap();
+      let main = dir.join("main.shs");
+      std::fs::write(&main, script).unwrap();
+      Self {
+        dir,
+        watcher: FileWatcher::new(main),
+        session: Session::new(),
+        catalog: Catalog::new(&[shards_core::shards::CATALOG]).unwrap(),
+      }
+    }
+    fn poll(&mut self, restart: bool) -> (usize, usize) {
+      let (mut loaded, mut rejected) = (0, 0);
+      self.watcher.poll(
+        &mut self.session,
+        &self.catalog,
+        &HashMap::new(),
+        restart,
+        |event| match event {
+          WatchEvent::Reloaded { .. } => loaded += 1,
+          WatchEvent::Rejected { .. } => rejected += 1,
+          WatchEvent::ReadError(e) => panic!("{e}"),
+          _ => {}
+        },
+      );
+      (loaded, rejected)
+    }
+    fn settle(&mut self) -> (usize, usize) {
+      let mut total = (0, 0);
+      for _ in 0..4 {
+        std::thread::sleep(Duration::from_millis(110));
+        let got = self.poll(false);
+        total.0 += got.0;
+        total.1 += got.1;
+      }
+      total
+    }
+  }
+  impl Drop for Fixture {
+    fn drop(&mut self) {
+      let _ = std::fs::remove_dir_all(&self.dir);
+    }
+  }
+
+  #[test]
+  fn binary_edit_is_a_new_revision() {
+    let mut f = Fixture::new("binary", "@read(\"data.bin\" bytes: true) | ToHex");
+    std::fs::write(f.dir.join("data.bin"), [0xff]).unwrap();
+    assert_eq!(f.poll(true), (1, 0));
+    f.settle(); // Establish the dependency list in the watcher's observation.
+    std::fs::write(f.dir.join("data.bin"), [0xfe]).unwrap();
+    assert_eq!(
+      f.settle(),
+      (1, 0),
+      "different invalid UTF-8 bytes must reload"
+    );
+  }
+
+  #[test]
+  fn creating_a_missing_include_retries_the_revision() {
+    let mut f = Fixture::new("missing", "@include(\"lib.shs\")\n1");
+    assert_eq!(f.poll(true), (0, 1));
+    f.settle();
+    std::fs::write(f.dir.join("lib.shs"), "").unwrap();
+    assert_eq!(
+      f.settle(),
+      (1, 0),
+      "creating the missing file must retry the failed load"
+    );
+  }
+
+  #[test]
+  fn unchanged_dependencies_do_not_reload_twice() {
+    let mut f = Fixture::new(
+      "unchanged",
+      "@include(\"lib.shs\")\n1 | Log | Math.Divide(0)",
+    );
+    std::fs::write(f.dir.join("lib.shs"), "").unwrap();
+    let (revisions, logs) = shards_core::log::capture(|| f.settle());
+    eprintln!("revisions={revisions:?}, logs={logs:?}");
+    assert_eq!(
+      logs,
+      ["1"],
+      "an unchanged failing entry must not repeat its effects"
+    );
+    assert_eq!(
+      revisions,
+      (1, 0),
+      "one initial load; no source file changed"
+    );
+  }
+
+  #[test]
+  fn a_file_created_earlier_in_the_search_order_is_a_change() {
+    // `lib.shs` is found through an include path; creating one next to the
+    // script, which is searched first, changes what loads.
+    let mut f = Fixture::new("search", "@include(\"lib.shs\")\n@v | Log");
+    let include = f.dir.join("include");
+    std::fs::create_dir_all(&include).unwrap();
+    std::fs::write(include.join("lib.shs"), "@const(v 1)").unwrap();
+    f.session.set_files(shards_lang::FsFiles {
+      include_paths: vec![include],
+    });
+    let (first, lines) = shards_core::log::capture(|| {
+      let first = f.poll(true);
+      f.session.tick();
+      first
+    });
+    assert_eq!((first, lines), ((1, 0), vec!["1".to_string()]));
+    f.settle();
+    std::fs::write(f.dir.join("lib.shs"), "@const(v 2)").unwrap();
+    let (revisions, lines) = shards_core::log::capture(|| {
+      let revisions = f.settle();
+      f.session.tick();
+      revisions
+    });
+    assert_eq!(revisions, (1, 0));
+    assert!(lines.contains(&"2".to_string()), "{lines:?}");
+  }
+}

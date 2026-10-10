@@ -210,13 +210,44 @@ impl ControlFlows for MatchCompiled {
 impl MatchCompiled {
   /// The flow to run for `input`: the first equal case, else the default.
   /// Compose proved one of them exists for every input of its type.
-  pub(crate) fn find(&self, input: &Var) -> Result<usize> {
-    self
-      .values
-      .iter()
-      .position(|v| super::values::values_equal(v, input))
-      .or((self.flows.len() > self.values.len()).then_some(self.values.len()))
-      .ok_or_else(|| Error::Activation(format!("Match: no case matches {input}")))
+  pub(crate) fn find(
+    &self,
+    input: &Var,
+    meter: Option<&crate::compose_time::Meter>,
+  ) -> Result<usize> {
+    let found = match meter {
+      None => {
+        let mut found = None;
+        for (i, v) in self.values.iter().enumerate() {
+          if super::values::values_equal(v, input) {
+            found = Some(i);
+            break;
+          }
+        }
+        found
+      }
+      Some(meter) => self.find_metered(input, meter)?,
+    };
+    match found {
+      Some(i) => Ok(i),
+      // The default case, when there is one.
+      None if self.flows.len() > self.values.len() => Ok(self.values.len()),
+      None => Err(no_case(input)),
+    }
+  }
+
+  /// [`Self::find`] in a compose-time evaluation: each case compared is
+  /// charged by the size of the smaller side, which bounds the comparison.
+  fn find_metered(&self, input: &Var, meter: &crate::compose_time::Meter) -> Result<Option<usize>> {
+    let size = meter.traverse(input)?;
+    for (i, v) in self.values.iter().enumerate() {
+      let compared = crate::compose_time::text_size(v, size).unwrap_or(size);
+      meter.charge((compared / crate::compose_time::TRAVERSAL_BYTES + 1) as u64)?;
+      if super::values::values_equal(v, input) {
+        return Ok(Some(i));
+      }
+    }
+    Ok(None)
   }
 }
 
@@ -347,8 +378,8 @@ pub const MAYBE_DESC: ShardDesc = ShardDesc {
 
 /// `flows`: `[action]` or `[action, else]`.
 pub struct MaybeCompiled {
-  pub(crate) flows: Vec<CompiledFlow>,
-  pub(crate) silent: bool,
+  flows: Vec<CompiledFlow>,
+  silent: bool,
 }
 
 impl ControlFlows for MaybeCompiled {
@@ -385,7 +416,7 @@ pub(crate) fn compose_maybe(
 }
 
 /// What Maybe does with an error from action: `None` to propagate it.
-pub(crate) fn maybe_caught(silent: bool, err: Error) -> std::result::Result<(), Error> {
+fn maybe_caught(silent: bool, err: Error) -> std::result::Result<(), Error> {
   match err {
     Error::Cancelled => Err(Error::Cancelled),
     other => {
@@ -393,6 +424,67 @@ pub(crate) fn maybe_caught(silent: bool, err: Error) -> std::result::Result<(), 
         crate::log::emit(format!("Maybe: {other}"));
       }
       Ok(())
+    }
+  }
+}
+
+/// `Maybe`, written against the public composite interface
+/// ([`crate::ControlShard`]), as a host crate would write one.
+pub struct Maybe;
+
+/// Which of Maybe's flows is running.
+#[derive(Default)]
+pub enum MaybeState {
+  #[default]
+  Start,
+  Action,
+  Else,
+}
+
+impl crate::ControlShard for Maybe {
+  type Compiled = MaybeCompiled;
+  type State = MaybeState;
+  const NAME: &'static str = MAYBE_DESC.name;
+  const VERSION: u32 = MAYBE_DESC.version;
+
+  fn compose(args: &Args, ctx: &mut ComposeCtx<'_>) -> Result<Composed<MaybeCompiled>> {
+    compose_maybe(args, ctx)
+  }
+
+  fn flows(compiled: &MaybeCompiled) -> &[CompiledFlow] {
+    &compiled.flows
+  }
+
+  fn resume(
+    compiled: &MaybeCompiled,
+    state: &mut MaybeState,
+    _: &mut crate::ActivationCtx<'_>,
+    input: &Var,
+    completion: Option<Result<Var>>,
+  ) -> Result<crate::ControlStep> {
+    use crate::ControlStep::{Complete, Enter};
+    match (&*state, completion) {
+      (_, None) => {
+        *state = MaybeState::Action;
+        Ok(Enter(0, input.clone()))
+      }
+      // Without Else, the input passes through (1.x).
+      (MaybeState::Action, Some(Ok(value))) => Ok(Complete(if compiled.flows.len() < 2 {
+        input.clone()
+      } else {
+        value
+      })),
+      (MaybeState::Action, Some(Err(err))) => {
+        maybe_caught(compiled.silent, err)?;
+        if compiled.flows.len() > 1 {
+          *state = MaybeState::Else;
+          Ok(Enter(1, input.clone()))
+        } else {
+          Ok(Complete(input.clone()))
+        }
+      }
+      (MaybeState::Else, Some(result)) => result.map(Complete),
+      (MaybeState::Start, Some(_)) => unreachable!("a completion before entering"),
     }
   }
 }
@@ -526,3 +618,95 @@ pub(crate) fn compose_conditions(
 }
 
 // --- Repeat: Until and Forever (compose and compiled type in mod.rs) ---
+
+#[cold]
+fn no_case(input: &Var) -> Error {
+  Error::Activation(format!("Match: no case matches {input}"))
+}
+
+// --- Run ---
+
+pub static RUN_PARAMS: &[ParamDecl] = &[decl(
+  "action",
+  crate::shard_doc!("The flow parameter of the enclosing function to run, by name."),
+  Forms::VARIABLE,
+  NONE_TYPES,
+  Requirement::Required,
+)];
+
+pub const RUN_DESC: ShardDesc = ShardDesc {
+  name: "Run",
+  version: 1,
+  summary: crate::shard_doc!("Runs the block a caller passed for a flow parameter."),
+  help: crate::shard_doc!(
+    "Inside a function with a flow parameter (`params: {action: Flow(input: Int output: Int)}`), `Run(action)` runs the block the call passed, on the caller's variables, with Run's input (which the parameter's `input` type must accept; with `input: None` the block ignores its input and receives none, whatever Run's input is). With an `output` type Run outputs the block's output (with `output: None`, the block's output is discarded and Run outputs none); without one it passes its input through. The block may suspend; a failure inside it fails Run. A flow parameter can only be run or passed on as a flow argument to another call."
+  ),
+  params: Params::Declared(RUN_PARAMS),
+  input: InputDesc::Any,
+  output: OutputDesc::Dynamic(crate::shard_doc!(
+    "the block's output, or the input when the parameter declares no output"
+  )),
+  targets: Targets::All,
+  aliases: &[],
+  effects: crate::signature::Effects::NONE,
+  lifetime: crate::signature::Lifetime::Stateless,
+};
+
+/// `Run(action)`: the flow parameter, by its index among the enclosing
+/// function's flow parameters. The engine resolves it through the running
+/// invocation to the block its call passed.
+pub struct RunCompiled {
+  pub(crate) param: u32,
+  /// No declared output: Run outputs its input.
+  pub(crate) passthrough: bool,
+  /// Declared `output: None`: the block's output is discarded and Run
+  /// outputs none.
+  pub(crate) discards_output: bool,
+  /// Declared `input: None`: the block ignores its input and gets none.
+  pub(crate) ignores_input: bool,
+}
+
+pub(crate) fn compose_run(args: &Args, ctx: &mut ComposeCtx<'_>) -> Result<Composed<RunCompiled>> {
+  let name = variable(args, "action");
+  let Some((index, ty)) = ctx.flow_param(name) else {
+    let message = match ctx.function_name() {
+      Some(function) => format!(
+        "{name} is not a flow parameter of {function}; Run runs a block passed for a parameter declared `{name}: Flow` (`Flow(input: T output: U)`)"
+      ),
+      None => format!(
+        "{name} is not a flow parameter: Run runs a block passed to a function, inside that function's body"
+      ),
+    };
+    return Err(param_error(
+      args,
+      "Run",
+      "action",
+      "compose-error",
+      "not-a-flow",
+      message,
+    ));
+  };
+  let input = ctx.input();
+  let ignores_input = ty.input == Type::none();
+  if !ignores_input && !ty.input.accepts(input) {
+    return Err(Error::Diagnostic(Box::new(
+      Diagnostic::new(
+        Phase::Compose,
+        "input-type-mismatch",
+        "input-type-mismatch",
+        format!("Run({name}) needs {} input, got {input}", ty.input),
+      )
+      .shard("Run")
+      .types(Some(TypeRef::of(input)), vec![TypeRef::of(ty.input)]),
+    )));
+  }
+  Ok(Composed {
+    compiled: RunCompiled {
+      param: u32::try_from(index).expect("flow parameter index fits u32"),
+      passthrough: ty.output.is_none(),
+      discards_output: ty.output == Some(Type::none()),
+      ignores_input,
+    },
+    output: ty.output.unwrap_or(input),
+  })
+}

@@ -51,7 +51,7 @@ fn var_is_32_bytes_with_float4_at_offset_16() {
 
 #[test]
 fn float2_rounds_to_f32_once_and_keeps_non_finite_components() {
-  let seq = |items: Vec<Var>| Var::Seq(Arc::new(items));
+  let seq = |items: Vec<Var>| Var::from_seq(Arc::new(items));
   let to_float2 = || shards_core::ShardDef::new(&shards_core::shards::values::TO_FLOAT2, vec![]);
   let mut mesh = Mesh::new();
   // Each component is rounded once, from the literal's f64.
@@ -118,7 +118,7 @@ fn table_representations_are_one_value() {
     assert_eq!(x, y);
     assert_eq!(hash_of(x), hash_of(y));
     assert_eq!(format!("{x:?}"), format!("{y:?}"));
-    let (vx, vy) = (Var::Table(x.clone()), Var::Table(y.clone()));
+    let (vx, vy) = (Var::from_table(x.clone()), Var::from_table(y.clone()));
     assert_eq!(vx.text(), vy.text());
     assert_eq!(vx.to_string(), "{a: 1 b: \"x\"}");
     assert_eq!(vx.type_of(), vy.type_of());
@@ -146,7 +146,7 @@ fn table_representations_are_one_value() {
   // Conversion reaches nested tables, inside sequences too.
   let nested = Var::table([(
     "inner",
-    Var::Seq(Arc::new(vec![Var::table([("k", Var::None)])])),
+    Var::from_seq(Arc::new(vec![Var::table([("k", Var::None)])])),
   )])
   .into_struct_tables();
   let inner = nested.as_table().unwrap().get("inner").unwrap();
@@ -158,7 +158,7 @@ fn table_representations_are_one_value() {
     nested.type_of(),
     Var::table([(
       "inner",
-      Var::Seq(Arc::new(vec![Var::table([("k", Var::None)])]))
+      Var::from_seq(Arc::new(vec![Var::table([("k", Var::None)])]))
     )])
     .type_of()
   );
@@ -252,12 +252,12 @@ fn fixed_types_admit_struct_values_by_shape_handle() {
   let ty = Type::fixed_table([("a", Type::int()), ("b", Type::string())]);
   let shape = ty.as_table().unwrap().shape.unwrap();
   assert_eq!(shape, Shape::new(["b", "a"]));
-  let right = Var::Table(Table::with_shape(shape, [Var::Int(1), Var::string("x")]));
-  let wrong_shape = Var::Table(Table::with_shape(
+  let right = Var::from_table(Table::with_shape(shape, [Var::Int(1), Var::string("x")]));
+  let wrong_shape = Var::from_table(Table::with_shape(
     Shape::new(["a", "c"]),
     [Var::Int(1), Var::string("x")],
   ));
-  let wrong_slot = Var::Table(Table::with_shape(
+  let wrong_slot = Var::from_table(Table::with_shape(
     shape,
     [Var::string("x"), Var::string("x")],
   ));
@@ -304,5 +304,66 @@ fn shapes_intern_once() {
     empty.as_table().unwrap().shape(),
     Some(Shape::new(Vec::<&str>::new()))
   );
-  assert_eq!(empty, Var::Table(Table::new()));
+  assert_eq!(empty, Var::from_table(Table::new()));
+}
+
+#[test]
+fn values_built_from_one_shared_value_cost_what_they_hold() {
+  // 64 levels, each holding the level below twice: 2^64 tables if walked
+  // path by path, 64 sequences and one table as held. Conversion, typing,
+  // equality and cache-key hashing each visit what is held. On the device
+  // 16 levels (2^16 paths): every level interns its type and shape in the
+  // registry, which never frees, and the frontend suite after this one
+  // reaches the classic ESP32's lowest free heap.
+  let levels = if cfg!(target_os = "espidf") { 16 } else { 64 };
+  let build = |leaf: i64| {
+    let mut v = Var::table([("a", Var::Int(leaf))]);
+    for _ in 0..levels {
+      v = Var::from_seq(Arc::new(vec![v.clone(), v]));
+    }
+    v
+  };
+  let (v, w) = (build(1), build(1));
+  let converted = v.clone().into_struct_tables();
+  let mut level = &converted;
+  for depth in 0..levels {
+    let items = level.as_seq().unwrap();
+    if depth < levels - 1 {
+      let (Var::Seq(first), Var::Seq(second)) = (&items[0], &items[1]) else {
+        panic!("a sequence at depth {depth}");
+      };
+      assert!(Arc::ptr_eq(first, second), "both copies stay one value");
+    }
+    level = &items[0];
+  }
+  assert_eq!(level.as_table().unwrap().shape(), Some(Shape::new(["a"])));
+  assert_eq!(converted.type_of(), v.type_of());
+  assert!(v.type_of().admits(&w));
+  assert!(
+    !build(2)
+      .type_of()
+      .admits(&Var::from_seq(Arc::new(vec![v.clone(), Var::Int(0)])))
+  );
+  // Separately built, so nothing is shared between the two sides.
+  assert_eq!(v, w);
+  assert_eq!(converted, w.clone().into_struct_tables());
+  assert_ne!(v, build(2));
+  let param = |v: &Var| hash_of(&shards_core::ParamValue::Value(v.clone()));
+  assert_eq!(param(&v), param(&w));
+  // The same with tables holding the level below twice: map tables as
+  // literals lower to, compared with each other and with their struct
+  // form (a preserving reload compares separately built definitions).
+  let tables = |leaf: i64| {
+    let mut v = Var::table([("a", Var::Int(leaf))]);
+    for _ in 0..levels {
+      v = Var::table([("a", v.clone()), ("b", v)]);
+    }
+    v
+  };
+  let (v, w) = (tables(1), tables(1));
+  assert_eq!(v, w);
+  assert_eq!(v.clone().into_struct_tables(), w);
+  assert_eq!(w, v.clone().into_struct_tables());
+  assert_ne!(v, tables(2));
+  assert_ne!(v.clone().into_struct_tables(), tables(2));
 }

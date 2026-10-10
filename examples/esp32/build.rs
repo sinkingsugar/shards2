@@ -47,9 +47,18 @@ fn acceptance() {
               .collect();
             let name = &f.sig.ident;
             calls.push(quote! { #(#cfgs)* {
-              // SAFETY: a query of the SDK heap.
-              let heap = unsafe { esp_idf_sys::esp_get_free_heap_size() };
-              println!("acceptance: {} (heap free {heap} B)", stringify!(#name));
+              // SAFETY: queries of the SDK heap. The low-water mark so far:
+              // a drop from one line to the next belongs to the test between.
+              let (heap, low) = unsafe {
+                (
+                  esp_idf_sys::esp_get_free_heap_size(),
+                  esp_idf_sys::esp_get_minimum_free_heap_size(),
+                )
+              };
+              println!(
+                "acceptance: {} (heap free {heap} B, min free {low} B)",
+                stringify!(#name)
+              );
               #name();
               std::thread::sleep(std::time::Duration::from_millis(10));
             } });

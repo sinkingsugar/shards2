@@ -20,6 +20,7 @@ This repository should be usable without previous chat history or private agent 
 ## Read first
 
 - `docs/golden-path.md`: the approved plan for the current work (functions, scope, the stackless engine, values). It is the contract for milestones M0 to M7 and overrides older statements in the documents below where they conflict.
+- `docs/metaprogramming.md`: the contract for M8 to M10 (compose-time evaluation, flow parameters, code as data and hygienic macros).
 - `docs/shards-2-compose-split.md`: the design and the source of truth for the core model. Read it before changing core code.
 - `docs/prototype-shard-contract.md`: the shard contract (the decisions that replace 1.x's `shards.h`).
 - `docs/stackless-experiment.md`: the scheduler experiment and decision (historical: stackful is gone), the shared shard APIs, and the matched benchmarks against 1.x.
@@ -34,7 +35,7 @@ This repository should be usable without previous chat history or private agent 
 - `crates/shards-io`: I/O shards (`Http.Get`) on a shared Tokio runtime, following 1.x's HTTP module. Native only.
 - `crates/shards-lang`: the language frontend: hand-written lexer and parser with spans, lowering to `WireDef`/`ShardDef` with a source map, and `check`/`run` (`docs/surface-syntax-review.md`).
 - `crates/shards-cli`: the `shards2` command (`check [--json]`, `run`, `watch`, `describe`, `search`, `catalog`).
-- `bench/`: benchmarks matched with 1.x (`shards-1x/`, `http-concurrency/`), and the authoring eval (`authoring/`, golden path §8; its README says how to run it).
+- `bench/`: benchmarks matched with 1.x (`shards-1x/`, `http-concurrency/`), compose costs gated in CI (`compose/`), and the authoring eval (`authoring/`, golden path §8; its README says how to run it).
 - `examples/esp32`: ESP-IDF firmware embedding the core and frontend on the stackless scheduler; a separate workspace with its own lockfile (`docs/esp32.md`).
 
 ## Core rules
@@ -50,7 +51,8 @@ Choose the shard API by what the shard does:
 
 - **Cannot suspend** (most shards): implement `LeafShard` (`shards/leaf.rs`). "Leaf" means it never suspends, not that it does little work.
 - **Waits on async I/O**: implement `AsyncShard` (`shards/async_shard.rs`) once. `start` returns one future per operation, from owned inputs. Spawn I/O through `shards-io`'s shared runtime (`shards_io::runtime::spawn`); never put a runtime or reactor inside a shard, and never block. Race every await of in-flight work against the cancellation token: dropping a Tokio `JoinHandle` alone only detaches the task.
-- **Suspends or runs nested flows** (control flow like `When`, `Repeat`, `Maybe`): implements the full `Shard` contract (`shard.rs`). Its description, compose logic and compiled type live in `shards/mod.rs` or `shards/control.rs`; a composite exposes a `Control` description and the engine (`stackless/engine.rs`) enters its children and owns and resets its continuation (adapters in `stackless/shards.rs`). A directly suspending leaf (like `Pause`) keeps its resume point in `State` and resets it on every exit other than `Suspend`, including errors. Keep this set small and explicit.
+- **Runs nested flows, outside the core** (a retry, a timeout, a container): implement `ControlShard` (`shard.rs`, `docs/embedding.md`): `resume` says which flow to enter with what input, or what to output; the engine runs the flows. `Maybe` is written this way.
+- **Suspends or runs nested flows, in the core** (control flow like `When`, `Repeat`, `Match`): implements the full `Shard` contract (`shard.rs`). Its description, compose logic and compiled type live in `shards/mod.rs` or `shards/control.rs`; a composite exposes a `Control` description and the engine (`stackless/engine.rs`) enters its children and owns and resets its continuation (adapters in `stackless/shards.rs`). A directly suspending leaf (like `Pause`) keeps its resume point in `State` and resets it on every exit other than `Suspend`, including errors. Keep this set small and explicit.
 - **Lifecycle**: use `lifecycle.rs` (`cleanup_each`, `instantiate_all`) for anything that instantiates or cleans up child flows, so every cleanup is attempted even when one panics.
 - **Describing a shard** (`docs/shard-metadata-and-compose.md`): give it a `ShardDesc` with its parameter declarations as a `static`, and read arguments in compose through the decoded `Args` accessors, not by position. Write all prose (summary, help, parameter help) through `shard_doc!`, so the `docs` feature can compile it out for small builds. Never duplicate a name, version or parameter list: attach the implementation to the one description (`ShardType::new(desc).implemented_by::<S>()`), and add the shard to its crate's `CATALOG` list. Report compose errors as structured `Error::Diagnostic`s.
 - **Tests**: acceptance tests live in `tests/prototype.rs`, `tests/trampoline.rs`, `shards-io/tests/http.rs` and `shards-lang/tests/lang.rs`; the ESP32 firmware reruns the core and frontend suites in QEMU, so new behavior gets a test there, with device-sized fixtures where a case would exceed the device's memory.
@@ -69,9 +71,11 @@ The prototype milestone is complete. Next is porting the language front end and 
 - release nesting: `cargo test --release -p shards-lang --test lang nesting_up_to_the_limit`
 - TLS: `cargo clippy -p shards-io --all-targets --features rustls-ring -- -D warnings`
 - wasm lint: `cargo clippy -p shards-core -p shards-lang --target wasm32-wasip1 --lib --tests -- -D warnings`
+- hot code: `python3 scripts/hot-asm.py --check bench/hot-asm/aarch64-apple-darwin.txt` (on Apple Silicon) summarizes the disassembly of the VM loop and the engine step; run it with `--compare REV` before and after any change to `inline.rs` or `stackless/engine.rs`, and refresh the baseline when the change is intended, saying why in the commit (`docs/runtime-performance-overview.md`, lessons 6 and 7). CI's `hot-asm` job (macOS) fails on any difference. Native builds use `.cargo/config.toml`'s block alignment; compare builds only with the same flags
+- compose costs: `cargo run --release -p shards-lang --example bench_compose -- --check bench/compose/baseline.txt` (CI's `bench` job; after an intended allocation change, regenerate with `--write` and say why in the commit, see `bench/compose/README.md`)
 - wasm tests: `cargo test -p shards-core --test prototype --test metadata --target wasm32-wasip1 --no-run` and `cargo test -p shards-lang --test lang --target wasm32-wasip1 --no-run`, then run each emitted test `.wasm` with `node scripts/run-wasi.mjs <path>`. Install the target with `rustup target add wasm32-wasip1` if needed. Benchmark examples are native-only; do not use `--all-targets` for wasm.
 
-The toolchain is pinned in `rust-toolchain.toml`. CI runs fmt, clippy and tests on Linux and macOS, clippy for the `rustls-ring` build, and the suite on wasm (Node WASI). A separate workflow links the ESP32 firmware for three chips and boots each in Espressif's QEMU (`scripts/esp32-qemu.sh`) when the core, frontend or example change; it needs no local run, but when `shards-core` or `shards-lang` gain or change a dependency, refresh `examples/esp32/Cargo.lock` (`cargo update -w` in `examples/esp32`), since the firmware builds with `--locked`.
+The toolchain is pinned in `rust-toolchain.toml`. CI runs fmt, clippy and tests on Linux and macOS, clippy for the `rustls-ring` build, the suite on wasm (Node WASI), and the compose cost check. A separate workflow links the ESP32 firmware for three chips and boots each in Espressif's QEMU (`scripts/esp32-qemu.sh`) when the core, frontend or example change; it needs no local run, but when `shards-core` or `shards-lang` gain or change a dependency, refresh `examples/esp32/Cargo.lock` (`cargo update -w` in `examples/esp32`), since the firmware builds with `--locked`.
 
 
 ## Git

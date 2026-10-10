@@ -234,6 +234,8 @@ fn form_of(value: &ParamValue) -> (Forms, &'static str) {
     ParamValue::Wire(_) => (Forms::WIRE, "wire"),
     ParamValue::Flow(_) => (Forms::FLOW, "flow"),
     ParamValue::Cases(_) => (Forms::CASES, "cases"),
+    // Compose evaluates it before decoding; a literal once it has.
+    ParamValue::Eval(_) => (Forms::LITERAL, "literal"),
   }
 }
 

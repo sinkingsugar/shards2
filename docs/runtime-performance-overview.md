@@ -100,6 +100,34 @@ A call to a small stateless straight-line body is inlined at compose ([current-s
 
 A call to `Math.Add(1)` is one instruction in the caller's stream now, which is what 1.x's inline dispatch does per shard, resolved once at compose instead of at every activation. Every other VM cell is within 5 percent of aae5c01 except `add-float` at widths 64 and 256 (77 and 270 ns against 60 and 206; 1.25× 1.x at width 64). That path did not change: the runner's machine code for the float add is identical in both binaries, and the loop head moved to a 4-byte-misaligned address in this build. Building with `-C llvm-args=-align-all-nofallthru-blocks=4` restores it (21.4 against 20.9 ms per batch for aae5c01, 26.2 unaligned) with no measurable cost on the integer, get, const and call cases; it is not adopted here, since a global code-alignment flag is a build-profile decision, but it is the known lever if the runner's layout drifts again.
 
+### Metaprogramming branch against 1.x (2026-10-09)
+
+Same machine and method as the 2026-10-07 refreshes, against the same 1.x
+binary (hash checked). At `692ee62` (M8 done) the scheduler was unchanged
+against `26e21be` (entity 88 / 90 / 91 ns per instance tick at 100 / 1,000 /
+10,000 instances, 1.x 111 / 135 / 411; nested resume 35 to 38 ns, 1.x 99 to
+103), HTTP concurrency at 1,000 instances took 79 ms (1.x 2,606), and the VM
+suite had three cases 6 to 20 percent slower: push to a shared sequence, take
+from a table, Float4 add. Bisecting found M8's failure locations (`3ceac16`,
+a closure around `inline::run`) for all three, and `9a1da16` (already on
+`main`) for part of Float4. `a965e32` removed the closure; the VM suite at
+`a965e32` is back to `26e21be` on push and take, with Float add 17 to 25
+percent faster than at `26e21be`. Results:
+[`runtime-overview/results/2026-10-09-692ee62`](../bench/runtime-overview/results/2026-10-09-692ee62),
+[`vm-execution/results/2026-10-09-692ee62`](../bench/vm-execution/results/2026-10-09-692ee62),
+[`runtime-overview/results/2026-10-09-a965e32`](../bench/runtime-overview/results/2026-10-09-a965e32),
+[`vm-execution/results/2026-10-09-a965e32`](../bench/vm-execution/results/2026-10-09-a965e32).
+
+The commit after `a965e32` removed the closures from the runtime's other hot
+paths (constructors, engine, shards, table lookups). Interleaved against
+`a965e32` on the whole VM suite (four alternating runs): the constructors 15
+to 18 percent faster (one allocation, filled in place), `bench_tables` 6 to
+21 percent faster on builds, rebuilds and literal reads, every other case
+within 3 percent except the per-iteration fixed cost at width 0 (4.5 to 4.7
+ns) and `assign-int` at width 8 (20 to 22 ns), which is function placement
+(lesson 6): with `run` byte-identical and both binaries built with 64-byte
+function alignment they measure the same.
+
 ## Lessons from the VM optimization work
 
 Conclusions at `12ef2f0`, after the assembly comparison, controlled layout
@@ -140,6 +168,111 @@ experiment and full VM rerun:
    investigation item, distinct from the two fixed regressions. Short mixed
    flows also need attention: long-chain wins do not imply every short case
    improves.
+
+6. **`inline::run` is layout-fragile (2026-10-09).** The interpreter is one
+   large function (about 2,100 instructions on aarch64), and three things
+   outside the instructions a benchmark runs decide what each instruction
+   costs, measured on `metaprogramming`:
+   - **Arms it never executes.** `Op::Clear` inline cost every loop 0.25 ns
+     per iteration at `9a1da16`, and 20 to 45 percent across the VM suite on
+     2026-10-09; out of line (`clear_slot`) it costs nothing.
+   - **Helpers LLVM inlines into it.** `Table::get` without its closures got
+     small enough to be inlined into the `Take` arm: `run` grew by about 250
+     instructions and 24 stack reloads, and take, push and every fixed cost
+     got 4 to 19 percent slower, take-from-sequence included. `get` is now
+     `#[inline(never)]`. A closure wrapped around the loop (`3ceac16`) cost 7
+     to 16 percent the same way.
+   - **Where the linker puts it.** With `run` byte-identical to `a965e32`, a
+     28-byte shift of its start still cost 0.2 ns per iteration (4 to 5 percent
+     at width 0, 10 percent for `assign-int` at width 8); with every function
+     aligned to 64 bytes (`-C llvm-args=-align-all-functions=6`) old and new
+     land at the same address and measure the same, for 7.6 percent more code.
+     That flag is not adopted (a build-profile decision, and hosts that build
+     `shards-core` as a dependency would not get it); block alignment is
+     (lesson 7).
+
+   Neither the loop-alignment flag nor advancing the index before dispatch
+   changed the first two. The current code is the best measured, found by
+   bisecting variants and comparing the disassembly, not by design. `run`
+   keeps two small closures: `Inc`'s overflow error (`ok_or_else`, called out
+   of line from the error path only) and the float operand (inlined); removing
+   them together with the others changed its layout. **Next
+   time `run` changes, make the hot path predictable first** (candidates: keep
+   only the cheap arms in the loop and move every other arm out of line and
+   cold behind one call; split the dispatch so each hot arm is small and
+   independent; place it deterministically; or profile-guided builds), compare
+   its disassembly before and after (`scripts/hot-asm.py --compare REV`; the
+   summary for this code is `bench/hot-asm/aarch64-apple-darwin.txt`, checked
+   with `--check`), and A/B every
+   edit to it on the whole VM suite, interleaved: the scheduler benchmarks do
+   not exercise these paths.
+
+7. **Values own their storage by hand, and branch targets are aligned
+   (2026-10-10).** Adding `Var::Bytes` made the VM suite 10 to 88 percent
+   slower without touching the VM: `Var`'s derived drop had an LLVM inline
+   cost of 240 against a threshold of 250, and the new variant (360) made
+   every drop of a number a call (`-C remark=inline` shows the decisions).
+   `Var` now has a hand-written `Drop` and `Clone`, 1.x's
+   `destroyVar`/`destroyVarSlow`: one inline tag check, storage released or
+   counted out of line, so their cost no longer depends on how many variants
+   hold storage ([values-and-types.md](values-and-types.md) §2). What it
+   took to match or beat the derived glue, measured on the VM suite and the
+   scheduler benchmarks:
+   - **Count references in place where the copy is the operation.** `Set`
+     (`var::assign_copy`) copies and releases inline; a call per copy cost a
+     heap assign about 2 ns. Inlining the counts into every copy instead
+     made `make-table` 21 to 32 percent and `bench_depth` 8 to 14 percent
+     slower.
+   - **Copy whole values and count through the storage pointer**
+     (`Arc::increment_strong_count`/`decrement_strong_count`), not variant
+     by variant: rebuilding a value field by field, or matching on a `&mut`
+     to drop it, spilled it to the stack.
+   - **Copy shared sequences in bulk** (`var::seq_mut`): one bitwise copy,
+     then the references counted, into room to grow. `push-shared-seq` got
+     14 to 38 percent faster than with `Arc::make_mut`.
+   - **The engine keeps plain assignment**: wrapping its stores in the same
+     helpers cost `bench_depth` 5 to 10 percent.
+
+   **Placement decides as much as code.** On Apple M-series the same `run`
+   measured 14 or 20 ms on one case from where its blocks landed, and an
+   unrelated edit moved results 40 percent either way. Native builds now
+   align every branch target that is not a fallthrough to 16 bytes
+   (`.cargo/config.toml`, `-align-all-nofallthru-blocks=4`, about 5 percent
+   more code; wasm and the ESP32 targets do not match it): comparisons stop
+   depending on luck, and shipped speed with them. Hosts that build
+   `shards-core` from another workspace need the same flag to get the
+   measured speed. `hot-asm.py` ignores the padding. Compare builds only
+   with the same flags on both sides.
+   What a host gets without the flag, for the code at lesson 8 (same
+   source, ABBA, 2026-10-10): the VM suite's geometric mean against 1.x is
+   0.47 either way (65 of 75 cases faster than 1.x aligned, 63
+   unaligned); unaligned loses `take-seq` 8 to 9 percent and `assign-table`
+   at width 8 14 percent, everything else within 5 percent; the entity tick
+   and `bench_depth` are within 1 percent. A different build can land worse
+   unaligned: that is the variance the flag removes.
+
+   Left after this work (`34fddd7` against M9, both aligned): no VM suite
+   case more than 5 percent slower, most heap and constant cases 10 to 40
+   percent faster; the entity tick about 4 percent slower with
+   `stackless/engine.rs` unchanged, from register allocation in
+   `Engine::activate` (fewer instructions, 396 stack loads against 336).
+
+8. **The runtime's step carries only runtime code (2026-10-10).** The
+   step was compiled twice (`steps::<LOCATE>`), and both copies carried the
+   compose-time meter's paths behind a branch: the metered `run`
+   variants, fuel and depth charges, the failure trace. Their registers
+   cost every runtime step, and each milestone added some (stack loads in
+   `Engine::activate`: 313 at M8, 336 at M9, 396 at `34fddd7`). The step is
+   now generic on metering as the VM is (`steps::<METERED, LOCATE>`, the
+   meter read only through a local that is `None` in the runtime's
+   instantiation), each instantiation is its own function, and the arms
+   that run once per call site (`prepare_and_enter`) or only after a
+   stateless call (`end_invocations`) are out of line. The runtime step is
+   1,358 instructions with 124 stack loads. Against M9 (aligned, ABBA): the
+   entity tick at parity (+0.6 percent; `34fddd7` was +4), `bench_depth` 2 to
+   5 percent faster, the VM suite unchanged against `34fddd7`. CI's
+   `hot-asm` job now fails on any change to these summaries, so growth is a
+   decision recorded in a commit, not a side effect.
 
 Keep the VM foundation and pursue collection ownership/access and short mixed
 flows next. The latest results and remaining misses belong in the

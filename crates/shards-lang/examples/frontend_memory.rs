@@ -44,24 +44,34 @@ fn measure<T>(fixture: &str, phase: &str, f: impl FnOnce() -> T) -> T {
 fn main() {
   let catalog = Catalog::new(&[shards_core::shards::CATALOG]).unwrap();
   println!("fixture,phase,before_bytes,live_bytes,peak_bytes");
-  let mut chain = String::new();
-  for i in 0..80 {
-    chain.push_str(&format!("@wire(w{i} {{Do(w{})}})\n", i + 1));
-  }
-  chain.push_str("@wire(w80 {1})\nDo(w0)");
+  // Function chains, as `deep_do_chains_are_a_diagnostic_not_a_crash`
+  // composes them: 20 deep runs on the device, 80 is `too-deep`.
+  let chain = |n: usize| {
+    let mut src = String::new();
+    for i in 0..n {
+      src.push_str(&format!(
+        "@fn(W{i} input: None output: Int params: {{}} {{W{}}})\n",
+        i + 1
+      ));
+    }
+    src + &format!("@fn(W{n} input: None output: Int params: {{}} {{1}})\nW0")
+  };
   let mut nested = String::from("1");
   for _ in 0..30 {
     nested = format!("When({{true}} {{{nested}}})");
   }
+  // Each level a function whose body nests the next call in a `When`.
   let mut wrapped = String::new();
   let n = (shards_core::compose::MAX_FLOW_DEPTH - 2) / 2;
   for i in 0..n {
     wrapped.push_str(&format!(
-      "@wire(w{i} {{When({{true}} {{Do(w{})}})}})\n",
+      "@fn(W{i} input: Int output: Int params: {{}} {{When({{true}} {{W{}}})}})\n",
       i + 1
     ));
   }
-  wrapped.push_str(&format!("@wire(w{n} {{1}})\nDo(w0)"));
+  wrapped.push_str(&format!(
+    "@fn(W{n} input: Int output: Int params: {{}} {{Math.Add(1)}})\n1 | W0"
+  ));
   let mut entries = String::new();
   for i in 0..64 {
     entries.push_str(&format!("@wire(e{i} {{{i}}})\n"));
@@ -73,7 +83,8 @@ fn main() {
   entries.push_str("@schedule(m ticker)\n@run(m iterations: 3)");
   for (name, text, valid) in [
     ("entries65", entries, true),
-    ("do80", chain, false),
+    ("fn20", chain(20), true),
+    ("fn80", chain(80), false),
     ("when30", nested, true),
     ("wrapped_when", wrapped, true),
   ] {

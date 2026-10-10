@@ -1,9 +1,9 @@
 //! `shards2`: check, run and describe Shards programs.
 //!
 //! ```text
-//! shards2 check [--json] <file> [key:value ...]
-//! shards2 run [--json] <file> [key:value ...]
-//! shards2 watch <file> [key:value ...]
+//! shards2 check [--json] [-I dir ...] <file> [key:value ...]
+//! shards2 run [--json] [-I dir ...] <file> [key:value ...]
+//! shards2 watch [-I dir ...] <file> [key:value ...]
 //! shards2 describe <shard>
 //! shards2 search <text>
 //! shards2 catalog
@@ -15,21 +15,22 @@
 //! outcomes, spawned_failures}`, where `log` holds the logged lines and
 //! each outcome is `{wire, outcome, value?, error?}`. `key:value` arguments are the script's
 //! `@key` values. Exit codes: 0 success, 1 problems or a failed run, 2
-//! usage.
+//! usage. `-I dir` adds a directory `@include` and `@read` search after
+//! the including file's own.
 
 use std::collections::HashMap;
 use std::process::ExitCode;
 
 use shards_core::diagnostic::{Diagnostic, json_str};
 use shards_core::{Catalog, Outcome};
-use shards_lang::{CheckReport, Program, RunReport, Source, render};
+use shards_lang::{CheckReport, FsFiles, Program, RunReport, Source, render};
 
 mod watch;
 
 const USAGE: &str = "usage:
-  shards2 check [--json] <file> [key:value ...]
-  shards2 run [--json] <file> [key:value ...]
-  shards2 watch <file> [key:value ...]
+  shards2 check [--json] [-I dir ...] <file> [key:value ...]
+  shards2 run [--json] [-I dir ...] <file> [key:value ...]
+  shards2 watch [-I dir ...] <file> [key:value ...]
   shards2 describe <shard>
   shards2 search <text>
   shards2 catalog";
@@ -42,15 +43,32 @@ struct Options {
   json: bool,
   file: String,
   defines: HashMap<String, String>,
+  include_paths: Vec<std::path::PathBuf>,
+}
+
+impl Options {
+  /// Where `@include` and `@read` look: the filesystem, with `-I`.
+  fn files(&self) -> FsFiles {
+    FsFiles {
+      include_paths: self.include_paths.clone(),
+    }
+  }
 }
 
 fn options(args: &[String]) -> Result<Options, String> {
   let mut json = false;
   let mut file = None;
   let mut defines = HashMap::new();
-  for arg in args {
+  let mut include_paths = Vec::new();
+  let mut args = args.iter();
+  while let Some(arg) = args.next() {
     match arg.as_str() {
       "--json" => json = true,
+      "-I" => match args.next() {
+        Some(dir) => include_paths.push(dir.into()),
+        None => return Err("-I needs a directory".into()),
+      },
+      a if a.starts_with("-I") => include_paths.push(a[2..].into()),
       a if a.starts_with("--") => return Err(format!("unknown option {a}")),
       a => match script_argument(a) {
         // In any order: `check a:b file.shs` and `check file.shs a:b`.
@@ -66,6 +84,7 @@ fn options(args: &[String]) -> Result<Options, String> {
     json,
     file: file.ok_or("missing file")?,
     defines,
+    include_paths,
   })
 }
 
@@ -99,9 +118,21 @@ fn print_report(report: &CheckReport, source: &Source, json: bool) {
 
 fn check(o: &Options) -> Result<ExitCode, String> {
   let source = read(&o.file)?;
-  let copy = Source::new(source.name.clone(), source.text.clone());
-  let report = shards_lang::check(source, &catalog(), &o.defines);
-  print_report(&report, &copy, o.json);
+  // The program's source holds the included files, which diagnostics
+  // point into.
+  let (report, source) = match Program::load_with(source, &catalog(), &o.defines, &o.files()) {
+    Ok(program) => (program.analyze(), program.source),
+    Err((source, diagnostics)) => (
+      CheckReport {
+        file: o.file.clone(),
+        diagnostics,
+        wires: Vec::new(),
+        functions: Vec::new(),
+      },
+      source,
+    ),
+  };
+  print_report(&report, &source, o.json);
   if !o.json && report.ok() {
     eprintln!("{}: ok", o.file);
   }
@@ -114,7 +145,7 @@ fn check(o: &Options) -> Result<ExitCode, String> {
 
 fn run(o: &Options) -> Result<ExitCode, String> {
   let source = read(&o.file)?;
-  let program = match Program::load(source, &catalog(), &o.defines) {
+  let program = match Program::load_with(source, &catalog(), &o.defines, &o.files()) {
     Ok(p) => p,
     Err((source, diagnostics)) => {
       if o.json {

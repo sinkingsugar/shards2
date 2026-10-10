@@ -25,7 +25,7 @@ use crate::types::Type;
 use crate::var::Var;
 
 /// A parameter as the loader produces it. Immutable, and part of the cache key.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ParamValue {
   /// A constant value.
   Value(Var),
@@ -38,6 +38,33 @@ pub enum ParamValue {
   Flow(Vec<ShardDef>),
   /// Value-flow pairs (`Match`); a `None` value matches anything.
   Cases(Vec<(Var, Vec<ShardDef>)>),
+  /// A pipeline evaluated at compose time (`#( ... )`,
+  /// docs/metaprogramming.md §2): compose runs it with no input and passes
+  /// its value on as a `Value`, wherever a literal is accepted.
+  Eval(Vec<ShardDef>),
+}
+
+/// Values hash only their first [`Var::HASHED_NODES`] nodes: a cache key
+/// costs the same whatever constants a definition holds (a constant read in
+/// many places is one shared value, which a full hash would walk at every
+/// read). Equal values still hash equally; values differing only past the
+/// prefix cost an equality check.
+impl Hash for ParamValue {
+  fn hash<H: Hasher>(&self, state: &mut H) {
+    std::mem::discriminant(self).hash(state);
+    match self {
+      ParamValue::Value(v) => v.hash_prefix(state),
+      ParamValue::Var(name) | ParamValue::Wire(name) => name.hash(state),
+      ParamValue::Flow(flow) | ParamValue::Eval(flow) => flow.hash(state),
+      ParamValue::Cases(cases) => {
+        cases.len().hash(state);
+        for (value, flow) in cases {
+          value.hash_prefix(state);
+          flow.hash(state);
+        }
+      }
+    }
+  }
 }
 
 /// Result of a successful compose.
@@ -102,6 +129,8 @@ pub struct ActivationCtx<'a> {
   /// The loop iteration ([`LeafCtx::iteration`]).
   pub(crate) iteration: u64,
   pub(crate) max_call_depth: usize,
+  /// The meter of a compose-time evaluation; `None` at run time.
+  pub(crate) meter: Option<&'a crate::compose_time::Meter>,
 }
 
 impl ActivationCtx<'_> {
@@ -166,6 +195,10 @@ impl LeafCtx for ActivationCtx<'_> {
 
   fn iteration(&self) -> u64 {
     self.iteration
+  }
+
+  fn meter(&self) -> Option<&crate::compose_time::Meter> {
+    self.meter
   }
 }
 
@@ -232,6 +265,161 @@ pub trait Shard: 'static {
   fn nested_state_size(_compiled: &Self::Compiled, _state: &Self::State) -> usize {
     0
   }
+}
+
+/// What a [`ControlShard`] asks the engine to do next.
+#[derive(Debug)]
+pub enum ControlStep {
+  /// Run child flow `index` (of [`ControlShard::flows`]) with this input.
+  /// Its outcome comes back as the next `resume`'s completion.
+  Enter(usize, Var),
+  /// Done: the shard outputs this value.
+  Complete(Var),
+}
+
+/// A composite: a shard that runs nested flows, which may suspend
+/// (docs/metaprogramming.md §3.3). The engine owns the flows' frames and
+/// runs them; the shard only decides which to enter, with what input, and
+/// what to output, through `resume`. This is how a host crate writes
+/// control flow (a retry, a timeout, a UI container); the full [`Shard`]
+/// contract's `control` hook is the core's own.
+///
+/// Its flows are parameters declared with [`crate::describe::Forms::FLOW`],
+/// composed by `compose` with [`ComposeCtx::compose_flow`] (or
+/// [`ComposeCtx::compose_flow_conditional`] for a flow that might not run)
+/// against the caller's scope: they read and write the caller's variables.
+pub trait ControlShard: 'static {
+  /// Compose output, shared by every instance; holds the composed flows.
+  type Compiled: Send + Sync + 'static;
+  /// The progress of one activation. Starts at `Default` and is set back to
+  /// it whenever the shard completes (whatever the outcome) or a child's
+  /// `Stop`, `Restart` or `Return` passes through; dropped on cleanup. It
+  /// lives for one activation, so it holds no resource.
+  type State: Default + 'static;
+
+  const NAME: &'static str;
+  const VERSION: u32 = 1;
+
+  /// As [`Shard::compose`]: deterministic, reading only `args`, the input
+  /// type and what `ctx` declares.
+  fn compose(args: &Args, ctx: &mut ComposeCtx<'_>) -> Result<Composed<Self::Compiled>>;
+
+  /// The composed child flows, in a fixed order (`ControlStep::Enter`
+  /// indexes them).
+  fn flows(compiled: &Self::Compiled) -> &[crate::flow::CompiledFlow];
+
+  /// Called when the shard is reached (`completion` is `None`), and again
+  /// with the outcome of every flow it entered: `Ok` with the flow's
+  /// output, or the error the flow failed with (which the shard may
+  /// handle, or return to fail with it). `input` is the shard's input,
+  /// the same on every call of one activation. A `Stop`, `Restart` or
+  /// `Return` inside a flow propagates without calling `resume`.
+  fn resume(
+    compiled: &Self::Compiled,
+    state: &mut Self::State,
+    ctx: &mut ActivationCtx<'_>,
+    input: &Var,
+    completion: Option<Result<Var>>,
+  ) -> Result<ControlStep>;
+}
+
+/// The engine's view of a [`ControlShard`] node.
+#[doc(hidden)]
+pub trait CustomControl: Send + Sync {
+  fn flows(&self) -> &[crate::flow::CompiledFlow];
+  fn new_state(&self) -> Box<dyn Any>;
+  fn reset_state(&self, state: &mut dyn Any);
+  fn resume(
+    &self,
+    state: &mut dyn Any,
+    ctx: &mut ActivationCtx<'_>,
+    input: &Var,
+    completion: Option<Result<Var>>,
+  ) -> Result<ControlStep>;
+}
+
+/// A [`ControlShard`] node: its compiled value behind the engine's
+/// interface, boxed so `Control::Custom` holds a thin reference.
+struct ControlNode {
+  custom: Box<dyn CustomControl>,
+  name: &'static str,
+  lifetime: crate::signature::Lifetime,
+}
+
+struct ControlImpl<S: ControlShard>(S::Compiled);
+
+impl<S: ControlShard> CustomControl for ControlImpl<S> {
+  fn flows(&self) -> &[crate::flow::CompiledFlow] {
+    S::flows(&self.0)
+  }
+
+  fn new_state(&self) -> Box<dyn Any> {
+    Box::new(S::State::default())
+  }
+
+  fn reset_state(&self, state: &mut dyn Any) {
+    *control_state::<S>(state) = S::State::default();
+  }
+
+  fn resume(
+    &self,
+    state: &mut dyn Any,
+    ctx: &mut ActivationCtx<'_>,
+    input: &Var,
+    completion: Option<Result<Var>>,
+  ) -> Result<ControlStep> {
+    S::resume(&self.0, control_state::<S>(state), ctx, input, completion)
+  }
+}
+
+fn control_state<S: ControlShard>(state: &mut dyn Any) -> &mut S::State {
+  state
+    .downcast_mut::<S::State>()
+    .expect("control state type mismatch")
+}
+
+impl CompiledNode for ControlNode {
+  fn control(&self) -> Option<Control<'_>> {
+    Some(Control::Custom(&self.custom))
+  }
+
+  fn name(&self) -> &'static str {
+    self.name
+  }
+
+  fn lifetime(&self) -> crate::signature::Lifetime {
+    self.lifetime
+  }
+
+  fn instantiate(&self, _: &mut InstanceCtx) -> Result<Box<dyn Any>> {
+    unreachable!("a composite's state is the engine's")
+  }
+
+  fn activate(&self, _: &mut dyn Any, _: &mut ActivationCtx<'_>, _: &Var) -> Result<Step> {
+    unreachable!("composites are dispatched by the engine")
+  }
+
+  fn cleanup(&self, _: &mut dyn Any, _: &mut CleanupCtx) {}
+
+  fn state_size(&self, _: &dyn Any) -> usize {
+    0
+  }
+}
+
+fn compose_control<S: ControlShard>(
+  args: &Args,
+  ctx: &mut ComposeCtx<'_>,
+  lifetime: crate::signature::Lifetime,
+) -> Result<Composed<Arc<dyn CompiledNode>>> {
+  let composed = S::compose(args, ctx)?;
+  Ok(Composed {
+    compiled: Arc::new(ControlNode {
+      custom: Box::new(ControlImpl::<S>(composed.compiled)),
+      name: S::NAME,
+      lifetime,
+    }),
+    output: composed.output,
+  })
 }
 
 /// Type-erased compiled node, as stored in a compiled flow.
@@ -390,6 +578,19 @@ impl ShardType {
     );
     ShardType {
       compose: Some(compose_erased::<S>),
+      ..self
+    }
+  }
+
+  /// Attaches a composite's implementation ([`ControlShard`]), checked
+  /// against the description like [`ShardType::implemented_by`].
+  pub const fn controlled_by<S: ControlShard>(self) -> ShardType {
+    assert!(
+      str_eq(S::NAME, self.desc.name) && S::VERSION == self.desc.version,
+      "implementation does not match the shard description"
+    );
+    ShardType {
+      compose: Some(compose_control::<S>),
       ..self
     }
   }

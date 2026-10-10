@@ -10,15 +10,19 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
+mod evaluate;
+
 use crate::args::{Args, decode};
 use crate::diagnostic::{Diagnostic, PathStep, Phase, TypeRef};
 use crate::error::{Error, Result};
-use crate::flow::CompiledFlow;
-use crate::function::{CallCompiled, CallTarget, CompiledFunction, FunctionDef, KeepSlot};
+use crate::flow::{CompiledFlow, NO_ORIGIN, OriginName, OriginStep};
+use crate::function::{
+  BlockArg, CallCompiled, CallTarget, CompiledFunction, FlowType, FunctionDef, KeepSlot,
+};
 use crate::reload::{FunctionKey, FunctionRegistry};
 use crate::shard::{CompiledNode, Composed, ParamValue, ShardDef, ShardType};
 use crate::shards::Operand;
-use crate::signature::{Analysis, Effects, Lifetime, Occurrence};
+use crate::signature::{Analysis, CallSite, Effects, Lifetime, NotInlined, NotVm, Occurrence};
 use crate::stackless::Control;
 use crate::types::Type;
 use crate::var::Var;
@@ -150,6 +154,122 @@ const INLINE_BUDGET: usize = 24;
 /// heap).
 const INLINE_DEPTH: u8 = if cfg!(target_os = "espidf") { 2 } else { 8 };
 
+/// An inlined call: the callee's body, and the site's blocks with their
+/// parameters' names.
+type InlinePlan<'a> = (&'a Arc<CompiledFunction>, Vec<(&'a CompiledFlow, &'a str)>);
+
+/// Whether a call site is inlined (`ComposeCtx::flatten`): with the
+/// callee's body and the site's blocks when it is, why not otherwise. One
+/// decision, so what `check --json` reports for a site (`call_site`) is
+/// what compose does.
+fn inline_plan(c: &CallCompiled) -> std::result::Result<InlinePlan<'_>, NotInlined> {
+  let CallTarget::Direct(body) = &c.target else {
+    return Err(NotInlined::Recursive);
+  };
+  if c.stateful() {
+    return Err(NotInlined::Stateful);
+  }
+  // The blocks written at the site, with their parameters' names, when
+  // they can stand in for the callee's `Run`s: straight-line code, and a
+  // block run more than once copied within the budget.
+  let mut blocks = Vec::with_capacity(c.blocks.len());
+  let names = body.def.params.iter().filter(|p| p.is_flow());
+  for (block, param) in c.blocks.iter().zip(names) {
+    let BlockArg::Flow(flow) = block else {
+      return Err(NotInlined::Forwarded(param.name.as_str().into()));
+    };
+    if let Some(why) = not_vm_code(flow) {
+      return Err(NotInlined::Block(param.name.as_str().into(), why));
+    }
+    blocks.push((flow, param.name.as_str()));
+  }
+  // A block is the site's own code; a second `Run` of it copies it.
+  let mut runs = vec![0usize; blocks.len()];
+  for node in &body.flow.pc_nodes {
+    if let Some(Control::Run(run)) = body
+      .flow
+      .nodes
+      .get(*node as usize)
+      .and_then(|n| n.control())
+    {
+      runs[run.param as usize] += 1;
+    }
+  }
+  let copies: usize = blocks
+    .iter()
+    .zip(&runs)
+    .map(|((block, _), runs)| block.code.len() * runs.saturating_sub(1))
+    .sum();
+  let leaf = if blocks.is_empty() {
+    body.vm_leaf
+  } else {
+    body.block_leaf
+  };
+  if !leaf {
+    return Err(NotInlined::Body(
+      not_vm_code(&body.flow).unwrap_or(NotVm::NotStraightLine),
+    ));
+  }
+  if copies > INLINE_BUDGET {
+    return Err(NotInlined::BlockCopies(copies as u32, INLINE_BUDGET as u32));
+  }
+  if !body.keeps.is_empty() {
+    return Err(NotInlined::Keeps);
+  }
+  if !body.lazy_refs.is_empty() {
+    return Err(NotInlined::CallsRecursive);
+  }
+  if body.flow.code.len() > INLINE_BUDGET {
+    return Err(NotInlined::TooLong(
+      body.flow.code.len() as u32,
+      INLINE_BUDGET as u32,
+    ));
+  }
+  if body.inline_depth >= INLINE_DEPTH {
+    return Err(NotInlined::TooDeep(INLINE_DEPTH));
+  }
+  Ok((body, blocks))
+}
+
+/// Why a flow is not straight-line VM code: its first shard without a VM
+/// form (a `Run` is the block it runs), or a call that is not inlined.
+fn not_vm_code(flow: &CompiledFlow) -> Option<NotVm> {
+  flow
+    .code
+    .iter()
+    .zip(&flow.pc_nodes)
+    .find_map(|(i, node)| match i.op {
+      crate::inline::Op::Fallback => {
+        let node = &flow.nodes[*node as usize];
+        match node.control() {
+          Some(Control::Run(_)) => None,
+          Some(Control::Call(_)) => Some(NotVm::CallsNotInlined),
+          _ => Some(NotVm::NoVmForm(node.name())),
+        }
+      }
+      crate::inline::Op::VmCall => Some(NotVm::CallsNotInlined),
+      _ => None,
+    })
+    .or_else(|| (!crate::inline::straight_line(&flow.code)).then_some(NotVm::NotStraightLine))
+}
+
+/// How a call site runs, for tooling (`Occurrence::call`).
+fn call_site(c: &CallCompiled) -> CallSite {
+  match inline_plan(c) {
+    Ok(_) => CallSite {
+      path: "inlined",
+      reason: None,
+    },
+    Err(reason) => CallSite {
+      path: match &c.target {
+        CallTarget::Direct(body) if !c.stateful() && body.vm_only => "vm",
+        _ => "framed",
+      },
+      reason: Some(reason),
+    },
+  }
+}
+
 /// A flow's code under construction: nodes, instructions and the node each
 /// instruction stands for (`CompiledFlow::pc_nodes`).
 struct Flat {
@@ -159,6 +279,12 @@ struct Flat {
   /// `Lowered::inlined` and `Lowered::released_slots`.
   inlined: Vec<(u32, u32)>,
   released_slots: Vec<u32>,
+  /// `CompiledFlow::origins`, and the entry of the shard being added,
+  /// when `record` (`ComposeCache::record_origins`).
+  record: bool,
+  origins: Vec<u32>,
+  steps: Vec<(OriginStep, u32)>,
+  current: u32,
 }
 
 impl Flat {
@@ -167,8 +293,32 @@ impl Flat {
     u32::try_from(self.code.len()).expect("flow code fits u32")
   }
 
+  /// Starts the instructions of shard `index` of this flow.
+  fn shard(&mut self, index: usize, name: impl FnOnce() -> OriginName) {
+    if !self.record {
+      return;
+    }
+    let name = name();
+    self.current = self.step(
+      OriginStep::Shard {
+        index: u32::try_from(index).expect("shard index fits u32"),
+        name,
+      },
+      NO_ORIGIN,
+    );
+  }
+
+  /// A new origin entry, following `parent`.
+  fn step(&mut self, step: OriginStep, parent: u32) -> u32 {
+    self.steps.push((step, parent));
+    u32::try_from(self.steps.len() - 1).expect("origin count fits u32")
+  }
+
   /// A node of this flow with its one instruction.
   fn node(&mut self, node: Arc<dyn CompiledNode>, name: &'static str, output: Type) {
+    if self.record {
+      self.origins.push(self.current);
+    }
     self
       .pc_nodes
       .push(u32::try_from(self.nodes.len()).expect("node count fits u32"));
@@ -182,6 +332,9 @@ impl Flat {
   /// `target`).
   fn op(&mut self, op: crate::inline::Op, output: Type) -> u32 {
     let at = self.here();
+    if self.record {
+      self.origins.push(self.current);
+    }
     self.pc_nodes.push(crate::flow::NO_NODE);
     self.code.push(crate::inline::Instruction::new(
       Some(crate::inline::InlineOp(op)),
@@ -211,16 +364,143 @@ impl Flat {
     self
       .released_slots
       .extend(flow.released_slots().iter().copied());
-    self.append_rebased(flow, 0);
+    let prefix = flow.origins.as_ref().map_or(&[][..], |o| &o.prefix[..]);
+    self.append_rebased(flow, 0, prefix);
   }
 
   /// Appends an inlined callee's body: like `append`, with every local slot
   /// the code addresses moved up by `slots` (the callee's frame lives at
   /// that offset in the caller's); all its nodes count as one inlined call.
-  fn inline(&mut self, flow: &CompiledFlow, slots: usize) {
+  fn inline(&mut self, flow: &CompiledFlow, slots: usize, function: impl FnOnce() -> Arc<str>) {
     let len = u32::try_from(flow.nodes.len()).expect("node count fits u32");
     self.inlined.push((self.node_base(), len));
-    self.append_rebased(flow, slots);
+    let prefix = if self.record {
+      vec![OriginStep::Function(function())]
+    } else {
+      Vec::new()
+    };
+    self.append_rebased(flow, slots, &prefix);
+  }
+
+  /// `inline` for a callee that runs blocks its call passed: each `Run`
+  /// of the callee's code is replaced by its block's code, which addresses
+  /// the caller's slots as composed at the call site; a `Run` without an
+  /// output saves its input in `saved` and restores it after the block.
+  /// The callee's own nodes and the blocks' all count as the inlined call.
+  fn inline_blocks(
+    &mut self,
+    flow: &CompiledFlow,
+    slots: usize,
+    function: impl FnOnce() -> Arc<str>,
+    blocks: &[(&CompiledFlow, &str)],
+    saved: Option<Binding>,
+  ) {
+    let start = self.node_base();
+    // The callee's nodes, without its `Run`s.
+    let mut node_map = vec![crate::flow::NO_NODE; flow.nodes.len()];
+    for (i, node) in flow.nodes.iter().enumerate() {
+      if !matches!(node.control(), Some(Control::Run(_))) {
+        node_map[i] = self.node_base();
+        self.nodes.push(node.clone());
+      }
+    }
+    // The callee's origins hang below the call through the function.
+    let (root, steps) = if self.record {
+      let root = self.step(OriginStep::Function(function()), self.current);
+      let steps = u32::try_from(self.steps.len()).expect("origin count fits u32");
+      if let Some(origins) = &flow.origins {
+        let rebase = |at: u32| if at == NO_ORIGIN { root } else { at + steps };
+        self.steps.extend(
+          origins
+            .steps
+            .iter()
+            .map(|(step, parent)| (step.clone(), rebase(*parent))),
+        );
+      }
+      (root, steps)
+    } else {
+      (NO_ORIGIN, 0)
+    };
+    let mut pcs = Vec::with_capacity(flow.code.len() + 1);
+    let mut jumps = Vec::new();
+    for (pc, (instruction, node)) in flow.code.iter().zip(&flow.pc_nodes).enumerate() {
+      pcs.push(self.here());
+      let run = match *node {
+        crate::flow::NO_NODE => None,
+        node => match flow.nodes[node as usize].control() {
+          Some(Control::Run(run)) => Some(run),
+          _ => None,
+        },
+      };
+      if let Some(run) = run {
+        let (block, param) = blocks[run.param as usize];
+        // Run passes its input on unless what follows replaces it anyway.
+        let restored = run.passthrough
+          && !flow
+            .code
+            .get(pc + 1)
+            .is_some_and(crate::inline::Instruction::ignores_accumulator);
+        let saved = restored.then(|| saved.expect("a hidden slot for the input"));
+        if let Some(saved) = saved {
+          self.op(crate::inline::Op::Set(saved), Type::any());
+        }
+        if run.ignores_input {
+          self.op(crate::inline::Op::Const(Var::None), Type::none());
+        }
+        // Lexically the caller's: below the call, at its parameter.
+        self
+          .released_slots
+          .extend(block.released_slots().iter().copied());
+        self.append_rebased(block, 0, &[OriginStep::Param(param.to_string().into())]);
+        if let Some(saved) = saved {
+          // Restored, and ended at once (the accumulator takes the value it
+          // reads): held until the callee ended, it kept a collection the
+          // input shares from being uniquely owned, so the callee's next
+          // push to it copied.
+          self.op(crate::inline::Op::get(saved), Type::any());
+          self.op(crate::inline::Op::Clear(saved), Type::any());
+        } else if run.discards_output
+          && !flow
+            .code
+            .get(pc + 1)
+            .is_some_and(crate::inline::Instruction::ignores_accumulator)
+        {
+          self.op(crate::inline::Op::Const(Var::None), Type::none());
+        }
+        continue;
+      }
+      if self.record {
+        let at = flow.origins.as_ref().map_or(NO_ORIGIN, |o| o.at[pc]);
+        self
+          .origins
+          .push(if at == NO_ORIGIN { root } else { at + steps });
+      }
+      let mut instruction = instruction.clone();
+      if slots != 0 {
+        instruction.rebase_locals(slots);
+      }
+      if instruction.jump_target().is_some() {
+        jumps.push(self.code.len());
+      }
+      self.code.push(instruction);
+      self.pc_nodes.push(match *node {
+        crate::flow::NO_NODE => crate::flow::NO_NODE,
+        node => node_map[node as usize],
+      });
+    }
+    pcs.push(self.here());
+    for at in jumps {
+      let target = self.code[at].jump_target().expect("a jump");
+      self.code[at].retarget(pcs[target as usize]);
+    }
+    // Each restore ends the slot's value; a failure inside a block ends it
+    // with the flow.
+    if let Some(Binding::Local(index)) = saved {
+      self
+        .released_slots
+        .push(u32::try_from(index).expect("slot fits u32"));
+    }
+    self.inlined.push((start, self.node_base() - start));
   }
 
   /// Ends the value of a hidden slot holding a value of type `ty` here
@@ -244,7 +524,30 @@ impl Flat {
     u32::try_from(self.nodes.len()).expect("node count fits u32")
   }
 
-  fn append_rebased(&mut self, flow: &CompiledFlow, slots: usize) {
+  /// Appends `flow`'s code; its origins hang below the current shard,
+  /// through `prefix` (the parameter holding it, or the function inlined).
+  fn append_rebased(&mut self, flow: &CompiledFlow, slots: usize, prefix: &[OriginStep]) {
+    if self.record {
+      let mut root = self.current;
+      for step in prefix {
+        root = self.step(step.clone(), root);
+      }
+      let steps = u32::try_from(self.steps.len()).expect("origin count fits u32");
+      let rebase = |at: u32| if at == NO_ORIGIN { root } else { at + steps };
+      match &flow.origins {
+        Some(origins) => {
+          self.steps.extend(
+            origins
+              .steps
+              .iter()
+              .map(|(step, parent)| (step.clone(), rebase(*parent))),
+          );
+          self.origins.extend(origins.at.iter().map(|at| rebase(*at)));
+        }
+        // Composed without origins: located at the shard that brought it.
+        None => self.origins.extend(flow.code.iter().map(|_| root)),
+      }
+    }
     let base = self.here();
     let node_base = self.node_base();
     for (instruction, node) in flow.code.iter().zip(&flow.pc_nodes) {
@@ -281,11 +584,16 @@ pub enum Dep {
   },
   /// A function whose body was inlined into this code (`ComposeCtx::flatten`),
   /// so an edit to it changes this body too: unlike `Function`, a body
-  /// comparison counts it, and a wire holding it is swapped on reload.
+  /// comparison counts it, and a wire holding it is swapped on reload. A
+  /// function a compose-time evaluation reached is recorded the same way:
+  /// its result is part of this code.
   Inlined {
     name: String,
     def: Option<Arc<FunctionDef>>,
   },
+  /// What compose-time evaluations in this code used: valid only under
+  /// limits that cover it (docs/metaprogramming.md §2.3).
+  Evaluation(crate::compose_time::EvalUsage),
 }
 
 /// What compose may read besides parameters and input type.
@@ -293,6 +601,8 @@ pub struct ComposeEnv<'a> {
   pub mesh_layout: &'a FrameLayout,
   pub wires: &'a HashMap<String, WireDef>,
   pub functions: &'a HashMap<String, FunctionDef>,
+  /// The budgets of compose-time evaluations.
+  pub eval: crate::compose_time::EvalLimits,
 }
 
 impl Dep {
@@ -303,6 +613,7 @@ impl Dep {
       Dep::Function { name, def } | Dep::Inlined { name, def } => {
         env.functions.get(name) == def.as_deref()
       }
+      Dep::Evaluation(usage) => usage.fits(&env.eval),
     }
   }
 }
@@ -314,6 +625,9 @@ impl Dep {
 pub(crate) enum Owner {
   Wire,
   Function(Arc<FunctionDef>),
+  /// A pipeline evaluated at compose time (`#( ... )`): it sees only what
+  /// it declares itself, no runtime value.
+  Eval,
 }
 
 /// A compiled wire: shared, immutable, and free of per-instance data.
@@ -421,6 +735,14 @@ pub struct ComposeCtx<'a> {
   lazy_refs: Vec<String>,
   /// `CompiledFunction::inline_depth` of the body being composed.
   inline_depth: u8,
+  /// How many blocks passed to a call (flow arguments) enclose the shard
+  /// being composed: a `Return` there would leave the block
+  /// (`control-in-flow`), and `Once` would not persist.
+  flow_args: usize,
+  /// The block being composed for a call's flow parameter, with the
+  /// parameter's name: what a diagnostic path names for it (a call has no
+  /// decoded `Args` to find it in).
+  block_param: Option<(*const ShardDef, Arc<str>)>,
 }
 
 /// How deeply flows may nest, counting function bodies and wires composed
@@ -451,10 +773,10 @@ impl ComposeCtx<'_> {
         initialized: self.initialized[slot.index],
       });
     }
-    if let Owner::Function(def) = &self.owner
-      && !def.declares(name)
-    {
-      return None;
+    match &self.owner {
+      Owner::Function(def) if !def.declares(name) => return None,
+      Owner::Eval => return None,
+      _ => {}
     }
     let found = self.env.mesh_layout.lookup(name);
     let dep = Dep::MeshVar {
@@ -479,6 +801,7 @@ impl ComposeCtx<'_> {
       let declared = match &self.owner {
         Owner::Wire => true,
         Owner::Function(def) => def.declares(&name),
+        Owner::Eval => false,
       };
       if declared && !names.contains(&name) {
         names.push(name);
@@ -492,7 +815,7 @@ impl ComposeCtx<'_> {
   /// `Return` must produce. `None` in a wire.
   pub fn return_type(&self) -> Option<Type> {
     match &self.owner {
-      Owner::Wire => None,
+      Owner::Wire | Owner::Eval => None,
       Owner::Function(def) => Some(def.output),
     }
   }
@@ -501,15 +824,51 @@ impl ComposeCtx<'_> {
   /// wire, or in a function declared `stateful: true`.
   pub fn allows_persistent_state(&self) -> bool {
     match &self.owner {
-      Owner::Wire => true,
+      // Composed, then refused as not compose-time with the other state.
+      Owner::Wire | Owner::Eval => true,
       Owner::Function(def) => def.stateful,
     }
+  }
+
+  /// Whether the flow being composed is evaluated at compose time
+  /// (`#( ... )`).
+  pub fn evaluating(&self) -> bool {
+    matches!(self.owner, Owner::Eval)
+  }
+
+  /// The flow parameter `name` of the function being composed: its index
+  /// among the function's flow parameters, and its type.
+  pub fn flow_param(&self, name: &str) -> Option<(usize, FlowType)> {
+    match &self.owner {
+      Owner::Function(def) => def.flow_param_index(name),
+      Owner::Wire | Owner::Eval => None,
+    }
+  }
+
+  /// Whether the shard being composed is inside a block passed to a call
+  /// (docs/metaprogramming.md §3.1): it runs inside the callee.
+  pub fn in_flow_argument(&self) -> bool {
+    self.flow_args > 0
+  }
+
+  /// `flow-escapes`: a flow parameter used other than run or passed on.
+  pub(crate) fn flow_escapes(&self, name: &str, shard: &str) -> Option<Error> {
+    self.flow_param(name)?;
+    Some(Error::Diagnostic(Box::new(
+      compose_diagnostic(
+        "flow-escapes",
+        format!(
+          "{name} is a flow parameter: it can only be run (`Run({name})`) or passed on as a flow argument to another call, not read, bound, assigned, returned or stored"
+        ),
+      )
+      .shard(shard),
+    )))
   }
 
   /// The function being composed, if any (for messages).
   pub fn function_name(&self) -> Option<&str> {
     match &self.owner {
-      Owner::Wire => None,
+      Owner::Wire | Owner::Eval => None,
       Owner::Function(def) => Some(&def.name),
     }
   }
@@ -547,6 +906,9 @@ impl ComposeCtx<'_> {
         .shard(shard),
       )))
     };
+    if let Some(err) = self.flow_escapes(name, shard) {
+      return Err(err);
+    }
     match self.var(name) {
       None => {
         if let Owner::Function(def) = &self.owner
@@ -561,15 +923,20 @@ impl ComposeCtx<'_> {
           );
         }
         let near = crate::diagnostic::closest(name, self.visible_names(), 3);
-        variable_error("unknown-variable", format!("unknown variable {name}")).map_err(
-          |e: crate::Error| match e {
-            crate::Error::Diagnostic(mut d) => {
-              d.did_you_mean = near;
-              crate::Error::Diagnostic(d)
-            }
-            other => other,
-          },
-        )
+        let message = if self.evaluating() {
+          format!(
+            "unknown variable {name}; `#( )` runs at compose time and cannot see runtime values (locals, parameters, mesh variables)"
+          )
+        } else {
+          format!("unknown variable {name}")
+        };
+        variable_error("unknown-variable", message).map_err(|e: crate::Error| match e {
+          crate::Error::Diagnostic(mut d) => {
+            d.did_you_mean = near;
+            crate::Error::Diagnostic(d)
+          }
+          other => other,
+        })
       }
       Some(info) if !info.initialized => variable_error(
         "possibly-uninitialized",
@@ -686,18 +1053,9 @@ impl ComposeCtx<'_> {
         flat.release(saved, input);
       }
       Control::Call(c) => {
-        let CallTarget::Direct(body) = &c.target else {
+        let Ok((body, blocks)) = inline_plan(c) else {
           return false;
         };
-        if c.stateful()
-          || !body.vm_leaf
-          || !body.keeps.is_empty()
-          || !body.lazy_refs.is_empty()
-          || body.flow.code.len() > INLINE_BUDGET
-          || body.inline_depth >= INLINE_DEPTH
-        {
-          return false;
-        }
         self.inline_depth = self.inline_depth.max(body.inline_depth + 1);
         let fdef = body.def.clone();
         let base = self.declare_hidden(Type::any());
@@ -728,7 +1086,36 @@ impl ComposeCtx<'_> {
         } else if !c.args.is_empty() {
           flat.op(Op::get(input_slot), input);
         }
-        flat.inline(&body.flow, base);
+        if blocks.is_empty() {
+          flat.inline(&body.flow, base, || Arc::from(fdef.name.as_str()));
+        } else {
+          // A slot for the input of a `Run` that passes it on, unless
+          // what follows each such `Run` replaces it anyway.
+          let passthrough = body
+            .flow
+            .code
+            .iter()
+            .zip(&body.flow.pc_nodes)
+            .enumerate()
+            .any(|(pc, (_, node))| {
+              matches!(
+                body.flow.nodes.get(*node as usize).and_then(|n| n.control()),
+                Some(Control::Run(run)) if run.passthrough
+              ) && !body
+                .flow
+                .code
+                .get(pc + 1)
+                .is_some_and(crate::inline::Instruction::ignores_accumulator)
+            });
+          let saved = passthrough.then(|| Binding::Local(self.declare_hidden(Type::any())));
+          flat.inline_blocks(
+            &body.flow,
+            base,
+            || Arc::from(fdef.name.as_str()),
+            &blocks,
+            saved,
+          );
+        }
         // The call's values end with it: every slot it used that may hold
         // a heap value is cleared, unless the callee's own code already
         // ended it last (a call inlined into the callee, whose slots then
@@ -871,9 +1258,24 @@ impl ComposeCtx<'_> {
     result
   }
 
+  /// The parameter holding a nested flow or wire (and the item, for a case
+  /// or a variadic argument): the decoded arguments of the shard being
+  /// composed, or the call whose block this is.
+  fn held(&self, child: &Child) -> Option<(std::borrow::Cow<'static, str>, Option<usize>)> {
+    if let Some((param, item)) = self.current_args.as_ref().and_then(|a| a.param_of(child)) {
+      return Some((param.into(), item));
+    }
+    match (child, &self.block_param) {
+      (Child::Flow(ptr), Some((block, name))) if std::ptr::eq(*ptr, *block) => {
+        Some((name.to_string().into(), None))
+      }
+      _ => None,
+    }
+  }
+
   fn child_prefix(&self, child: &Child) -> Vec<PathStep> {
     let mut path = Vec::new();
-    if let Some((param, item)) = self.current_args.as_ref().and_then(|a| a.param_of(child)) {
+    if let Some((param, item)) = self.held(child) {
       path.push(PathStep::Param(param.into()));
       if let Some(item) = item {
         path.push(PathStep::Item(item));
@@ -914,21 +1316,27 @@ impl ComposeCtx<'_> {
       ));
     }
     let path_len = self.diagnostic_path.len();
-    if let Some((param, item)) = self
-      .current_args
-      .as_ref()
-      .and_then(|args| args.param_of(&Child::Flow(flow.as_ptr())))
-    {
-      self.diagnostic_path.push(PathStep::Param(param.into()));
+    let held = self.held(&Child::Flow(flow.as_ptr()));
+    if let Some((param, item)) = &held {
+      self
+        .diagnostic_path
+        .push(PathStep::Param(param.to_string()));
       if let Some(item) = item {
-        self.diagnostic_path.push(PathStep::Item(item));
+        self.diagnostic_path.push(PathStep::Item(*item));
       }
     }
     self.depth += 1;
     let result = self.compose_flow_at_depth(flow, input);
     self.depth -= 1;
     self.diagnostic_path.truncate(path_len);
-    result
+    result.map(|mut compiled| {
+      if let (Some((param, item)), Some(origins)) = (held, &mut compiled.origins) {
+        let mut prefix = vec![OriginStep::Param(param)];
+        prefix.extend(item.map(|i| OriginStep::Item(u32::try_from(i).expect("item fits u32"))));
+        origins.prefix = prefix.into_boxed_slice();
+      }
+      compiled
+    })
   }
 
   #[inline(never)]
@@ -941,6 +1349,10 @@ impl ComposeCtx<'_> {
       pc_nodes: Vec::with_capacity(flow.len()),
       inlined: Vec::new(),
       released_slots: Vec::new(),
+      record: self.cache.record_origins,
+      origins: Vec::new(),
+      steps: Vec::new(),
+      current: NO_ORIGIN,
     };
     let mut ty = input;
     // Once a shard never produces a value (`Stop`), the rest of the flow is
@@ -949,6 +1361,29 @@ impl ComposeCtx<'_> {
     // flow's output stays `Never`.
     let mut diverged = false;
     for (index, def) in flow.iter().enumerate() {
+      // Arguments evaluated at compose time (`#( ... )`) become literals
+      // first; the definition is copied only when it holds one.
+      let evaluated;
+      let def = if def
+        .args
+        .iter()
+        .any(|a| matches!(a.value, ParamValue::Eval(_)))
+      {
+        evaluated = match self.evaluate_args(def) {
+          Ok(def) => def,
+          Err(err) => {
+            self.input = saved;
+            self.failed_child = Some(Child::Flow(flow.as_ptr()));
+            return Err(err.prefix_path(PathStep::Shard {
+              index,
+              name: def.name().to_string(),
+            }));
+          }
+        };
+        &evaluated
+      } else {
+        def
+      };
       self.input = if ty == Type::never() {
         Type::none()
       } else {
@@ -968,6 +1403,9 @@ impl ComposeCtx<'_> {
         Analysis {
           effects: def.ty.desc.effects,
           lifetime: def.ty.desc.lifetime,
+          // A call is the body it reaches (included by `compose_call`).
+          not_compose_time: (def.function.is_none() && !crate::compose_time::eligible(def.ty))
+            .then(|| def.ty.name()),
           ..Analysis::default()
         },
       );
@@ -1009,6 +1447,10 @@ impl ComposeCtx<'_> {
           }));
         }
       };
+      let call = match composed.compiled.control() {
+        Some(Control::Call(c)) if self.cache.record_call_sites => Some(Box::new(call_site(c))),
+        _ => None,
+      };
       node_analysis.occurrences.insert(
         0,
         Occurrence {
@@ -1017,6 +1459,7 @@ impl ComposeCtx<'_> {
           output: composed.output,
           effects: node_analysis.effects,
           lifetime: node_analysis.lifetime,
+          call,
         },
       );
       analysis.include(
@@ -1026,6 +1469,10 @@ impl ComposeCtx<'_> {
           name: def.name().into(),
         }],
       );
+      flat.shard(index, || match &def.function {
+        Some(name) => OriginName::Call(name.clone()),
+        None => OriginName::Shard(def.ty.name()),
+      });
       if !self.flatten(&composed.compiled, node_input, &mut flat) {
         flat.node(composed.compiled, def.ty.name(), composed.output);
       }
@@ -1042,6 +1489,10 @@ impl ComposeCtx<'_> {
       pc_nodes,
       inlined,
       mut released_slots,
+      record,
+      origins,
+      steps,
+      ..
     } = flat;
     released_slots.sort_unstable();
     released_slots.dedup();
@@ -1058,6 +1509,13 @@ impl ComposeCtx<'_> {
         Box::new(crate::flow::Lowered {
           inlined,
           released_slots,
+        })
+      }),
+      origins: record.then(|| {
+        Box::new(crate::flow::Origins {
+          at: origins.into_boxed_slice(),
+          steps: steps.into_boxed_slice(),
+          prefix: Box::default(),
         })
       }),
     })
@@ -1138,6 +1596,18 @@ impl ComposeCtx<'_> {
       d.did_you_mean = crate::diagnostic::closest(name, known, 3);
       return Err(Error::Diagnostic(Box::new(d)));
     };
+    // A block starts fresh each time it runs (metaprogramming.md §3), so it
+    // cannot own the instance a stateful callee keeps between calls, as it
+    // cannot hold a `Once`.
+    if fdef.stateful && self.in_flow_argument() {
+      return Err(fn_error(
+        name,
+        "stateful-call-in-stateless",
+        format!(
+          "{name} is stateful, so each call site owns an instance of it, but a block passed to a call starts fresh each time it runs and cannot own one: call {name} outside the block, or make it stateless"
+        ),
+      ));
+    }
     if fdef.stateful
       && let Owner::Function(caller) = &self.owner
       && !caller.stateful
@@ -1163,8 +1633,14 @@ impl ComposeCtx<'_> {
       ));
     }
     // Labels are validated against the parameter list first; then each
-    // argument is a literal or a variable read once at entry.
-    let mut given: Vec<Option<Operand>> = vec![None; fdef.params.len()];
+    // argument is a literal or a variable read once at entry, or, for a
+    // flow parameter, a block composed here against this scope (or a flow
+    // parameter of this function, passed on).
+    enum Given {
+      Value(Operand),
+      Block(BlockArg),
+    }
+    let mut given: Vec<Option<Given>> = (0..fdef.params.len()).map(|_| None).collect();
     let mut seen_named = false;
     for (position, arg) in def.args.iter().enumerate() {
       let index = match &arg.name {
@@ -1219,6 +1695,11 @@ impl ComposeCtx<'_> {
           .with_param(&param.name, index),
         );
       }
+      if let Some(flow) = param.flow {
+        let block = self.compose_block(name, &param.name, index, flow, &arg.value)?;
+        given[index] = Some(Given::Block(block));
+        continue;
+      }
       let (operand, ty) = match &arg.value {
         ParamValue::Value(v) => (Operand::Const(v.clone().into_struct_tables()), v.type_of()),
         ParamValue::Var(var) => {
@@ -1263,12 +1744,17 @@ impl ComposeCtx<'_> {
           vec![TypeRef::of(param.ty)],
         ));
       }
-      given[index] = Some(operand);
+      given[index] = Some(Given::Value(operand));
     }
     let mut args = Vec::with_capacity(fdef.params.len());
-    for (index, (param, operand)) in fdef.params.iter().zip(given).enumerate() {
-      args.push(match (operand, &param.default) {
-        (Some(operand), _) => operand,
+    let mut blocks = Vec::new();
+    for (index, (param, given)) in fdef.params.iter().zip(given).enumerate() {
+      args.push(match (given, &param.default) {
+        (Some(Given::Value(operand)), _) => operand,
+        (Some(Given::Block(block)), _) => {
+          blocks.push(block);
+          continue;
+        }
         (None, Some(default)) => Operand::Const(default.clone().into_struct_tables()),
         (None, None) => {
           return Err(
@@ -1287,6 +1773,19 @@ impl ComposeCtx<'_> {
     } else {
       self.input
     };
+    // A compose-time evaluation that reaches a function whose body holds
+    // it (directly or through other functions) would need that body first.
+    if let Some(&floor) = self.cache.eval_floors.last()
+      && self.composing[..floor].iter().any(|n| *n == fdef.name)
+    {
+      return Err(fn_error(
+        name,
+        "compose-time-cycle",
+        format!(
+          "{name} is evaluated at compose time from inside its own body (directly or through other functions), so its body would be needed to compose itself"
+        ),
+      ));
+    }
     // A call to a function being composed (direct or mutual recursion,
     // golden path M7) composes against the declared signature: the call
     // site resolves the body at entry, and its effects are the recursive
@@ -1344,6 +1843,7 @@ impl ComposeCtx<'_> {
               def: fdef,
             },
             args,
+            blocks,
           },
           Lifetime::Stateless,
         ),
@@ -1418,11 +1918,102 @@ impl ComposeCtx<'_> {
     };
     Ok(Composed {
       compiled: crate::shard::erase::<crate::stackless::shards::Call>(
-        CallCompiled { target, args },
+        CallCompiled {
+          target,
+          args,
+          blocks,
+        },
         lifetime,
       ),
       output: fdef.output,
     })
+  }
+
+  /// The argument of flow parameter `param` (of type `ty`, at `index`) of
+  /// a call to `function`: a block, composed here against the caller's
+  /// scope with the parameter's input type (it may run any number of
+  /// times, so what it assigns is not definitely assigned after the call),
+  /// or a flow parameter of the function being composed, passed on.
+  fn compose_block(
+    &mut self,
+    function: &str,
+    param: &str,
+    index: usize,
+    ty: FlowType,
+    value: &ParamValue,
+  ) -> Result<BlockArg> {
+    match value {
+      ParamValue::Flow(defs) => {
+        let args = self.current_args.take();
+        let held = self.block_param.replace((defs.as_ptr(), Arc::from(param)));
+        self.flow_args += 1;
+        let result = self.compose_flow_conditional(defs, ty.input);
+        self.flow_args -= 1;
+        self.block_param = held;
+        self.current_args = args;
+        let flow = result.map_err(|err| err.prefix_path(PathStep::Param(param.to_string())))?;
+        // `output: None`: whatever the block outputs is discarded.
+        if let Some(output) = ty.output
+          && output != Type::none()
+          && !output.accepts(flow.output)
+        {
+          return Err(typed_error(
+            "compose-error",
+            "output-type-mismatch",
+            format!(
+              "{function}: the block for {param} outputs {}, but {param} is declared `{ty}`",
+              flow.output
+            ),
+            function,
+            Some((param, index)),
+            flow.output,
+            vec![TypeRef::of(output)],
+          ));
+        }
+        Ok(BlockArg::Flow(flow))
+      }
+      ParamValue::Var(name) => {
+        let Some((outer_index, outer)) = self.flow_param(name) else {
+          return Err(
+            fn_error(
+              function,
+              "wrong-argument-form",
+              format!(
+                "{function}: {param} takes a block `{{...}}` or a flow parameter of the calling function, got the variable {name}"
+              ),
+            )
+            .with_param(param, index),
+          );
+        };
+        // Every value Run passes must suit the block, and the block's
+        // output must suit what Run declares.
+        let fits = outer.input.accepts(ty.input)
+          && ty
+            .output
+            .is_none_or(|u| outer.output.is_some_and(|o| u.accepts(o)));
+        if !fits {
+          return Err(
+            fn_error(
+              function,
+              "wrong-argument-type",
+              format!("{function}: {param} is declared `{ty}`, but {name} is `{outer}`"),
+            )
+            .with_param(param, index),
+          );
+        }
+        Ok(BlockArg::Forward(
+          u32::try_from(outer_index).expect("flow parameter index fits u32"),
+        ))
+      }
+      _ => Err(
+        fn_error(
+          function,
+          "wrong-argument-form",
+          format!("{function}: {param} takes a block `{{...}}`"),
+        )
+        .with_param(param, index),
+      ),
+    }
   }
 
   /// An `unknown-variable` inside a callee that names one of the caller's
@@ -1613,6 +2204,10 @@ pub struct CacheStats {
   /// Function bodies actually composed (one per definition and input type
   /// while its dependencies hold).
   pub function_composes: u64,
+  /// Compose-time evaluations run (`#( ... )`).
+  pub evaluations: u64,
+  /// Compose-time evaluations answered from the cache.
+  pub evaluation_hits: u64,
 }
 
 struct Entry {
@@ -1625,6 +2220,16 @@ struct FunctionEntry {
   def: Arc<FunctionDef>,
   input: Type,
   compiled: Arc<CompiledFunction>,
+}
+
+/// A compose-time evaluation's result, by the pipeline evaluated: what it
+/// read (revalidated like any compose) and what it used (checked against
+/// the requesting context's limits).
+struct EvalEntry {
+  flow: Vec<ShardDef>,
+  value: Var,
+  deps: Vec<Dep>,
+  usage: crate::compose_time::EvalUsage,
 }
 
 pub type HashFn = fn(&WireDef, Type) -> u64;
@@ -1654,6 +2259,18 @@ pub struct ComposeCache {
   /// Functions referenced while being composed, in the current pass.
   recursive_refs: Vec<String>,
   group: Option<RecursiveGroup>,
+  evaluations: HashMap<u64, Vec<EvalEntry>>,
+  /// For each compose-time evaluation in progress, innermost last: how
+  /// many names `composing` held when it started. A function among those
+  /// holds the evaluation in its body (`compose-time-cycle`).
+  eval_floors: Vec<usize>,
+  /// Flows composed through this cache record where each instruction comes
+  /// from (`CompiledFlow::origins`): a cache made to locate a failure.
+  pub(crate) record_origins: bool,
+  /// Call occurrences record how each call site runs (`Occurrence::call`),
+  /// for `check --json`: off unless a check asks, so a device's compiled
+  /// flows carry none of it (`Mesh::record_call_sites`).
+  pub record_call_sites: bool,
 }
 
 impl Default for ComposeCache {
@@ -1672,6 +2289,19 @@ impl ComposeCache {
       stats: CacheStats::default(),
       recursive_refs: Vec::new(),
       group: None,
+      evaluations: HashMap::new(),
+      eval_floors: Vec::new(),
+      record_origins: false,
+      record_call_sites: false,
+    }
+  }
+
+  /// A fresh cache whose flows record their origins, to compose a failed
+  /// evaluation again and locate the failure (`compose/evaluate.rs`).
+  pub(crate) fn locating() -> ComposeCache {
+    ComposeCache {
+      record_origins: true,
+      ..ComposeCache::default()
     }
   }
 
@@ -1726,6 +2356,8 @@ impl ComposeCache {
         keeps: Vec::new(),
         lazy_refs: Vec::new(),
         inline_depth: 0,
+        flow_args: 0,
+        block_param: None,
       });
       ctx
         .compose_flow_unscoped(&def.flow, input)
@@ -1826,6 +2458,8 @@ impl ComposeCache {
         keeps: Vec::new(),
         lazy_refs: Vec::new(),
         inline_depth: 0,
+        flow_args: 0,
+        block_param: None,
       });
       let slot_of = |info: VarInfo| match info.binding {
         Binding::Local(i) => i,
@@ -1834,13 +2468,19 @@ impl ComposeCache {
       let param_slots: Vec<usize> = def
         .params
         .iter()
+        .filter(|p| !p.is_flow())
         .map(|p| slot_of(ctx.declare_local(&p.name, p.ty, false)))
         .collect();
       let input_slot = slot_of(ctx.declare_local("input", input, false));
       ctx
         .compose_flow_unscoped(&def.body, input)
-        .and_then(|flow| {
+        .and_then(|mut flow| {
           if def.output.accepts(flow.output) {
+            Ok(flow)
+          } else if def.output == Type::none() {
+            // `output: None` discards the body's output, as it does a
+            // block's (the authoring eval's most common compose error).
+            flow.discard_output();
             Ok(flow)
           } else {
             Err(typed_error(
@@ -1933,18 +2573,35 @@ impl ComposeCache {
     }
     let native_state =
       flow.analysis.lifetime != Lifetime::Stateless || functions.values().any(|f| f.native_state);
-    let vm_only = !def.stateful && crate::inline::straight_line(&flow.code);
+    // A body that runs blocks needs its caller's frame for them: never a
+    // VM call (it may be inlined with its blocks in place, `block_leaf`).
+    let vm_only =
+      !def.stateful && !def.has_flow_params() && crate::inline::straight_line(&flow.code);
     let vm_leaf = vm_only
       && !flow
         .code
         .iter()
         .any(|i| matches!(i.op, crate::inline::Op::VmCall));
+    let block_leaf = !def.stateful
+      && def.has_flow_params()
+      && flow
+        .code
+        .iter()
+        .zip(&flow.pc_nodes)
+        .all(|(i, node)| match i.op {
+          crate::inline::Op::Fallback => {
+            matches!(flow.nodes[*node as usize].control(), Some(Control::Run(_)))
+          }
+          crate::inline::Op::VmCall => false,
+          _ => true,
+        });
     let compiled = Arc::new(CompiledFunction {
       def: def.clone(),
       input,
       native_state,
       vm_only,
       vm_leaf,
+      block_leaf,
       lazy_refs,
       inline_depth,
       flow,
@@ -1984,6 +2641,9 @@ impl ComposeCache {
         uses: group.analysis.uses.clone(),
         mutates: group.analysis.mutates.clone(),
         occurrences: Default::default(),
+        not_compose_time: group.analysis.not_compose_time,
+        // The group's own body locates its accesses.
+        mesh_at: None,
       },
       None => Analysis::default(),
     }

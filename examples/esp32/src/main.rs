@@ -22,6 +22,9 @@ mod acceptance {
   mod functions {
     include!(concat!(env!("OUT_DIR"), "/functions.rs"));
   }
+  mod values {
+    include!(concat!(env!("OUT_DIR"), "/values.rs"));
+  }
   mod lang {
     include!(concat!(env!("OUT_DIR"), "/lang.rs"));
   }
@@ -37,6 +40,7 @@ mod acceptance {
       ("host_contract", host_contract::run_suite as fn()),
       ("registry", registry::run_suite as fn()),
       ("functions", functions::run_suite as fn()),
+      ("values", values::run_suite as fn()),
       ("lang", lang::run_suite as fn()),
       ("trampoline", trampoline::run_suite as fn()),
     ] {

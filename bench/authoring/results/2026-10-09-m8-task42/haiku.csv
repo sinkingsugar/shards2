@@ -1,0 +1,4 @@
+Task,Model,ModelId,Variant,Trial,SemanticSuccess,FirstPassSuccess,FirstFailure,RepairRounds,Tokens,OutputTokens,LatencyMs,Failure
+42-compose-time-prefix,claude-haiku-4-5-20251001,claude-haiku-4-5-20251001,functions,3,true,true,,0,37542,1351,14230,
+42-compose-time-prefix,claude-haiku-4-5-20251001,claude-haiku-4-5-20251001,functions,1,true,true,,0,40735,4544,37058,
+42-compose-time-prefix,claude-haiku-4-5-20251001,claude-haiku-4-5-20251001,functions,2,true,true,,0,39866,3675,37510,

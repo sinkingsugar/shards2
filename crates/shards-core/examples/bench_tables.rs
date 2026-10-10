@@ -52,7 +52,7 @@ fn key(i: usize) -> String {
 
 /// `Table.Make` of `n` keys reading the locals `v0..vn`.
 fn table_make(n: usize) -> ShardDef {
-  let keys = Var::Seq(std::sync::Arc::new(
+  let keys = Var::from_seq(std::sync::Arc::new(
     (0..n).map(|i| Var::string(&key(i))).collect(),
   ));
   let mut params = vec![val(keys)];

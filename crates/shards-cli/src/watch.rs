@@ -41,6 +41,7 @@ pub(super) fn watch(o: &Options) -> Result<ExitCode, String> {
   let mut session = Session::new();
   // Running watch is the opt-in for applying state resets (golden path §11).
   session.set_reset_policy(ResetPolicy::Apply);
+  session.set_files(o.files());
   let mut error = None;
   FileWatcher::new(&o.file).run(
     &mut session,

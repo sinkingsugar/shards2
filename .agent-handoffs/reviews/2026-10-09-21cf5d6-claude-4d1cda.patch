@@ -1,0 +1,81 @@
+diff --git a/crates/shards-lang/tests/zz_probe_m8.rs b/crates/shards-lang/tests/zz_probe_m8.rs
+new file mode 100644
+index 0000000..4ddda00
+--- /dev/null
++++ b/crates/shards-lang/tests/zz_probe_m8.rs
+@@ -0,0 +1,75 @@
++use std::collections::HashMap;
++use std::time::Instant;
++use shards_core::Catalog;
++use shards_lang::{Program, Source};
++
++fn catalog() -> Catalog {
++  Catalog::new(&[shards_core::shards::CATALOG]).unwrap()
++}
++
++fn check(text: &str) -> shards_lang::CheckReport {
++  shards_lang::check(Source::new("t.shs", text), &catalog(), &HashMap::new())
++}
++
++#[test]
++fn probe_const_growth() {
++  for levels in [12usize, 24, 48, 96] {
++    let mut src = String::from("@const(c0 [1 2 3 4 5 6 7 8])\n");
++    for i in 1..=levels {
++      let p = format!("@c{}", i - 1);
++      src += &format!("@const(c{i} [{p} {p} {p} {p} {p} {p} {p} {p}])\n");
++    }
++    src += &format!("@c{levels} | Count | Log\n");
++    let t = Instant::now();
++    let loaded = Program::load(Source::new("t.shs", &src), &catalog(), &HashMap::new());
++    eprintln!("levels {levels}: source {} bytes, load ok={} in {:?}", src.len(), loaded.is_ok(), t.elapsed());
++  }
++}
++
++#[test]
++fn probe_match_amplification() {
++  let n = 4000;
++  let case: Vec<String> = (0..n).map(|i| i.to_string()).collect();
++  let case = format!("[{}]", case.join(" "));
++  let mut input: Vec<String> = (0..n - 1).map(|i| i.to_string()).collect();
++  input.push("-1".into());
++  let input = format!("[{}]", input.join(" "));
++  for iters in [100000u64, 1000000, 3000000] {
++    let src = format!(
++      "#( 0 | Var(k) Repeat({{ {input} | Match([{case} {{ 1 }}] default: {{ 0 }}) Inc(k) }} times: {iters}) k ) | Log"
++    );
++    let t = Instant::now();
++    let r = check(&src);
++    eprintln!("match iters {iters}: ok={} in {:?} {:?}", r.ok(), t.elapsed(), r.diagnostics.first().map(|d| d.message.clone()));
++  }
++}
++
++fn eval_chain(n: usize) -> String {
++  let mut src = String::new();
++  for i in 0..n {
++    src += &format!("@fn(F{i} input: None output: Int params: {{}} {{ #( F{} ) | Math.Add(1) }})\n", i + 1);
++  }
++  src += &format!("@fn(F{n} input: None output: Int params: {{}} {{ 0 }})\n#( F0 ) | Log\n");
++  src
++}
++
++#[test]
++fn probe_eval_chain_depth() {
++  let n: usize = std::env::var("CHAIN").ok().and_then(|s| s.parse().ok()).unwrap_or(10);
++  let r = check(&eval_chain(n));
++  eprintln!("chain {n}: ok={} {:?}", r.ok(), r.diagnostics.first().map(|d| (d.code, d.message.clone())));
++}
++
++#[test]
++fn probe_const_many_reads() {
++  let table: Vec<String> = (0..5000).map(|i| (i * 7 % 1000).to_string()).collect();
++  for reads in [10usize, 40, 80] {
++    let mut src = format!("@const(lut [{}])\n", table.join(" "));
++    for i in 0..reads {
++      src += &format!("@lut | Take({}) | Log\n", i % 5000);
++    }
++    let loaded = Program::load(Source::new("t.shs", &src), &catalog(), &HashMap::new());
++    eprintln!("const {} bytes read {reads} times: load ok={} {:?}", table.join(" ").len() + 2, loaded.is_ok(),
++      loaded.err().map(|(_, d)| d.into_iter().map(|d| d.code).collect::<Vec<_>>()));
++  }
++}

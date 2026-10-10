@@ -177,7 +177,7 @@ fn declared_input_types_are_enforced() {
 
 #[test]
 fn a_full_input_type_checks_the_record_shape() {
-  let guid = || Var::Seq(std::sync::Arc::new(vec![Var::Int(1), Var::Int(2)]));
+  let guid = || Var::from_seq(std::sync::Arc::new(vec![Var::Int(1), Var::Int(2)]));
   let mut mesh = Mesh::new();
   mesh.add_wire(record_wire(Var::table([
     ("addr", Var::Int(7)),
@@ -248,7 +248,7 @@ fn hosts_use_opaque_collections() {
   b.insert("only", Var::None);
   assert_eq!(b.build().len(), 1);
 
-  let value = Var::Table(built);
+  let value = Var::from_table(built);
   let table = value.as_table().unwrap();
   assert_eq!(table.len(), 2);
   assert!(!table.is_empty() && Table::new().is_empty());
@@ -266,7 +266,7 @@ fn hosts_use_opaque_collections() {
     [Var::string("x"), Var::Int(3)]
   );
 
-  let seq = Var::Seq(std::sync::Arc::new(vec![Var::Int(1), value.clone()]));
+  let seq = Var::from_seq(std::sync::Arc::new(vec![Var::Int(1), value.clone()]));
   assert_eq!(seq.as_seq().map(<[Var]>::len), Some(2));
   assert_eq!(seq.as_table(), None);
   assert_eq!(value.as_seq(), None);

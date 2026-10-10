@@ -1,0 +1,44 @@
+diff --git a/crates/shards-lang/tests/zz_probe_m8b.rs b/crates/shards-lang/tests/zz_probe_m8b.rs
+new file mode 100644
+index 0000000..cf2ebfa
+--- /dev/null
++++ b/crates/shards-lang/tests/zz_probe_m8b.rs
+@@ -0,0 +1,38 @@
++use std::collections::HashMap;
++use std::time::Instant;
++use shards_core::Catalog;
++use shards_lang::Source;
++
++fn catalog() -> Catalog {
++  Catalog::new(&[shards_core::shards::CATALOG]).unwrap()
++}
++
++#[test]
++fn probe_shared_const_reads_downstream() {
++  let levels: usize = std::env::var("LEVELS").ok().and_then(|s| s.parse().ok()).unwrap_or(5);
++  let reads: usize = std::env::var("READS").ok().and_then(|s| s.parse().ok()).unwrap_or(10);
++  let mut src = format!("@const(t0 {})\n", std::env::var("T0").unwrap_or("{a: 1}".into()));
++  for i in 1..=levels {
++    let p = format!("@t{}", i - 1);
++    src += &format!("@const(t{i} [{p} {p} {p} {p} {p} {p} {p} {p}])\n");
++  }
++  for _ in 0..reads {
++    src += &format!("@t{levels} | Count | Log\n");
++  }
++  if std::env::var("MODE").as_deref() == Ok("compose") {
++    let t = Instant::now();
++    let program = shards_lang::Program::load(Source::new("t.shs", &src), &catalog(), &HashMap::new()).map_err(|(_, d)| d).unwrap();
++    let lt = t.elapsed();
++    let d = program.compose();
++    eprintln!("compose: load {lt:?} total {:?} diags {}", t.elapsed(), d.len());
++    let st = std::fs::read_to_string("/proc/self/status").unwrap();
++    eprintln!("{}", st.lines().find(|l| l.starts_with("VmHWM")).unwrap());
++    return;
++  }
++  let t = Instant::now();
++  let r = shards_lang::check(Source::new("t.shs", &src), &catalog(), &HashMap::new());
++  eprintln!("levels {levels} reads {reads} source {}B: ok={} in {:?} {:?}", src.len(), r.ok(), t.elapsed(),
++    r.diagnostics.first().map(|d| (d.code, d.message.clone())));
++  let st = std::fs::read_to_string("/proc/self/status").unwrap();
++  eprintln!("{}", st.lines().find(|l| l.starts_with("VmHWM")).unwrap());
++}

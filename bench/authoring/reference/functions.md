@@ -66,11 +66,42 @@ A function is declared at the top level with its signature and called like a sha
 3.0 | Scale(factor: 2.0) | Log   // logs 6
 ```
 
-- `input:` and `output:` are types (`Int`, `Float`, `String`, `Bool`, `None`, `Any`, `[Int]`, `{x: Int y: Int}`, `Int | None`). `input: None` means the function ignores its input. `params: {}` declares no parameters; a literal instead of a type (`params: {step: 1}`) is a default.
+- `input:` and `output:` are types (`Int`, `Float`, `String`, `Bool`, `None`, `Any`, `[Int]`, `{x: Int y: Int}`, `Int | None`). `input: None` means the function ignores its input; `output: None` means it outputs nothing, whatever its body ends on. `params: {}` declares no parameters; a literal instead of a type (`params: {step: 1}`) is a default.
 - Inside the body, a parameter is an immutable variable of the same name, and `input` is the value the call received.
 - A function starts with fresh variables on every call. `stateful: true` makes each call site keep its own instance, so `Keep` and `Once` work inside: `@fn(Counter stateful: true input: None output: Int params: {step: Int} { Keep(n 0) n | Math.Add(step) | Update(n) })` logs 1, 2, 3 when called repeatedly from the same place.
 - Mesh variables (declared by the host) are visible in a function only when listed in `uses: [name]` (reads) and `mutates: [name]` (writes).
 - A function may call itself, directly or through other functions (a stateful one may not); the depth of nested calls is limited by the host.
+
+## Blocks as parameters
+
+A parameter declared `Flow` takes a block `{...}`, which the function runs with `Run(name)`, as often as it likes. The block belongs to the caller: it reads and updates the caller's variables.
+
+```shards
+@fn(Twice input: None output: None params: {action: Flow(input: None)} {
+  Run(action) Run(action)
+})
+0 | Var(n)
+Twice(action: { Inc(n) })
+n | Log   // logs 2
+```
+
+- `Flow(input: T output: U)`: `Run(action)` gives the block its input (of type `T`; with `input: None` the block receives nothing) and outputs the block's output (of type `U`; with `output: None` the block's output is discarded and `Run` outputs nothing). Without `output:`, `Run` outputs its own input.
+- If the block fails, `Run` fails with the same error; `Maybe` around `Run` (or around the call) catches it, and logs what it caught unless given `silent: true`. The block may `Pause`. A block cannot call a `stateful` function: it starts fresh on every run.
+- A block cannot `Return` (it would end the function that runs it), and a flow parameter can only be run or passed on to another call (`Other(action: action)`), never stored in a variable.
+
+## Compose-time values
+
+`#( ... )` runs a pipeline once, while the program is checked, and stands for its result as if the literal had been written by hand. It can go wherever a literal can, including parameters that take only literals.
+
+```shards
+@fn(Square input: Int output: Int params: {} { = x  x | Math.Multiply(x) })
+@const(size #( 4 | Square ))                 // a named constant, read as @size
+#( 3 | Square ) | Log                        // logs 9
+@size | Log("size")                          // logs size: 16
+```
+
+- The pipeline starts with no input and may use literals, constants and functions, but not runtime variables, `Log`, `Keep`, `Pause`, `Time.Now` or other shards with side effects.
+- `@const(name value)` takes a literal or a `#( ... )`.
 
 ## Wires, meshes and scheduling
 

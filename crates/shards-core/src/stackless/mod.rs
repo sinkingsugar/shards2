@@ -9,5 +9,5 @@ pub mod runtime;
 pub mod shards;
 
 pub use engine::Control;
-pub(crate) use engine::Engine;
+pub(crate) use engine::{Engine, Failed, failure_path};
 pub use runtime::Mesh;

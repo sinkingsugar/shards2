@@ -54,7 +54,7 @@ fn check_discarded_constructor(table: bool) {
   }
 
   for value in [
-    Var::Seq(Arc::new(vec![Var::Int(7)])),
+    Var::from_seq(Arc::new(vec![Var::Int(7)])),
     Var::table([("field", Var::Int(7))]),
     Var::string("captured value"),
   ] {
@@ -62,7 +62,7 @@ fn check_discarded_constructor(table: bool) {
       ShardDef::new(
         &data::TABLE_MAKE,
         vec![
-          val(Var::Seq(Arc::new(vec![Var::string("field")]))),
+          val(Var::from_seq(Arc::new(vec![Var::string("field")]))),
           var("captured"),
         ],
       )
@@ -113,16 +113,16 @@ fn discarded_inline_input_does_not_copy_captured_sequence() {
 
   for table in [false, true] {
     let mut mesh = Mesh::new();
-    mesh.declare_var("acc", Var::Seq(Arc::new(vec![Var::Int(7)])), true);
-    let allocation = match mesh.get_var("acc").unwrap() {
-      Var::Seq(items) => Arc::as_ptr(&items),
+    mesh.declare_var("acc", Var::from_seq(Arc::new(vec![Var::Int(7)])), true);
+    let allocation = match &mesh.get_var("acc").unwrap() {
+      Var::Seq(items) => Arc::as_ptr(items),
       _ => unreachable!(),
     };
     let constructor = if table {
       ShardDef::new(
         &data::TABLE_MAKE,
         vec![
-          val(Var::Seq(Arc::new(vec![Var::string("field")]))),
+          val(Var::from_seq(Arc::new(vec![Var::string("field")]))),
           var("acc"),
         ],
       )
@@ -144,12 +144,13 @@ fn discarded_inline_input_does_not_copy_captured_sequence() {
     let id = mesh.spawn(&compiled, Var::None).unwrap();
     mesh.tick();
     assert_eq!(mesh.outcome(id), None);
-    let Some(Var::Seq(items)) = mesh.get_var("acc") else {
+    let acc = mesh.get_var("acc");
+    let Some(Var::Seq(items)) = &acc else {
       unreachable!()
     };
-    assert_eq!(&**items, &[Var::Int(7), Var::Int(1)]);
+    assert_eq!(items.as_slice(), &[Var::Int(7), Var::Int(1)]);
     assert_eq!(
-      Arc::as_ptr(&items),
+      Arc::as_ptr(items),
       allocation,
       "obsolete input forced a copy"
     );
@@ -923,10 +924,9 @@ fn sub_passes_its_input_through_and_resumes_inside() {
   mesh.run(5);
   assert_eq!(
     mesh.outcome(id),
-    Some(&Outcome::Completed(Var::Seq(std::sync::Arc::new(vec![
-      Var::Int(7),
-      Var::Int(6)
-    ]))))
+    Some(&Outcome::Completed(Var::from_seq(std::sync::Arc::new(
+      vec![Var::Int(7), Var::Int(6)]
+    ))))
   );
 }
 
@@ -1093,9 +1093,9 @@ fn spawn_and_set_var_accept_values_the_type_admits() {
   assert!(mesh.spawn(&w, Var::None).is_ok());
   assert!(mesh.spawn(&w, Var::string("no")).is_err());
   // A union-typed mesh variable takes a narrower value without panicking.
-  let mixed = Var::Seq(std::sync::Arc::new(vec![Var::Int(1), Var::string("a")]));
+  let mixed = Var::from_seq(std::sync::Arc::new(vec![Var::Int(1), Var::string("a")]));
   mesh.declare_var("v", mixed, true);
-  let ints = Var::Seq(std::sync::Arc::new(vec![Var::Int(2)]));
+  let ints = Var::from_seq(std::sync::Arc::new(vec![Var::Int(2)]));
   mesh.set_var("v", ints.clone());
   assert_eq!(mesh.get_var("v"), Some(ints));
 }
@@ -1130,7 +1130,7 @@ fn take_finished_drains_finished_records_in_one_pass() {
 
 #[test]
 fn variables_accept_values_by_the_acceptance_rule() {
-  let mixed = || Var::Seq(std::sync::Arc::new(vec![Var::Int(1), Var::string("a")]));
+  let mixed = || Var::from_seq(std::sync::Arc::new(vec![Var::Int(1), Var::string("a")]));
   let point =
     |x: f64, label: &str| Var::table([("x", Var::Float(x)), ("label", Var::string(label))]);
   let mut mesh = Mesh::new();
@@ -1142,7 +1142,7 @@ fn variables_accept_values_by_the_acceptance_rule() {
     vec![
       konst(mixed()),
       declare("xs"),
-      konst(Var::Seq(std::sync::Arc::new(vec![Var::Int(2)]))),
+      konst(Var::from_seq(std::sync::Arc::new(vec![Var::Int(2)]))),
       update("xs"),
       konst(point(1.0, "a")),
       declare("p"),
@@ -1166,7 +1166,7 @@ fn variables_accept_values_by_the_acceptance_rule() {
     vec![
       konst(mixed()),
       declare("xs"),
-      konst(Var::Seq(std::sync::Arc::new(vec![Var::Float(1.0)]))),
+      konst(Var::from_seq(std::sync::Arc::new(vec![Var::Float(1.0)]))),
       update("xs"),
     ],
   ));
@@ -1708,7 +1708,7 @@ fn finished_instances_release_input_and_locals() {
     let holder = mesh.compile("holder", Type::string()).unwrap();
     let data: std::sync::Arc<str> = std::sync::Arc::from("owned input buffer");
     let weak = std::sync::Arc::downgrade(&data);
-    let id = mesh.spawn(&holder, Var::String(data)).unwrap();
+    let id = mesh.spawn(&holder, Var::from_string(data)).unwrap();
     mesh.tick();
     assert!(mesh.outcome(id).is_some());
     assert!(

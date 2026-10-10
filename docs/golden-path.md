@@ -16,7 +16,7 @@ A **definition** owns shared, immutable compiled code. An **instance** owns pers
 
 | # | Decision | Notes |
 |---|---|---|
-| D1 | `Do` is deleted. No `Inline`, no macro or template feature in this plan. | Calling a named definition never shares the caller's frame. |
+| D1 | `Do` is deleted. No `Inline` and no textual macros. Metaprogramming is compose-time evaluation, non-escaping flow parameters and hygienic macros over `Code` values, specified in [metaprogramming.md](metaprogramming.md) (M8 to M10). | Calling a named definition never shares the caller's frame. |
 | D2 | Script functions are called exactly like native shards: `speed \| Scale(factor: gain)`. | One call form, one catalog, one `describe`. Name collisions with native shards or aliases are compose errors. |
 | D3 | **All** parameter and declaration labels are lowercase, native shards included: `Repeat(times: 3 action: {...})`, `@run(m iterations: 2)`, `@fn(... input: Int output: Int)`. | Uppercase is a shard, lowercase is a value. Inside a function body, a parameter is an immutable local of the same name. |
 | D4 | `@fn` is stateless by default: fresh locals per invocation. `stateful: true` is explicit and opts into `Keep` and per-call-site instances. | Compose infers what the body needs and checks it against the declaration. `Keep` without the flag is `keep-in-stateless` with a fix-it. |
@@ -43,7 +43,7 @@ Every native shard and script definition exposes one signature view (a common de
 - effects (§3.7);
 - source location and docs when available.
 
-For `@fn`, `input`, `output` and `params` are **required** in this plan (use `params: {}` when there are none). Effects are inferred; if declared, the body must stay within them. Mesh access is **declared, never granted by inference**: `uses` permits reads, `mutates` permits writes, and a read-modify-write needs both. Compose infers actual mesh usage, including through called definitions, and rejects anything undeclared (`undeclared-mesh-access`). `describe` prints the signature, and `check --json` carries the inferred input and output type **at every shard occurrence**.
+For `@fn`, `input`, `output` and `params` are **required** in this plan (use `params: {}` when there are none). `output: None` discards whatever the body ends on (2026-10-10, after the M9 authoring eval, where a body ending on a value was 12 of 13 compose errors); any other declared output must accept the body's (`output-type-mismatch`). Effects are inferred; if declared, the body must stay within them. Mesh access is **declared, never granted by inference**: `uses` permits reads, `mutates` permits writes, and a read-modify-write needs both. Compose infers actual mesh usage, including through called definitions, and rejects anything undeclared (`undeclared-mesh-access`). `describe` prints the signature, and `check --json` carries the inferred input and output type **at every shard occurrence**.
 
 ```shards
 @fn(Scale input: Float output: Float params: {factor: Float} {
@@ -236,7 +236,11 @@ The post-M5/M7 [Haiku rerun of 2026-10-07](../bench/authoring/results/2026-10-07
 | **M6** | Values: 32-byte `Var`, f32 vectors, struct tables, indexed `Take`, storage benchmark against `BTreeMap` recorded once, registry soak test. | Test L passes. Collection rows of the VM suite rerun. |
 | **M7** | Recursion (D6, §6.3): SCC effects, function ids instead of cyclic `Arc`, frames at entry, `max_call_depth`, recursive-group pinning. | Test M passes. Eval rerun with the tree task. |
 
-M1, M2 and M3 are independent of each other. M4 needs nothing new. M5 needs M3 and M4. M6 needs M1. M7 needs M5.
+| **M8** | Compose-time evaluation: `#( ... )` and `@const` ([metaprogramming.md §2](metaprogramming.md#2-m8-compose-time-evaluation)). | §2.4 there. |
+| **M9** | Flow parameters, `Run`, and the public continuation interface for native composites ([§3](metaprogramming.md#3-m9-flow-parameters)). | §3.4 there. |
+| **M10** | `Code`, `Quote`, `$` splices, `@macro`, hygiene, `expand` ([§4](metaprogramming.md#4-m10-code-as-data)). Starts only on the condition in §4.1 there. | §4.7 there. |
+
+M1, M2 and M3 are independent of each other. M4 needs nothing new. M5 needs M3 and M4. M6 needs M1. M7 needs M5. M8 needs M5; M9 needs M8; M10 needs M9 and its start condition.
 
 ## 10. Acceptance tests
 
@@ -268,4 +272,4 @@ Script fixtures live in `crates/shards-lang/tests/functions/` (and existing suit
 
 ## 12. Out of scope
 
-Macros and templates; shared component instances addressed by several callers; closures; tail-call frame reuse; computed `Keep` initializers; inline small strings; scoped type registries; state serialization or migration across machines; browser wasm; graphics and physics ports. Propose any of these to Giovanni separately.
+Runtime `eval`; escaping closures (non-escaping flow parameters are M9); shared component instances addressed by several callers; tail-call frame reuse; computed `Keep` initializers; inline small strings; scoped type registries; state serialization or migration across machines; browser wasm; graphics and physics ports. Propose any of these to Giovanni separately.

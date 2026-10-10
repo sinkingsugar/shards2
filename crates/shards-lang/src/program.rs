@@ -13,15 +13,20 @@ use shards_core::diagnostic::{PathStep, path_json};
 use shards_core::signature::{Analysis, Occurrence};
 use shards_core::{Catalog, Error, InstanceId, Mesh, Outcome, Type, Var};
 
-use crate::lower::{Lowered, ROOT_WIRE, lower};
+use crate::ast::{BlockKind, Literal, Statement};
+use crate::files::{Files, FsFiles};
+use crate::lower::{Lowered, ROOT_WIRE, lower_with};
 use crate::parser::parse;
-use crate::problem::locate;
+use crate::problem::{Problem, locate};
 use crate::source::Source;
 
 /// A source program, parsed and lowered.
 pub struct Program {
   pub source: Source,
   pub lowered: Lowered,
+  /// The files the program included or read, by name, in the order it
+  /// read them: what a reload depends on besides the source.
+  pub files: Vec<String>,
 }
 
 /// The result of `check`, in the 1.x `shards check --json` envelope.
@@ -78,6 +83,17 @@ impl WireAnalysis {
           format!("\"effects\":{}", o.occurrence.effects.to_json()),
           format!("\"lifetime\":{}", json_str(o.occurrence.lifetime.name())),
         ];
+        if let Some(call) = &o.occurrence.call {
+          let reason = call
+            .reason
+            .as_ref()
+            .map(|r| format!(",\"reason\":{}", json_str(&r.to_string())))
+            .unwrap_or_default();
+          fields.push(format!(
+            "\"call\":{{\"path\":{}{reason}}}",
+            json_str(call.path)
+          ));
+        }
         if let Some(span) = o.span {
           fields.push(format!(
             "\"span\":{{\"start\":{},\"end\":{}}}",
@@ -131,23 +147,54 @@ impl CheckReport {
 }
 
 impl Program {
-  /// Parses and lowers. Syntax problems stop before lowering.
+  /// Parses and lowers, reading included files from the filesystem
+  /// ([`FsFiles`], relative to the source's name). Syntax problems stop
+  /// before lowering.
   pub fn load(
     source: Source,
     catalog: &Catalog,
     defines: &HashMap<String, String>,
   ) -> Result<Program, (Source, Vec<Diagnostic>)> {
-    let (tree, problems) = parse(&source);
+    Program::load_with(source, catalog, defines, &FsFiles::default())
+  }
+
+  /// [`Program::load`], with `@include` and `@read` reading from `files`.
+  pub fn load_with(
+    mut source: Source,
+    catalog: &Catalog,
+    defines: &HashMap<String, String>,
+    files: &dyn Files,
+  ) -> Result<Program, (Source, Vec<Diagnostic>)> {
+    let (mut tree, mut problems) = parse(&source);
+    let mut read = Vec::new();
+    if problems.is_empty() {
+      let mut seen = vec![files.key(&source.name)];
+      let statements = std::mem::take(&mut tree.statements);
+      tree.statements = include(
+        &mut source,
+        statements,
+        files,
+        &mut seen,
+        &mut read,
+        &mut problems,
+        0,
+      );
+    }
     if !problems.is_empty() {
       let diagnostics = problems.iter().map(|p| p.to_diagnostic(&source)).collect();
       return Err((source, diagnostics));
     }
-    let (lowered, problems) = lower(&tree, catalog, defines);
+    let (lowered, problems, reads) = lower_with(&tree, catalog, defines, &source, files);
     if !problems.is_empty() {
       let diagnostics = problems.iter().map(|p| p.to_diagnostic(&source)).collect();
       return Err((source, diagnostics));
     }
-    Ok(Program { source, lowered })
+    read.extend(reads);
+    Ok(Program {
+      source,
+      lowered,
+      files: read,
+    })
   }
 
   /// The wires that start when the program runs: those scheduled on the
@@ -226,7 +273,7 @@ impl Program {
         for arg in &def.args {
           match &arg.value {
             shards_core::ParamValue::Wire(name) => out.push(name.clone()),
-            shards_core::ParamValue::Flow(f) => refs(f, out),
+            shards_core::ParamValue::Flow(f) | shards_core::ParamValue::Eval(f) => refs(f, out),
             shards_core::ParamValue::Cases(cases) => cases.iter().for_each(|(_, f)| refs(f, out)),
             _ => {}
           }
@@ -291,6 +338,9 @@ impl Program {
 
   fn compose_report(&self, include_analysis: bool) -> CheckReport {
     let mut mesh = self.mesh();
+    if include_analysis {
+      mesh.record_call_sites();
+    }
     let mut out: Vec<Diagnostic> = Vec::new();
     let mut wires = Vec::new();
     for wire in self.entries().into_iter().chain(self.unreachable_roots()) {
@@ -477,8 +527,18 @@ impl RunReport {
 
 /// Checks a source: syntax, lowering and compose.
 pub fn check(source: Source, catalog: &Catalog, defines: &HashMap<String, String>) -> CheckReport {
+  check_with(source, catalog, defines, &FsFiles::default())
+}
+
+/// [`check`], with `@include` and `@read` reading from `files`.
+pub fn check_with(
+  source: Source,
+  catalog: &Catalog,
+  defines: &HashMap<String, String>,
+  files: &dyn Files,
+) -> CheckReport {
   let file = source.name.clone();
-  match Program::load(source, catalog, defines) {
+  match Program::load_with(source, catalog, defines, files) {
     Err((_, diagnostics)) => CheckReport {
       file,
       diagnostics,
@@ -487,4 +547,129 @@ pub fn check(source: Source, catalog: &Catalog, defines: &HashMap<String, String
     },
     Ok(program) => program.analyze(),
   }
+}
+
+/// How many files may include each other in a chain, so a malformed reader
+/// cannot recurse without end (a file is included once, so real chains are
+/// as long as there are files).
+const MAX_INCLUDE_DEPTH: usize = 64;
+
+/// The statements of a file with every top-level `@include("path")`
+/// replaced by the included file's statements (expanded the same way). A
+/// file is included once per program, wherever it is named again: its
+/// declarations are visible from then on. The included files are added to
+/// `source` (so their spans locate), and their names to `read`.
+fn include(
+  source: &mut Source,
+  statements: Vec<Statement>,
+  files: &dyn Files,
+  seen: &mut Vec<String>,
+  read: &mut Vec<String>,
+  problems: &mut Vec<Problem>,
+  depth: usize,
+) -> Vec<Statement> {
+  let mut out = Vec::with_capacity(statements.len());
+  for statement in statements {
+    let Some((path, span)) = include_target(&statement, problems) else {
+      out.push(statement);
+      continue;
+    };
+    let Some(path) = path else {
+      continue;
+    };
+    if depth >= MAX_INCLUDE_DEPTH {
+      problems.push(Problem::construct(
+        span,
+        "generic",
+        "include-depth",
+        format!("files include each other more than {MAX_INCLUDE_DEPTH} levels deep"),
+      ));
+      continue;
+    }
+    let from = source.file_name(span.start).to_string();
+    let file = match files.read(&from, &path) {
+      Ok(file) => file,
+      Err(message) => {
+        problems.push(Problem::construct(
+          span,
+          "generic",
+          "file-not-found",
+          format!("cannot include {path}: {message}"),
+        ));
+        continue;
+      }
+    };
+    if seen.contains(&file.key) {
+      continue;
+    }
+    seen.push(file.key.clone());
+    let text = match String::from_utf8(file.bytes) {
+      Ok(text) => text,
+      Err(_) => {
+        problems.push(Problem::construct(
+          span,
+          "generic",
+          "not-utf8",
+          format!("cannot include {}: it is not UTF-8 text", file.name),
+        ));
+        continue;
+      }
+    };
+    read.push(file.name.clone());
+    let range = source.add(file.name, &text);
+    let (tree, mut parsed) = crate::parser::parse_range(source, range);
+    let failed = !parsed.is_empty();
+    problems.append(&mut parsed);
+    if !failed {
+      out.extend(include(
+        source,
+        tree.statements,
+        files,
+        seen,
+        read,
+        problems,
+        depth + 1,
+      ));
+    }
+  }
+  out
+}
+
+/// For a top-level `@include(...)` statement, its path (`None`, with a
+/// problem reported, when the statement is malformed) and span.
+fn include_target(
+  statement: &Statement,
+  problems: &mut Vec<Problem>,
+) -> Option<(Option<String>, crate::Span)> {
+  let Statement::Pipeline(pipe) = statement else {
+    return None;
+  };
+  let [block] = &pipe.blocks[..] else {
+    return None;
+  };
+  let BlockKind::Func { name, params } = &block.kind else {
+    return None;
+  };
+  if name.node != "include" {
+    return None;
+  }
+  let path = match params.as_ref().map(|p| &p.items[..]) {
+    Some([param]) if param.name.is_none() => match &param.value.blocks[..] {
+      [b] => match &b.kind {
+        BlockKind::Literal(Literal::String(path)) => Some(path.clone()),
+        _ => None,
+      },
+      _ => None,
+    },
+    _ => None,
+  };
+  if path.is_none() {
+    problems.push(Problem::construct(
+      block.span,
+      "generic",
+      "declaration",
+      "`@include` takes a file name as a string: `@include(\"lib.shs\")`".into(),
+    ));
+  }
+  Some((path, block.span))
 }

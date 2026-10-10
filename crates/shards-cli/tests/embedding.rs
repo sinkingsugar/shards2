@@ -258,7 +258,7 @@ fn a_host_checks_and_runs_a_script_with_its_own_shards() {
       .unwrap_or_else(|(_, d)| panic!("{d:?}"));
     let report = program.run().unwrap_or_else(|d| panic!("{d:?}"));
     assert!(
-      matches!(&report.outcomes[0].1, Some(Outcome::Completed(Var::String(u))) if &**u == unit),
+      matches!(&report.outcomes[0].1, Some(Outcome::Completed(Var::String(u))) if &***u == unit),
       "{src}: {:?}",
       report.outcomes
     );

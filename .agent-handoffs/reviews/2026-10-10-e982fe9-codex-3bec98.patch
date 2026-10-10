@@ -1,0 +1,108 @@
+diff --git a/crates/shards-lang/tests/review_file_watch.rs b/crates/shards-lang/tests/review_file_watch.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/shards-lang/tests/review_file_watch.rs
+@@ -0,0 +1,103 @@
++use shards_core::Catalog;
++use shards_lang::{FileWatcher, Session, WatchEvent};
++use std::{collections::HashMap, path::PathBuf, time::Duration};
++
++struct Fixture {
++  dir: PathBuf,
++  watcher: FileWatcher,
++  session: Session,
++  catalog: Catalog,
++}
++impl Fixture {
++  fn new(name: &str, script: &str) -> Self {
++    let dir = std::env::temp_dir().join(format!("shards-review-{}-{name}", std::process::id()));
++    std::fs::create_dir_all(&dir).unwrap();
++    let main = dir.join("main.shs");
++    std::fs::write(&main, script).unwrap();
++    Self {
++      dir,
++      watcher: FileWatcher::new(main),
++      session: Session::new(),
++      catalog: Catalog::new(&[shards_core::shards::CATALOG]).unwrap(),
++    }
++  }
++  fn poll(&mut self, restart: bool) -> (usize, usize) {
++    let (mut loaded, mut rejected) = (0, 0);
++    self.watcher.poll(
++      &mut self.session,
++      &self.catalog,
++      &HashMap::new(),
++      restart,
++      |event| match event {
++        WatchEvent::Reloaded { .. } => loaded += 1,
++        WatchEvent::Rejected { .. } => rejected += 1,
++        WatchEvent::ReadError(e) => panic!("{e}"),
++        _ => {}
++      },
++    );
++    (loaded, rejected)
++  }
++  fn settle(&mut self) -> (usize, usize) {
++    let mut total = (0, 0);
++    for _ in 0..4 {
++      std::thread::sleep(Duration::from_millis(110));
++      let got = self.poll(false);
++      total.0 += got.0;
++      total.1 += got.1;
++    }
++    total
++  }
++}
++impl Drop for Fixture {
++  fn drop(&mut self) {
++    let _ = std::fs::remove_dir_all(&self.dir);
++  }
++}
++
++#[test]
++fn binary_edit_is_a_new_revision() {
++  let mut f = Fixture::new("binary", "@read(\"data.bin\" bytes: true) | ToHex");
++  std::fs::write(f.dir.join("data.bin"), [0xff]).unwrap();
++  assert_eq!(f.poll(true), (1, 0));
++  f.settle(); // Establish the dependency list in the watcher's observation.
++  std::fs::write(f.dir.join("data.bin"), [0xfe]).unwrap();
++  assert_eq!(
++    f.settle(),
++    (1, 0),
++    "different invalid UTF-8 bytes must reload"
++  );
++}
++
++#[test]
++fn creating_a_missing_include_retries_the_revision() {
++  let mut f = Fixture::new("missing", "@include(\"lib.shs\")\n1");
++  assert_eq!(f.poll(true), (0, 1));
++  f.settle();
++  std::fs::write(f.dir.join("lib.shs"), "").unwrap();
++  assert_eq!(
++    f.settle(),
++    (1, 0),
++    "creating the missing file must retry the failed load"
++  );
++}
++
++#[test]
++fn unchanged_dependencies_do_not_reload_twice() {
++  let mut f = Fixture::new(
++    "unchanged",
++    "@include(\"lib.shs\")\n1 | Log | Math.Divide(0)",
++  );
++  std::fs::write(f.dir.join("lib.shs"), "").unwrap();
++  let (revisions, logs) = shards_core::log::capture(|| f.settle());
++  eprintln!("revisions={revisions:?}, logs={logs:?}");
++  assert_eq!(
++    logs,
++    ["1"],
++    "an unchanged failing entry must not repeat its effects"
++  );
++  assert_eq!(
++    revisions,
++    (1, 0),
++    "one initial load; no source file changed"
++  );
++}

@@ -915,7 +915,7 @@ fn a_failing_invocation_is_cleaned_and_maybe_catches_it() {
   mesh.add_function(
     FunctionDef::new("Fails", Type::int(), Type::int()).body(vec![
       probe("inner"),
-      konst(Var::Seq(std::sync::Arc::new(vec![]))),
+      konst(Var::from_seq(std::sync::Arc::new(vec![]))),
       take(val(Var::Int(3))),
       konst(Var::Int(1)),
     ]),
@@ -968,7 +968,7 @@ fn a_looped_wire_starts_each_iteration_with_fresh_locals() {
     true,
     vec![
       keep("kept", Var::Int(1)),
-      konst(Var::Seq(std::sync::Arc::new(vec![Var::Int(5); 64]))),
+      konst(Var::from_seq(std::sync::Arc::new(vec![Var::Int(5); 64]))),
       declare("scratch"),
       inc("kept"),
     ],
@@ -1180,12 +1180,13 @@ enum CallPath {
 fn a_completed_call_releases_its_input(path: CallPath) {
   use std::sync::Arc;
   let mut mesh = Mesh::new();
-  mesh.declare_var("acc", Var::Seq(Arc::new(vec![Var::Int(7)])), true);
-  let Some(Var::Seq(items)) = mesh.get_var("acc") else {
+  mesh.declare_var("acc", Var::from_seq(Arc::new(vec![Var::Int(7)])), true);
+  let acc = mesh.get_var("acc");
+  let Some(Var::Seq(items)) = &acc else {
     unreachable!()
   };
-  let allocation = Arc::as_ptr(&items);
-  drop(items);
+  let allocation = Arc::as_ptr(items);
+  drop(acc);
   let index = if matches!(path, CallPath::InlinedFailing) {
     5
   } else {
@@ -1221,12 +1222,13 @@ fn a_completed_call_releases_its_input(path: CallPath) {
   let id = mesh.spawn(&compiled, Var::None).unwrap();
   mesh.tick();
   assert_eq!(mesh.outcome(id), None, "{path:?}");
-  let Some(Var::Seq(items)) = mesh.get_var("acc") else {
+  let acc = mesh.get_var("acc");
+  let Some(Var::Seq(items)) = &acc else {
     unreachable!()
   };
-  assert_eq!(&**items, &[Var::Int(7), Var::Int(1)]);
+  assert_eq!(items.as_slice(), &[Var::Int(7), Var::Int(1)]);
   assert_eq!(
-    Arc::as_ptr(&items),
+    Arc::as_ptr(items),
     allocation,
     "{path:?}: the completed call still owned the input"
   );
@@ -1388,12 +1390,13 @@ fn a_flattened_composite_releases_its_saved_input() {
     ("repeat", repeat(vec![konst(Var::Int(0))], val(Var::Int(2)))),
   ] {
     let mut mesh = Mesh::new();
-    mesh.declare_var("acc", Var::Seq(Arc::new(vec![Var::Int(7)])), true);
-    let Some(Var::Seq(items)) = mesh.get_var("acc") else {
+    mesh.declare_var("acc", Var::from_seq(Arc::new(vec![Var::Int(7)])), true);
+    let acc = mesh.get_var("acc");
+    let Some(Var::Seq(items)) = &acc else {
       unreachable!()
     };
-    let allocation = Arc::as_ptr(&items);
-    drop(items);
+    let allocation = Arc::as_ptr(items);
+    drop(acc);
     mesh.add_wire(wire(
       "root",
       false,
@@ -1409,14 +1412,342 @@ fn a_flattened_composite_releases_its_saved_input() {
     let id = mesh.spawn(&compiled, Var::None).unwrap();
     mesh.tick();
     assert_eq!(mesh.outcome(id), None, "{name}");
-    let Some(Var::Seq(items)) = mesh.get_var("acc") else {
+    let acc = mesh.get_var("acc");
+    let Some(Var::Seq(items)) = &acc else {
       unreachable!()
     };
-    assert_eq!(&**items, &[Var::Int(7), Var::Int(1)], "{name}");
+    assert_eq!(items.as_slice(), &[Var::Int(7), Var::Int(1)], "{name}");
     assert_eq!(
-      Arc::as_ptr(&items),
+      Arc::as_ptr(items),
       allocation,
       "{name}: the saved input was kept"
+    );
+  }
+}
+
+// --- Compose-time evaluation (docs/metaprogramming.md §2, M8) ---
+
+/// `@fn(Square input: Int output: Int params: {} { = x  x | Math.Multiply(x) })`.
+fn square() -> FunctionDef {
+  FunctionDef::new("Square", Type::int(), Type::int()).body(vec![
+    bind("x"),
+    get("x"),
+    ShardDef::new(&shards_core::shards::math::MULTIPLY, vec![var("x")]),
+  ])
+}
+
+fn sixteen() -> ShardDef {
+  evaluated(vec![konst(Var::Int(4)), call("Square", vec![])])
+}
+
+#[test]
+fn a_repeated_evaluation_is_a_cache_hit_within_the_requesting_limits() {
+  let mut mesh = Mesh::new();
+  mesh.add_function(square());
+  mesh.add_wire(wire("first", false, vec![sixteen()]));
+  mesh.add_wire(wire("second", false, vec![sixteen(), log()]));
+  let first = mesh.compile("first", Type::none()).unwrap();
+  mesh.compile("second", Type::none()).unwrap();
+  let stats = mesh.cache_stats();
+  assert_eq!((stats.evaluations, stats.evaluation_hits), (1, 1));
+  assert_eq!(first.flow.output, Type::int());
+  // A context with less fuel than the cached result used rejects the hit,
+  // with the error its own evaluation would have reported; so does a
+  // recompose of a wire whose code holds that result.
+  mesh.set_eval_limits(shards_core::EvalLimits {
+    fuel: 3,
+    ..Default::default()
+  });
+  mesh.add_wire(wire("third", false, vec![konst(Var::None), sixteen()]));
+  for name in ["third", "first"] {
+    let err = mesh.compile(name, Type::none()).err().expect("over budget");
+    let d = err.diagnostic().expect("structured");
+    assert_eq!(d.code, "expansion-budget", "{name}: {d:?}");
+    assert!(d.message.contains("cached"), "{name}: {}", d.message);
+  }
+  assert_eq!(mesh.cache_stats().evaluations, 1);
+}
+
+#[test]
+fn an_evaluation_reaching_mesh_access_is_not_compose_time() {
+  let mut mesh = Mesh::new();
+  mesh.declare_var("gain", Var::Int(2), true);
+  mesh.add_function(
+    FunctionDef::new("Gain", Type::none(), Type::int())
+      .uses(&["gain"])
+      .body(vec![get("gain")]),
+  );
+  mesh.add_wire(wire(
+    "root",
+    false,
+    vec![evaluated(vec![call("Gain", vec![])])],
+  ));
+  let d = compile_error(&mut mesh);
+  assert_eq!(d.code, "not-compose-time");
+  assert!(d.message.contains("mesh variable gain"), "{}", d.message);
+  // Located at the read inside the function that declares it.
+  assert_eq!(d.shard.as_deref(), Some("Get"), "{}", d.message);
+  assert!(
+    d.message.contains("(reached through Gain)"),
+    "{}",
+    d.message
+  );
+  assert!(
+    d.path
+      .contains(&shards_core::diagnostic::PathStep::Function("Gain".into())),
+    "{:?}",
+    d.path
+  );
+}
+
+#[test]
+fn evaluated_floats_keep_their_bits_and_print_back() {
+  use shards_core::shards::math::{DIVIDE, MULTIPLY};
+  // The divisor is opaque so the NaN comes from the same division the
+  // shard runs, with the target's NaN bits.
+  let (zero, divisor) = std::hint::black_box((0.0f64, 0.0f64));
+  for (flow, expected) in [
+    (
+      vec![
+        konst(Var::Float(0.0)),
+        ShardDef::new(&DIVIDE, vec![val(Var::Float(0.0))]),
+      ],
+      zero / divisor,
+    ),
+    (
+      vec![
+        konst(Var::Float(1.0)),
+        ShardDef::new(&DIVIDE, vec![val(Var::Float(0.0))]),
+      ],
+      f64::INFINITY,
+    ),
+    (
+      vec![
+        konst(Var::Float(-1.0)),
+        ShardDef::new(&DIVIDE, vec![val(Var::Float(0.0))]),
+      ],
+      f64::NEG_INFINITY,
+    ),
+    (
+      vec![
+        konst(Var::Float(0.0)),
+        ShardDef::new(&MULTIPLY, vec![val(Var::Float(-1.0))]),
+      ],
+      -0.0,
+    ),
+    (
+      vec![
+        konst(Var::Float(5e-324)),
+        ShardDef::new(&MULTIPLY, vec![val(Var::Float(1.0))]),
+      ],
+      5e-324,
+    ),
+    (
+      vec![
+        konst(Var::Float(0.1)),
+        ShardDef::new(&MULTIPLY, vec![val(Var::Float(3.0))]),
+      ],
+      0.1 * 3.0,
+    ),
+  ] {
+    let mut mesh = Mesh::new();
+    mesh.add_wire(wire("root", false, vec![evaluated(flow)]));
+    let (outcome, _) = run_logging(&mut mesh, 2);
+    let Outcome::Completed(Var::Float(value)) = outcome else {
+      panic!("{outcome:?}")
+    };
+    assert_eq!(
+      value.to_bits(),
+      expected.to_bits(),
+      "{value} against {expected}"
+    );
+    // Finite values print in the shortest form that reads back exactly.
+    if value.is_finite() {
+      let printed = Var::Float(value).to_string();
+      assert_eq!(
+        printed.parse::<f64>().unwrap().to_bits(),
+        value.to_bits(),
+        "{printed}"
+      );
+    }
+  }
+}
+
+// M9: flow parameters (docs/metaprogramming.md §3).
+
+fn run_action() -> ShardDef {
+  ShardDef::new(&shards_core::shards::RUN, vec![var("action")])
+}
+
+/// `Twice`: runs its block twice, the first result feeding the second.
+fn twice() -> FunctionDef {
+  FunctionDef::new("Twice", Type::int(), Type::int())
+    .flow_param(
+      "action",
+      shards_core::FlowType {
+        input: Type::int(),
+        output: Some(Type::int()),
+      },
+    )
+    .body(vec![run_action(), run_action()])
+}
+
+#[test]
+fn a_straight_line_block_is_inlined_with_its_callee_and_any_other_is_framed() {
+  for (block, inlined) in [
+    (vec![add(val(Var::Int(1)))], true),
+    (vec![probe("b"), add(val(Var::Int(1)))], false),
+  ] {
+    let mut mesh = Mesh::new();
+    mesh.add_function(twice());
+    mesh.add_wire(wire(
+      "root",
+      false,
+      vec![
+        konst(Var::Int(1)),
+        call("Twice", vec![named("action", ParamValue::Flow(block))]),
+      ],
+    ));
+    let root = mesh.compile("root", Type::none()).unwrap();
+    // Inlined: the callee's code and the block's, in place of the call and
+    // its `Run`s, all VM instructions.
+    let kinds = root.flow.instruction_kinds();
+    assert_eq!(!kinds.contains(&"fallback"), inlined, "{kinds:?}");
+    let (outcome, _) = run_logging(&mut mesh, 10);
+    assert_eq!(
+      outcome,
+      Outcome::Completed(Var::Int(3)),
+      "inlined: {inlined}"
+    );
+  }
+}
+
+/// An inlined `Run` that passes its input on restores it from a hidden
+/// slot and ends that slot's value at once: a collection the input shares
+/// is uniquely owned again for the rest of the callee, so pushing to it is
+/// not a copy.
+#[test]
+fn a_run_releases_the_input_it_restored() {
+  use std::sync::Arc;
+  let first = FunctionDef::new("First", Type::seq(Type::int()), Type::int())
+    .uses(&["acc"])
+    .mutates(&["acc"])
+    .flow_param(
+      "action",
+      shards_core::FlowType {
+        input: Type::seq(Type::int()),
+        output: None,
+      },
+    )
+    .body(vec![
+      run_action(),
+      take(val(Var::Int(0))),
+      declare("first"),
+      konst(Var::Int(1)),
+      ShardDef::new(&shards_core::shards::data::PUSH, vec![var("acc")]),
+      get("first"),
+    ]);
+  // Inlined with a straight-line block; framed with one that logs.
+  for (block, inlined) in [
+    (vec![take(val(Var::Int(0)))], true),
+    (vec![log(), take(val(Var::Int(0)))], false),
+  ] {
+    let mut mesh = Mesh::new();
+    mesh.declare_var("acc", Var::from_seq(Arc::new(vec![Var::Int(7)])), true);
+    let allocation = match &mesh.get_var("acc") {
+      Some(Var::Seq(items)) => Arc::as_ptr(items),
+      _ => unreachable!(),
+    };
+    mesh.add_function(first.clone());
+    mesh.add_wire(wire(
+      "root",
+      false,
+      vec![
+        get("acc"),
+        call("First", vec![named("action", ParamValue::Flow(block))]),
+        pause(),
+      ],
+    ));
+    let root = mesh.compile("root", Type::none()).unwrap();
+    // Inlined, the only fallback is the `Pause`.
+    let kinds = root.flow.instruction_kinds();
+    let fallbacks = kinds.iter().filter(|k| **k == "fallback").count();
+    assert_eq!(fallbacks == 1, inlined, "{kinds:?}");
+    let id = mesh.spawn(&root, Var::None).unwrap();
+    mesh.tick();
+    assert_eq!(mesh.outcome(id), None);
+    let acc = mesh.get_var("acc");
+    let Some(Var::Seq(items)) = &acc else {
+      unreachable!()
+    };
+    assert_eq!(items.as_slice(), &[Var::Int(7), Var::Int(1)]);
+    // A framed callee's frame holds its input (`input`, readable to the
+    // end of its body) until the call ends, so there the push copies.
+    assert_eq!(
+      Arc::as_ptr(items) == allocation,
+      inlined,
+      "inlined: {inlined}"
+    );
+  }
+}
+
+#[test]
+fn a_loop_over_a_block_is_inlined_with_a_straight_line_block() {
+  // `Each`: runs the block on each of the first `n` elements.
+  let each = FunctionDef::new("Each", Type::seq(Type::int()), Type::seq(Type::int()))
+    .param("n", Type::int())
+    .flow_param(
+      "action",
+      shards_core::FlowType {
+        input: Type::int(),
+        output: None,
+      },
+    )
+    .body(vec![
+      bind("xs"),
+      konst(Var::Int(0)),
+      declare("i"),
+      while_(
+        vec![get("i"), is_less(var("n"))],
+        vec![get("xs"), take(var("i")), run_action(), inc("i")],
+      ),
+      get("xs"),
+    ]);
+  for (block, inlined) in [
+    (vec![add(var("total")), update("total")], true),
+    (vec![probe("b"), add(var("total")), update("total")], false),
+  ] {
+    let mut mesh = Mesh::new();
+    mesh.add_function(each.clone());
+    mesh.add_wire(wire(
+      "root",
+      false,
+      vec![
+        konst(Var::Int(0)),
+        declare("total"),
+        konst(Var::from_seq(std::sync::Arc::new(vec![
+          Var::Int(1),
+          Var::Int(2),
+          Var::Int(3),
+        ]))),
+        call(
+          "Each",
+          vec![
+            named("n", val(Var::Int(3))),
+            named("action", ParamValue::Flow(block)),
+          ],
+        ),
+        get("total"),
+      ],
+    ));
+    let root = mesh.compile("root", Type::none()).unwrap();
+    let kinds = root.flow.instruction_kinds();
+    assert_eq!(!kinds.contains(&"fallback"), inlined, "{kinds:?}");
+    let (outcome, _) = run_logging(&mut mesh, 10);
+    assert_eq!(
+      outcome,
+      Outcome::Completed(Var::Int(6)),
+      "inlined: {inlined}"
     );
   }
 }

@@ -51,9 +51,10 @@ pub static IS_MORE_EQUAL: ShardType = leaf_type::<leaf::IsMoreEqual>();
 pub static WHEN: ShardType = ShardType::new(WHEN_DESC).implemented_by::<sl::When>();
 pub static IF: ShardType = ShardType::new(control::IF_DESC).implemented_by::<sl::If>();
 pub static MATCH: ShardType = ShardType::new(control::MATCH_DESC).implemented_by::<sl::Match>();
-pub static MAYBE: ShardType = ShardType::new(control::MAYBE_DESC).implemented_by::<sl::Maybe>();
+pub static MAYBE: ShardType = ShardType::new(control::MAYBE_DESC).controlled_by::<control::Maybe>();
 pub static ALL: ShardType = ShardType::new(control::ALL_DESC).implemented_by::<sl::All>();
 pub static ANY: ShardType = ShardType::new(control::ANY_DESC).implemented_by::<sl::Any>();
+pub static RUN: ShardType = ShardType::new(control::RUN_DESC).implemented_by::<sl::Run>();
 pub static SUB: ShardType = ShardType::new(SUB_DESC).implemented_by::<sl::Sub>();
 pub static ONCE: ShardType = ShardType::new(ONCE_DESC).implemented_by::<sl::Once>();
 pub static REPEAT: ShardType = ShardType::new(REPEAT_DESC).implemented_by::<sl::Repeat>();
@@ -84,6 +85,7 @@ pub static CATALOG: &[&ShardType] = &[
   &MAYBE,
   &ALL,
   &ANY,
+  &RUN,
   &ONCE,
   &SUB,
   &data::TAKE,
@@ -117,6 +119,8 @@ pub static CATALOG: &[&ShardType] = &[
   &values::TO_INT,
   &values::TO_FLOAT,
   &values::TO_HEX,
+  &values::BYTES_TO_STRING,
+  &values::STRING_TO_BYTES,
   &values::PARSE_FLOAT,
   &values::TO_FLOAT2,
   &values::TO_FLOAT3,
@@ -305,6 +309,16 @@ pub(crate) fn check_declaration(args: &Args, ctx: &mut ComposeCtx<'_>, shard: &s
   if name.starts_with('%') {
     return Ok(());
   }
+  if ctx.flow_param(name).is_some() {
+    return Err(param_error(
+      args,
+      shard,
+      "variable",
+      "compose-error",
+      "duplicate-binding",
+      format!("{name} is already a flow parameter of this function; pick another name"),
+    ));
+  }
   if name == "input" {
     return Err(param_error(
       args,
@@ -357,6 +371,9 @@ pub(crate) fn assignable(
   shard: &str,
 ) -> Result<crate::compose::VarInfo> {
   let name = variable(args, "variable");
+  if let Some(err) = ctx.flow_escapes(name, shard) {
+    return Err(err);
+  }
   let Some(info) = ctx.var(name) else {
     let mut err = param_error(
       args,
@@ -693,9 +710,9 @@ pub(crate) fn activate_inc(binding: Binding, frames: &mut impl Frames) -> Result
   let Var::Int(v) = frames.get(binding) else {
     return Err(Error::Activation("Inc: variable is not an Int".into()));
   };
-  let next = v
-    .checked_add(1)
-    .ok_or_else(|| Error::Activation("Inc: integer overflow".into()))?;
+  let Some(next) = v.checked_add(1) else {
+    return Err(Error::Activation("Inc: integer overflow".into()));
+  };
   frames.set(binding, Var::Int(next));
   Ok(Var::Int(next))
 }
@@ -830,29 +847,33 @@ pub(crate) fn cmp_int_float(i: i64, f: f64) -> Option<std::cmp::Ordering> {
   }
   let whole = f.trunc();
   // In range, so the conversion is exact.
-  Some(i.cmp(&(whole as i64)).then_with(|| {
-    if f > whole {
-      Ordering::Less
-    } else if f < whole {
-      Ordering::Greater
-    } else {
-      Ordering::Equal
-    }
-  }))
+  Some(match i.cmp(&(whole as i64)) {
+    Ordering::Equal if f > whole => Ordering::Less,
+    Ordering::Equal if f < whole => Ordering::Greater,
+    ordering => ordering,
+  })
+}
+
+#[cold]
+fn nan_compare() -> Error {
+  Error::Activation("cannot compare NaN".into())
 }
 
 pub(crate) fn compare(input: &Var, operand: Var) -> Result<std::cmp::Ordering> {
   match (input, operand) {
     (Var::Int(a), Var::Int(b)) => Ok(a.cmp(&b)),
-    (Var::Float(a), Var::Float(b)) => a
-      .partial_cmp(&b)
-      .ok_or_else(|| Error::Activation("cannot compare NaN".into())),
-    (Var::Int(a), Var::Float(b)) => {
-      cmp_int_float(*a, b).ok_or_else(|| Error::Activation("cannot compare NaN".into()))
-    }
-    (Var::Float(a), Var::Int(b)) => cmp_int_float(b, *a)
-      .map(std::cmp::Ordering::reverse)
-      .ok_or_else(|| Error::Activation("cannot compare NaN".into())),
+    (Var::Float(a), Var::Float(b)) => match a.partial_cmp(&b) {
+      Some(ordering) => Ok(ordering),
+      None => Err(nan_compare()),
+    },
+    (Var::Int(a), Var::Float(b)) => match cmp_int_float(*a, b) {
+      Some(ordering) => Ok(ordering),
+      None => Err(nan_compare()),
+    },
+    (Var::Float(a), Var::Int(b)) => match cmp_int_float(b, *a) {
+      Some(ordering) => Ok(ordering.reverse()),
+      None => Err(nan_compare()),
+    },
     _ => Err(Error::Activation("comparison type mismatch".into())),
   }
 }
@@ -1020,6 +1041,17 @@ pub(crate) fn compose_once(
   args: &Args,
   ctx: &mut ComposeCtx<'_>,
 ) -> Result<Composed<CompiledFlow>> {
+  if ctx.in_flow_argument() {
+    return Err(Error::Diagnostic(Box::new(
+      Diagnostic::new(
+        Phase::Compose,
+        "compose-error",
+        "once-in-stateless",
+        "Once remembers that it ran, but a block passed to a call starts fresh each time it runs; put the Once around the call",
+      )
+      .shard("Once"),
+    )));
+  }
   if !ctx.allows_persistent_state() {
     return Err(Error::Diagnostic(Box::new(
       Diagnostic::new(
@@ -1323,6 +1355,28 @@ pub const RETURN_DESC: ShardDesc = ShardDesc {
 
 pub(crate) fn compose_return(ctx: &mut ComposeCtx<'_>) -> Result<Composed<()>> {
   let input = ctx.input();
+  if ctx.evaluating() {
+    return Err(Error::Diagnostic(Box::new(
+      Diagnostic::new(
+        Phase::Compose,
+        "compose-error",
+        "not-compose-time",
+        "Return cannot end a `#( )` evaluation: its value is what the pipeline outputs",
+      )
+      .shard("Return"),
+    )));
+  }
+  if ctx.in_flow_argument() {
+    return Err(Error::Diagnostic(Box::new(
+      Diagnostic::new(
+        Phase::Compose,
+        "compose-error",
+        "control-in-flow",
+        "Return cannot leave a block passed to a call: the block runs inside the called function, which it would have to end too; return from a function the block calls, or end the block with a value",
+      )
+      .shard("Return"),
+    )));
+  }
   if let Some(expected) = ctx.return_type()
     && !expected.accepts(input)
   {
@@ -1529,6 +1583,10 @@ pub mod defs {
 
   pub fn konst(v: Var) -> ShardDef {
     ShardDef::new(&CONST, vec![val(v)])
+  }
+  /// `#( flow )`: the value of `flow`, evaluated at compose time.
+  pub fn evaluated(flow: Vec<ShardDef>) -> ShardDef {
+    ShardDef::new(&CONST, vec![ParamValue::Eval(flow)])
   }
   /// `= name`.
   pub fn bind(name: &str) -> ShardDef {

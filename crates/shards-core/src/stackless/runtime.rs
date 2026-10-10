@@ -60,6 +60,7 @@ pub struct Mesh {
   next_id: InstanceId,
   wake_mode: WakeMode,
   max_call_depth: usize,
+  eval_limits: crate::compose_time::EvalLimits,
 }
 
 impl Default for Mesh {
@@ -90,6 +91,7 @@ impl Mesh {
       next_id: 0,
       wake_mode: WakeMode::default(),
       max_call_depth: if cfg!(target_os = "espidf") { 32 } else { 256 },
+      eval_limits: crate::compose_time::EvalLimits::default(),
     }
   }
 
@@ -100,6 +102,24 @@ impl Mesh {
 
   pub fn max_call_depth(&self) -> usize {
     self.max_call_depth
+  }
+
+  /// The budgets of compose-time evaluations (`#( ... )`) in what this mesh
+  /// composes. A cached result computed under larger limits is not
+  /// accepted under smaller ones.
+  pub fn set_eval_limits(&mut self, limits: crate::compose_time::EvalLimits) {
+    self.eval_limits = limits;
+  }
+
+  /// Records how each call site runs in the composed analysis
+  /// (`Occurrence::call`), for tooling such as `check --json`. Off by
+  /// default: it costs memory per call occurrence.
+  pub fn record_call_sites(&mut self) {
+    self.cache.record_call_sites = true;
+  }
+
+  pub fn eval_limits(&self) -> crate::compose_time::EvalLimits {
+    self.eval_limits
   }
 
   pub fn set_wake_mode(&mut self, mode: WakeMode) {
@@ -152,6 +172,7 @@ impl Mesh {
       mesh_layout: &self.layout,
       wires: &self.wires,
       functions: &self.functions,
+      eval: self.eval_limits,
     };
     self
       .cache
@@ -195,6 +216,7 @@ impl Mesh {
       mesh_layout: &self.layout,
       wires: &self.wires,
       functions: &self.functions,
+      eval: self.eval_limits,
     };
     let wire = self
       .cache
@@ -220,6 +242,7 @@ impl Mesh {
     next.frame = self.frame.clone();
     next.wake_mode = self.wake_mode;
     next.max_call_depth = self.max_call_depth;
+    next.eval_limits = self.eval_limits;
     next.reset_policy = self.reset_policy;
     next
   }
@@ -235,6 +258,7 @@ impl Mesh {
         mesh_layout: &self.layout,
         wires: &self.wires,
         functions: &self.functions,
+        eval: self.eval_limits,
       },
     )
   }
@@ -467,6 +491,7 @@ impl Mesh {
       mesh_layout: &self.layout,
       wires: &self.wires,
       functions: &self.functions,
+      eval: self.eval_limits,
     };
     if !wire.deps_valid(&env) {
       return Err(Error::Compose(format!(
@@ -610,13 +635,21 @@ impl Mesh {
   /// records; a host that needs some outcomes later keeps them itself.
   pub fn take_finished(&mut self) -> Vec<(InstanceId, String, Outcome)> {
     let mut finished = Vec::new();
-    self.instances.retain_mut(|i| {
-      let Some(outcome) = i.outcome.take() else {
-        return true;
-      };
-      finished.push((i.id, i.wire.name.clone(), outcome));
-      false
-    });
+    // Compacts in place, keeping the order of the records left.
+    let mut kept = 0;
+    for at in 0..self.instances.len() {
+      match self.instances[at].outcome.take() {
+        Some(outcome) => {
+          let i = &self.instances[at];
+          finished.push((i.id, i.wire.name.clone(), outcome));
+        }
+        None => {
+          self.instances.swap(kept, at);
+          kept += 1;
+        }
+      }
+    }
+    self.instances.truncate(kept);
     finished
   }
 
@@ -673,15 +706,15 @@ fn step(
     let wire = &instance.wire;
     // Flow instantiation already turns panics into errors; this is a last
     // line of defense so a panic never escapes `tick`.
-    let instantiated = catch_unwind(AssertUnwindSafe(|| {
+    let instantiated = match catch_unwind(AssertUnwindSafe(|| {
       Engine::instantiate(wire.clone(), &mut ictx)
-    }))
-    .unwrap_or_else(|payload| {
-      Err(Error::Activation(format!(
+    })) {
+      Ok(result) => result,
+      Err(payload) => Err(Error::Activation(format!(
         "panic in instantiate: {}",
         panic_message(&*payload)
-      )))
-    });
+      ))),
+    };
     match instantiated {
       Ok(state) => {
         instance.memory = InstanceMemory {
@@ -723,6 +756,7 @@ fn step(
         waker,
         iteration: *iteration,
         max_call_depth,
+        meter: None,
       };
       state.activate(&mut ctx, input)
     }))

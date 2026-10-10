@@ -59,7 +59,7 @@ fn constructor_segments_preserve_snapshots_and_change_table_shapes() {
   );
   assert_eq!(
     completed(&report, "root"),
-    Var::Seq(std::sync::Arc::new(vec![
+    Var::from_seq(std::sync::Arc::new(vec![
       Var::table([("a", Var::Int(3)), ("z", Var::Int(1))]),
       Var::table([("a", Var::Int(4)), ("b", Var::Int(6))]),
     ]))
@@ -1023,7 +1023,7 @@ t",
       ("ratio", Var::Float(0.25)),
       (
         "tags",
-        Var::Seq(std::sync::Arc::new(vec![
+        Var::from_seq(std::sync::Arc::new(vec![
           Var::string("a"),
           Var::string("b")
         ]))
@@ -1082,7 +1082,7 @@ fn paths_read_tables_and_sequences() {
   );
   assert_eq!(
     completed(&report, "root"),
-    Var::Seq(std::sync::Arc::new(vec![Var::Int(20), Var::string("deep")]))
+    Var::from_seq(std::sync::Arc::new(vec![Var::Int(20), Var::string("deep")]))
   );
   // A typo on a fixed table is a compose error at the key, with suggestions.
   let report = check("{name: 1 count: 2} = t\nt.cuont");
@@ -1104,7 +1104,7 @@ f\"n is {n}, next {n | Add(1)}, {{literal}}\" = text
 [text items table sum]",
     &no_defines(),
   );
-  let seq = |v: Vec<Var>| Var::Seq(std::sync::Arc::new(v));
+  let seq = |v: Vec<Var>| Var::from_seq(std::sync::Arc::new(v));
   assert_eq!(
     completed(&report, "root"),
     seq(vec![
@@ -1124,7 +1124,7 @@ fn push_appends_to_a_sequence() {
   );
   assert_eq!(
     completed(&report, "root"),
-    Var::Seq(std::sync::Arc::new(vec![Var::Int(1), Var::Int(2)]))
+    Var::from_seq(std::sync::Arc::new(vec![Var::Int(1), Var::Int(2)]))
   );
   let report = check("[0] | Var(xs)\n\"s\" | Push(xs)");
   assert_eq!(report.diagnostics[0].code, "variable-type-mismatch");
@@ -1160,7 +1160,7 @@ fn numbers_mix_in_arithmetic_and_comparisons() {
 [a b c d e f]",
     &no_defines(),
   );
-  let seq = |v: Vec<Var>| Var::Seq(std::sync::Arc::new(v));
+  let seq = |v: Vec<Var>| Var::from_seq(std::sync::Arc::new(v));
   let len = ((1.0f64).powi(2) + 3.0f64.powi(2) + 5.0f64.powi(2)).sqrt();
   assert_eq!(
     completed(&report, "root"),
@@ -1199,7 +1199,7 @@ Time.Now | Math.Subtract(t0) | IsMoreEqual(0.0) = later
   assert_eq!(lines, ["count: 2", "42"]);
   assert_eq!(
     completed(&report, "root"),
-    Var::Seq(std::sync::Arc::new(vec![
+    Var::from_seq(std::sync::Arc::new(vec![
       Var::string("0xff"),
       Var::Bool(false),
       Var::Bool(true),
@@ -1237,7 +1237,7 @@ Repeat({Inc(count)} until: {count | IsMoreEqual(100)} times: 2)
   let s = Var::string;
   assert_eq!(
     completed(&report, "root"),
-    Var::Seq(std::sync::Arc::new(vec![
+    Var::from_seq(std::sync::Arc::new(vec![
       s("big"),
       Var::Int(5),
       s("despawned"),
@@ -1263,7 +1263,7 @@ fn match_is_exhaustive_or_has_a_default() {
   );
   assert_eq!(
     completed(&report, "root"),
-    Var::Seq(std::sync::Arc::new(vec![Var::Int(1), Var::Int(3)]))
+    Var::from_seq(std::sync::Arc::new(vec![Var::Int(1), Var::Int(3)]))
   );
   let report = check("2 | Match([1 {10}])");
   let d = &report.diagnostics[0];
@@ -1378,7 +1378,7 @@ If(Any(b {a}) {4} {5}) = z
   );
   assert_eq!(
     completed(&report, "root"),
-    Var::Seq(std::sync::Arc::new(vec![Var::Int(2), Var::Int(4)]))
+    Var::from_seq(std::sync::Arc::new(vec![Var::Int(2), Var::Int(4)]))
   );
 }
 
@@ -1403,7 +1403,7 @@ fn mixed_number_equality_and_order_are_exact_and_consistent() {
   );
   assert_eq!(
     completed(&report, "root"),
-    Var::Seq(std::sync::Arc::new(vec![
+    Var::from_seq(std::sync::Arc::new(vec![
       Var::Bool(false),
       Var::Bool(true),
       Var::Bool(true),
@@ -1452,7 +1452,7 @@ fn computed_elements_keep_source_order() {
   let report = run("0 | Var(n)\n[n (Inc(n) n)]", &no_defines());
   assert_eq!(
     completed(&report, "root"),
-    Var::Seq(std::sync::Arc::new(vec![Var::Int(0), Var::Int(1)]))
+    Var::from_seq(std::sync::Arc::new(vec![Var::Int(0), Var::Int(1)]))
   );
 }
 
@@ -1635,6 +1635,9 @@ fn nesting_up_to_the_limit_runs_through_every_control_shard() {
     ("1 | Match([1 {{next}}] default: {{}})", 2),
     ("Maybe({{next}} {2})", 2),
     ("Any({false} {{next} false})", 2),
+    // A compose-time evaluation composes and runs its pipeline in the
+    // middle of compose, an engine activation per level.
+    ("#( {next} )", 3),
   ] {
     let n = (shards_core::compose::MAX_FLOW_DEPTH - 2) / levels;
     let src = wrapped_chain(n, wrapper);
@@ -1669,7 +1672,7 @@ fn maybe_without_else_passes_its_input_through() {
   );
   assert_eq!(
     completed(&report, "root"),
-    Var::Seq(std::sync::Arc::new(vec![Var::Int(5), Var::Int(5)]))
+    Var::from_seq(std::sync::Arc::new(vec![Var::Int(5), Var::Int(5)]))
   );
 }
 
@@ -2017,7 +2020,6 @@ fn constructs_not_supported_yet_are_rejected_explicitly() {
     ("{1: 2}", "table keys are strings"),
     ("[{1: x}]", "table keys are strings"),
     ("Type::Value", "enums"),
-    ("#(1 | Add(1))", "evaluation while loading"),
     ("Pause(1.0 | Add(1.0))", "Pause.seconds takes a literal"),
   ] {
     let d = load_errors(text);
@@ -2475,4 +2477,1328 @@ fn reload_admission_follows_the_live_component_body() {
     .unwrap_err();
   assert_eq!(d[0].code, "reload-resets-state");
   assert!(d[0].message.contains("C.extra"), "{}", d[0].message);
+}
+
+// --- compose-time evaluation (docs/metaprogramming.md §2, M8) ---
+
+/// The compose diagnostics of a source that loads.
+fn compose_errors(text: &str) -> Vec<Diagnostic> {
+  let report = check(text);
+  assert!(!report.ok(), "expected compose errors");
+  report.diagnostics
+}
+
+#[test]
+fn compose_time_values_replace_their_pipelines() {
+  let source = r#"@fn(Square input: Int output: Int params: {} { = x  x | Math.Multiply(x) })
+@fn(Label input: None output: String params: {name: String number: Int} { [name "-" number] | String.Format })
+@const(size #( 4 | Square ))
+@const(bigger #( @size | Math.Add(1) ))
+@const(plain 7)
+#( 3 | Square ) | Log
+@size | Log
+@bigger | Log
+@plain | Log
+0 | Var(n)
+Repeat({ Inc(n) } times: #( 2 | Square ))
+n | Log(prefix: #( Label(name: "count" number: 2) ))
+[1 #( 5 | Square ) @size] | Log
+{a: #( 6 | Square ) b: @plain} | Log
+2 | Square(x: #( 1 | Square ))"#;
+  // The last call passes a parameter Square does not declare: compose-time
+  // values go through the same checks as literals.
+  let d = compose_errors(source);
+  assert_eq!(d[0].code, "unknown-argument", "{d:?}");
+  let source = source.rsplit_once('\n').unwrap().0;
+  assert_eq!(
+    lines_of(source),
+    [
+      "9",
+      "16",
+      "17",
+      "7",
+      "count-2: 4",
+      "[1 25 16]",
+      "{a: 36 b: 7}"
+    ]
+  );
+}
+
+#[test]
+fn compose_time_results_take_their_exact_literal_type() {
+  // `Answer` outputs Any; the literal it evaluates to is an Int, so the
+  // arithmetic after it composes as if `42` were written by hand.
+  let source =
+    "@fn(Answer input: None output: Any params: {} { 42 })\n#( Answer ) | Math.Add(1) | Log";
+  assert_eq!(lines_of(source), ["43"]);
+  let d =
+    compose_errors("@fn(Answer input: None output: Any params: {} { 42 })\nAnswer | Math.Add(1)");
+  assert_eq!(d[0].code, "input-type-mismatch", "{d:?}");
+}
+
+#[test]
+fn not_compose_time_is_located_also_through_functions() {
+  let functions = r#"@fn(Noisy input: Int output: Int params: {} { Log })
+@fn(Counter stateful: true input: Int output: Int params: {} { Keep(k 0) })
+@fn(Waits input: Int output: Int params: {} { Pause() })
+@fn(Stops input: Int output: Int params: {} { Stop })"#;
+  for (expression, code, shard, location) in [
+    ("#( 1 | Log )", "not-compose-time", "Log", (5, 8)),
+    ("#( 1 | Noisy )", "not-compose-time", "Log", (1, 47)),
+    ("#( Time.Now )", "not-compose-time", "Time.Now", (5, 4)),
+    ("#( 1 | Keep(k 0) )", "not-compose-time", "Keep", (5, 8)),
+    ("#( 1 | Counter )", "not-compose-time", "Keep", (2, 64)),
+    ("#( 1 | Waits )", "not-compose-time", "Pause", (3, 47)),
+    ("#( Pause() )", "not-compose-time", "Pause", (5, 4)),
+    // Not on the list of shards evaluation may run, although it has no
+    // effect.
+    ("#( 1 | Stops )", "not-compose-time", "Stop", (4, 47)),
+    ("#( 1 | Return )", "not-compose-time", "Return", (5, 8)),
+  ] {
+    let d = compose_errors(&format!("{functions}\n{expression}"));
+    let d = d
+      .iter()
+      .find(|d| d.path.first() == Some(&shards_core::diagnostic::PathStep::Wire("root".into())))
+      .unwrap_or_else(|| panic!("{expression}: {d:?}"));
+    assert_eq!(
+      (d.code, d.shard.as_deref()),
+      (code, Some(shard)),
+      "{expression}: {d:?}"
+    );
+    assert_eq!(at(d), location, "{expression}: {}", d.message);
+    assert!(
+      d.path
+        .contains(&shards_core::diagnostic::PathStep::Evaluation),
+      "{expression}: {:?}",
+      d.path
+    );
+  }
+  // A runtime value is invisible to the evaluation, with a hint saying why.
+  let d = compose_errors("3 = x\n#( x | Math.Add(1) )");
+  assert_eq!(d[0].code, "unknown-variable");
+  assert!(
+    d[0].message.contains("cannot see runtime values"),
+    "{}",
+    d[0].message
+  );
+  assert_eq!(at(&d[0]), (2, 4));
+  // Mesh access is reached only through a function declaring it: the
+  // diagnostic names that function and points at the read.
+  let mut mesh = Mesh::new();
+  mesh.declare_var("gain", Var::Int(2), true);
+  let mut session = shards_lang::Session::with_mesh(mesh);
+  let (_, d) = session
+    .reload_preserving(
+      Source::new(
+        "t.shs",
+        "@fn(Read input: Int output: Int params: {} uses: [gain] { Math.Add(gain) })\n#( 1 | Read ) | Log",
+      ),
+      &catalog(),
+      &no_defines(),
+    )
+    .unwrap_err();
+  assert_eq!(
+    (d[0].code, d[0].shard.as_deref()),
+    ("not-compose-time", Some("Math.Add")),
+    "{}",
+    d[0].message
+  );
+  assert!(
+    d[0].message.contains("(reached through Read)") && d[0].message.contains("mesh variable gain"),
+    "{}",
+    d[0].message
+  );
+  assert_eq!(at(&d[0]), (1, 59));
+}
+
+#[test]
+fn constants_built_from_each_other_stop_at_the_expansion_budget() {
+  // Each line reads the previous constant eight times: seven lines would
+  // build millions of elements.
+  let chain = |first: &str| {
+    let mut source = format!("@const(c0 [{first} 2 3 4 5 6 7 8])\n");
+    for i in 1..=7 {
+      let read = format!("@c{} ", i - 1).repeat(8);
+      source += &format!("@const(c{i} [{}])\n", read.trim_end());
+    }
+    source + "@c7 | Count | Log\n"
+  };
+  // Values: lowered once and shared, bounded by their size as text, and
+  // reported at the definition that passes it.
+  let d = load_errors(&chain("1"));
+  assert_eq!(d.len(), 1, "{d:?}");
+  assert_eq!(d[0].code, "expansion-budget", "{}", d[0].message);
+  assert!(d[0].message.contains("expands past"), "{}", d[0].message);
+  assert!((2..=8).contains(&at(&d[0]).0), "{}", d[0].message);
+  // Holding a `#( )`, a constant is lowered again at each read: the source
+  // those reads lower is bounded in total.
+  let d = load_errors(&chain("#( 1 )"));
+  assert_eq!(d.len(), 1, "{d:?}");
+  assert_eq!(d[0].code, "expansion-budget", "{}", d[0].message);
+  assert!(d[0].message.contains("each read of"), "{}", d[0].message);
+  // A constant read a few times stays well within it.
+  assert_eq!(
+    lines_of("@const(row [1 2 3])\n@const(grid [@row @row @row])\n@grid | Count | Log"),
+    ["3"]
+  );
+}
+
+#[test]
+fn a_lookup_table_constant_is_shared_by_every_read() {
+  // Many reads of one large table cost nothing per read: the reads together
+  // are far past the expansion limit if each lowered the table again. On
+  // the device, 16 reads of about 400 bytes each (every statement costs a
+  // few KB of compose state of its own there).
+  let (size, reads) = if cfg!(target_os = "espidf") {
+    (100, 16)
+  } else {
+    (5000, 80)
+  };
+  let table: Vec<String> = (0..size).map(|i| (i * 7 % 1000).to_string()).collect();
+  let mut source = format!("@const(lut [{}])\n", table.join(" "));
+  for i in 0..reads {
+    source += &format!("@lut | Take({}) = v{i}\n", i * 3 % size);
+  }
+  source += &format!("v{} | Log", reads - 1);
+  let expected = ((reads - 1) * 3 % size * 7 % 1000).to_string();
+  assert_eq!(lines_of(&source), [expected]);
+}
+
+#[test]
+fn a_table_constant_built_from_copies_composes_as_it_is_held() {
+  // A constant holding 8 copies of one holding 8 copies ..., of a table,
+  // read many times: compose converts, types, hashes and compares it as
+  // held (each level once), not expanded at every read. Natively about
+  // 850 KB as text, which each read once rebuilt in full. On the device
+  // 2 levels (1,754 bytes as the value limit measures text; 3 levels pass
+  // its 4 KiB).
+  let (levels, reads) = if cfg!(target_os = "espidf") {
+    (2, 16)
+  } else {
+    (5, 400)
+  };
+  let mut source = String::from("@const(t0 {a: 1})\n");
+  for i in 1..=levels {
+    let p = format!("@t{}", i - 1);
+    source += &format!("@const(t{i} [{p} {p} {p} {p} {p} {p} {p} {p}])\n");
+  }
+  for i in 0..reads {
+    source += &format!("@t{levels} | Count = c{i}\n");
+  }
+  source += &format!("c{} | Log", reads - 1);
+  assert_eq!(lines_of(&source), ["8"]);
+}
+
+#[test]
+fn compose_time_cycles_are_reported_where_they_close() {
+  // A function whose body evaluates itself.
+  let d = compose_errors(
+    "@fn(Selfish input: Int output: Int params: {} { #( 1 | Selfish ) })\n2 | Selfish",
+  );
+  let cycle = d
+    .iter()
+    .find(|d| d.code == "compose-time-cycle")
+    .expect("cycle");
+  assert_eq!(at(cycle), (1, 56));
+  // Through another function.
+  let d = compose_errors(
+    "@fn(A input: Int output: Int params: {} { #( 1 | B ) })\n@fn(B input: Int output: Int params: {} { A })\n2 | A",
+  );
+  assert!(d.iter().any(|d| d.code == "compose-time-cycle"), "{d:?}");
+  // Constants that read each other.
+  let d = load_errors("@const(a #( @b | Math.Add(1) ))\n@const(b #( @a ))\n@a | Log");
+  assert_eq!(d.len(), 1, "reported once: {d:?}");
+  assert_eq!((d[0].code, at(&d[0])), ("compose-time-cycle", (2, 14)));
+  assert!(d[0].message.contains("a -> b -> a"), "{}", d[0].message);
+  // Names: a constant cannot reuse a script argument's or another's.
+  let d = load_errors("@const(a 1)\n@const(a 2)\n@a | Log");
+  assert_eq!((d[0].code, at(&d[0])), ("duplicate-binding", (2, 8)));
+}
+
+#[test]
+fn compose_time_failures_point_at_the_shard_that_failed() {
+  // The path goes through the evaluation to the failing shard, whatever
+  // ran it: flat code, a composite's child, a function in its own frame,
+  // inlined, or run by the VM on a kept frame.
+  // Past the inlining budget: it stays a call.
+  let big = format!(
+    "@fn(Big input: Int output: Int params: {{}} {{ = d{} 10 | Math.Divide(d) }})\n",
+    " Math.Add(0)".repeat(25)
+  );
+  for (source, message, (line, needle), path) in [
+    (
+      "1 | Log\n#( 1 | Math.Divide(0) ) | Log".to_string(),
+      "division by zero",
+      (2, "Math.Divide"),
+      "root/2:Const/value/#()/1:Math.Divide",
+    ),
+    (
+      "1 | Log\n#( [1 2] | Take(5) ) | Log".to_string(),
+      "out of range",
+      (2, "Take"),
+      "root/2:Const/value/#()/1:Take",
+    ),
+    (
+      "1 | Log\n#( \"x\" | ParseInt ) | Log".to_string(),
+      "is not an Int",
+      (2, "ParseInt"),
+      "root/2:Const/value/#()/1:ParseInt",
+    ),
+    // A flattened composite's child.
+    (
+      "#( 1 | When({ true } { Math.Divide(0) }) ) | Log".to_string(),
+      "division by zero",
+      (1, "Math.Divide"),
+      "root/0:Const/value/#()/1:When/action/0:Math.Divide",
+    ),
+    // A child flow a composite runs inside its own step (a `Match` case).
+    (
+      "#( 1 | Match([1 { Math.Divide(0) }] default: {}) ) | Log".to_string(),
+      "division by zero",
+      (1, "Math.Divide"),
+      "root/0:Const/value/#()/1:Match/cases/#0/0:Math.Divide",
+    ),
+    // An inlined function.
+    (
+      "@fn(Broken input: Int output: Int params: {} { Math.Divide(0) })\n#( 1 | Broken ) | Log"
+        .to_string(),
+      "division by zero",
+      (1, "Math.Divide"),
+      "root/0:Const/value/#()/1:Broken/Broken()/0:Math.Divide",
+    ),
+    // A function in a frame of its own (a shard without a VM form).
+    (
+      "@fn(Parse1 input: String output: Int params: {} { ParseInt })\n#( \"x\" | Parse1 ) | Log"
+        .to_string(),
+      "is not an Int",
+      (1, "ParseInt"),
+      "root/0:Const/value/#()/1:Parse1/Parse1()/0:ParseInt",
+    ),
+    // A body too large to inline, called again in a loop: the VM runs it
+    // on its kept frame, and the third call fails.
+    (
+      format!(
+        "{big}#( 2 | Var(n) Repeat({{ n | Big  n | Math.Subtract(1) | Update(n) }} times: 3) n ) | Log"
+      ),
+      "division by zero",
+      (1, "Math.Divide"),
+      "root/0:Const/value/#()/2:Repeat/action/1:Big/Big()/27:Math.Divide",
+    ),
+    // A block a function runs, where the call wrote it: in a frame of its
+    // own, inlined with its callee, and passed on through another function.
+    (
+      format!("{TWICE}#( 1 | Twice(action: {{\"x\" | ParseInt}}) ) | Log"),
+      "is not an Int",
+      (4, "ParseInt"),
+      "root/0:Const/value/#()/1:Twice/action/1:ParseInt",
+    ),
+    (
+      format!("{TWICE}#( 1 | Twice(action: {{Math.Divide(0)}}) ) | Log"),
+      "division by zero",
+      (4, "Math.Divide"),
+      "root/0:Const/value/#()/1:Twice/action/0:Math.Divide",
+    ),
+    (
+      format!(
+        "{TWICE}@fn(Outer input: Int output: Int params: {{action: Flow(input: Int output: Int)}} {{ Twice(action: action) }})\n#( 1 | Outer(action: {{\"x\" | ParseInt}}) ) | Log"
+      ),
+      "is not an Int",
+      (5, "ParseInt"),
+      "root/0:Const/value/#()/1:Outer/action/1:ParseInt",
+    ),
+  ] {
+    let d = compose_errors(&source);
+    assert_eq!(d[0].code, "compose-time-error", "{source}: {d:?}");
+    assert!(d[0].message.contains(message), "{source}: {}", d[0].message);
+    let column = source
+      .lines()
+      .nth(line as usize - 1)
+      .unwrap()
+      .find(needle)
+      .unwrap() as u32
+      + 1;
+    assert_eq!(
+      (at(&d[0]), d[0].path_string().as_str()),
+      ((line, column), path),
+      "{source}"
+    );
+  }
+}
+
+#[test]
+fn compose_time_budgets_end_runaway_evaluations() {
+  for (source, needle) in [
+    // Flat code: the loop is lowered to jumps in the evaluated pipeline.
+    ("#( 0 | Repeat({ Math.Add(1) } forever: true) )", "fuel"),
+    // A framed call: a recursive function runs in frames of its own.
+    (
+      "@fn(Spin input: Int output: Int params: {} { When({ IsLess(0) } { Spin }) Repeat({ Math.Add(1) } forever: true) })\n#( 0 | Spin )",
+      "fuel",
+    ),
+    // Unbounded recursion.
+    (
+      "@fn(Deeper input: Int output: Int params: {} { Math.Add(1) | Deeper })\n#( 0 | Deeper )",
+      "depth limit",
+    ),
+    // A growing value stops before the allocation that would exceed the
+    // value limit.
+    (
+      "#( [1] | Var(s) Repeat({ 1 | Push(s) } forever: true) )",
+      "value limit",
+    ),
+    // Wrapping a value in itself stops at the nesting limit.
+    (
+      "#( [] | Var(s) Repeat({ [s] | Update(s) } forever: true) )",
+      "nest deeper",
+    ),
+  ] {
+    let d = compose_errors(source);
+    let d = d
+      .iter()
+      .find(|d| d.code == "expansion-budget")
+      .unwrap_or_else(|| panic!("{source}: {d:?}"));
+    assert!(d.message.contains(needle), "{source}: {}", d.message);
+    assert!(
+      d.path_string().ends_with("#()"),
+      "{source}: {}",
+      d.path_string()
+    );
+  }
+  // Match pays for each case it compares by size: a thousand comparisons of
+  // 64-element sequences cost far more than the thousand dispatches.
+  let input: Vec<String> = (0..63)
+    .map(|i| i.to_string())
+    .chain(["-1".into()])
+    .collect();
+  let case: Vec<String> = (0..64).map(|i| i.to_string()).collect();
+  let source = format!(
+    "#( 0 | Var(k) Repeat({{ [{}] | Match([[{}] {{ 1 }}] default: {{ 0 }}) Inc(k) }} times: 1000) k ) | Log",
+    input.join(" "),
+    case.join(" ")
+  );
+  let mut mesh = Mesh::new();
+  mesh.set_eval_limits(shards_core::compose_time::EvalLimits {
+    fuel: 10_000,
+    ..Default::default()
+  });
+  let mut session = shards_lang::Session::with_mesh(mesh);
+  let (_, d) = session
+    .reload_preserving(Source::new("t.shs", &source), &catalog(), &no_defines())
+    .unwrap_err();
+  assert_eq!(d[0].code, "expansion-budget", "{}", d[0].message);
+  assert!(d[0].message.contains("fuel"), "{}", d[0].message);
+}
+
+#[test]
+fn an_evaluation_retaining_what_it_allocates_ends_at_its_budget() {
+  // Every iteration allocates a new sequence and keeps it: the live heap
+  // grows with the fuel spent, under the platform's default limits (on the
+  // device, within its heap).
+  let d = compose_errors(
+    "#( [] | Var(all) 0 | Var(k) Repeat({ [k k k k k k k k] | Push(all) Inc(k) } forever: true) all ) | Log",
+  );
+  assert_eq!(d[0].code, "expansion-budget", "{}", d[0].message);
+}
+
+#[test]
+fn expanding_a_function_is_not_a_macro() {
+  let d = load_errors(
+    "@fn(Square input: Int output: Int params: {} { = x  x | Math.Multiply(x) })\n4 | @Square()",
+  );
+  assert_eq!((d[0].code, at(&d[0])), ("not-a-macro", (2, 5)));
+}
+
+#[test]
+fn implicit_loop_variables_are_rejected_with_the_1x_help() {
+  let d = load_errors("[1 2] | Take(0) | Log($0)");
+  assert_eq!(d[0].code, "implicit-loop-variable");
+  assert_eq!(at(&d[0]), (1, 23));
+  assert!(d[0].message.contains("`$0`"), "{}", d[0].message);
+  assert!(
+    d[0].message.contains("the element is the block's input"),
+    "{}",
+    d[0].message
+  );
+}
+
+#[test]
+fn preserving_reload_updates_compose_time_values() {
+  let source = |value| {
+    format!(
+      r#"@fn(Base input: None output: Int params: {{}} {{ {value} }})
+@fn(Show input: None output: Int params: {{}} {{ #( Base | Math.Add(1) ) | Log }})
+@wire(main {{ #( Base ) | Log Show Pause }} looped: true)
+@mesh(m) @schedule(m main) @run(m)"#
+    )
+  };
+  let mut session = shards_lang::Session::new();
+  preserve(&mut session, &source(10));
+  let (_, lines) = shards_core::log::capture(|| {
+    session.tick();
+    assert!(preserve(&mut session, &source(20)).is_empty());
+    session.tick();
+    session.tick();
+  });
+  assert_eq!(lines, ["10", "11", "20", "21"]);
+}
+
+// --- M9: flow parameters (docs/metaprogramming.md §3) ---
+
+/// `Retry` as a function: runs the block up to `times` times, stops at the
+/// first success, and fails with the last attempt's error.
+const RETRY: &str = r#"@fn(Retry input: None output: None params: {times: Int action: Flow(input: None)} {
+  false | Var(done)
+  1 | Var(attempt)
+  While({All({done | Not} {attempt | IsLess(times)})} {
+    Maybe({Run(action) true | Update(done)} silent: true)
+    Inc(attempt)
+  })
+  When({done | Not} {Run(action)})
+  none
+})
+"#;
+
+/// `Timed` as a function: the seconds the block took.
+const TIMED: &str = r#"@fn(Timed input: None output: Float params: {action: Flow(input: None)} {
+  Time.Now = start
+  Run(action)
+  Time.Now | Math.Subtract(start)
+})
+"#;
+
+/// The same `Retry`, as a native composite a host crate writes against the
+/// public interface (`ControlShard`): this test crate is not shards-core.
+mod host_retry {
+  use shards_core::describe::{
+    Forms, InputDesc, OutputDesc, ParamDecl, Params, Requirement, ShardDesc, Targets, TypeName,
+  };
+  use shards_core::flow::CompiledFlow;
+  use shards_core::{ActivationCtx, Args, ComposeCtx, Composed, ControlShard, ControlStep};
+  use shards_core::{Result, ShardType, Var};
+
+  static PARAMS: &[ParamDecl] = &[
+    ParamDecl::new(
+      "times",
+      "",
+      Forms::LITERAL,
+      &[TypeName::Int],
+      Requirement::Required,
+    ),
+    ParamDecl::new("action", "", Forms::FLOW, &[], Requirement::Required),
+  ];
+
+  pub static RETRY: ShardType = ShardType::new(ShardDesc {
+    params: Params::Declared(PARAMS),
+    input: InputDesc::Any,
+    output: OutputDesc::Passthrough,
+    targets: Targets::All,
+    effects: shards_core::signature::Effects::NONE,
+    lifetime: shards_core::signature::Lifetime::Stateless,
+    ..ShardDesc::undocumented("Test.Retry", 1)
+  })
+  .controlled_by::<Retry>();
+
+  pub struct Retry;
+
+  pub struct Compiled {
+    flows: Vec<CompiledFlow>,
+    times: i64,
+  }
+
+  /// The attempt running.
+  #[derive(Default)]
+  pub struct Attempt(i64);
+
+  impl ControlShard for Retry {
+    type Compiled = Compiled;
+    type State = Attempt;
+    const NAME: &'static str = "Test.Retry";
+
+    fn compose(args: &Args, ctx: &mut ComposeCtx<'_>) -> Result<Composed<Compiled>> {
+      let input = ctx.input();
+      let action = ctx.compose_flow_conditional(args.flow("action").expect("decoded"), input)?;
+      Ok(Composed {
+        compiled: Compiled {
+          flows: vec![action],
+          times: args.int("times").expect("decoded"),
+        },
+        output: input,
+      })
+    }
+
+    fn flows(compiled: &Compiled) -> &[CompiledFlow] {
+      &compiled.flows
+    }
+
+    fn resume(
+      compiled: &Compiled,
+      attempt: &mut Attempt,
+      _: &mut ActivationCtx<'_>,
+      input: &Var,
+      completion: Option<Result<Var>>,
+    ) -> Result<ControlStep> {
+      match completion {
+        None => {
+          attempt.0 = 1;
+          Ok(ControlStep::Enter(0, input.clone()))
+        }
+        Some(Ok(_)) => Ok(ControlStep::Complete(input.clone())),
+        Some(Err(_)) if attempt.0 < compiled.times => {
+          attempt.0 += 1;
+          Ok(ControlStep::Enter(0, input.clone()))
+        }
+        Some(Err(err)) => Err(err),
+      }
+    }
+  }
+}
+
+/// Compose (or load) errors of a source, located.
+fn check_errors(text: &str) -> Vec<Diagnostic> {
+  let report = check(text);
+  assert!(!report.ok(), "expected errors");
+  report.diagnostics
+}
+
+fn host_catalog() -> Catalog {
+  Catalog::new(&[shards_core::shards::CATALOG, &[&host_retry::RETRY]]).unwrap()
+}
+
+fn run_with(catalog: &Catalog, text: &str) -> shards_lang::RunReport {
+  match Program::load(Source::new("t.shs", text), catalog, &no_defines()) {
+    Ok(p) => p.run().unwrap_or_else(|d| panic!("run failed: {d:?}")),
+    Err((_, d)) => panic!("load failed: {d:?}"),
+  }
+}
+
+/// A call of the script `Retry`, or the same through the host composite.
+fn retry_call(host: bool, times: u32, block: &str) -> String {
+  if host {
+    format!("Test.Retry(times: {times} action: {{{block}}})")
+  } else {
+    format!("Retry(times: {times} action: {{{block}}})")
+  }
+}
+
+#[test]
+fn retry_stops_at_the_first_success_and_updates_the_callers_variables() {
+  for host in [false, true] {
+    // Fails on the first two attempts, through a suspension each.
+    let block = r#"Inc(tries) tries | Log("try") Pause When({tries | IsLess(3)} {"x" | ParseInt})"#;
+    let text = format!(
+      "{RETRY}0 | Var(tries)\nnone | {}\ntries",
+      retry_call(host, 5, block)
+    );
+    let (report, lines) = shards_core::log::capture(|| run_with(&host_catalog(), &text));
+    assert_eq!(completed(&report, "root"), Var::Int(3), "host: {host}");
+    assert_eq!(lines, ["try: 1", "try: 2", "try: 3"], "host: {host}");
+  }
+}
+
+#[test]
+fn retry_fails_with_the_last_attempts_error_which_a_maybe_around_it_catches() {
+  for host in [false, true] {
+    let block = r#"Inc(tries) f"x{tries}" | ParseInt"#;
+    let text = format!(
+      "{RETRY}0 | Var(tries)\nMaybe({{none | {}}} {{-1}})\ntries",
+      retry_call(host, 3, block)
+    );
+    let (report, lines) = shards_core::log::capture(|| run_with(&host_catalog(), &text));
+    assert_eq!(completed(&report, "root"), Var::Int(3), "host: {host}");
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(lines[0].contains("\"x3\""), "host: {host}: {lines:?}");
+  }
+}
+
+#[test]
+fn cancelling_a_suspended_block_cleans_every_state_once() {
+  for host in [false, true] {
+    shards_core::shards::take_probe_events();
+    let text = format!(
+      "{RETRY}@wire(main {{ Probe(\"caller\") 0 | Var(tries) none | {} }} looped: true)\n@mesh(m) @schedule(m main) @run(m)",
+      retry_call(host, 3, r#"Probe("block") Inc(tries) Pause(10.0)"#)
+    );
+    let mut session = shards_lang::Session::new();
+    session
+      .reload(Source::new("t.shs", &text), &host_catalog(), &no_defines())
+      .unwrap_or_else(|(_, d)| panic!("load failed: {d:?}"));
+    session.tick();
+    session.tick();
+    session.stop();
+    let events = shards_core::shards::take_probe_events();
+    for tag in ["caller", "block"] {
+      let count = |kind| {
+        events
+          .iter()
+          .filter(|e| &*e.tag == tag && e.kind == kind)
+          .count()
+      };
+      use shards_core::shards::ProbeEventKind::*;
+      assert_eq!(count(Instantiate), 1, "host: {host}, {tag}");
+      assert_eq!(count(Cleanup), 1, "host: {host}, {tag}");
+    }
+  }
+}
+
+#[test]
+fn timed_outputs_the_seconds_its_block_took() {
+  let text = format!(
+    "{TIMED}0 | Var(n)\nTimed(action: {{Pause(0.02) Inc(n)}}) = took\n[took | IsMoreEqual(0.02) n]"
+  );
+  assert_eq!(
+    completed(&run(&text, &no_defines()), "root"),
+    Var::from_seq(std::sync::Arc::new(vec![Var::Bool(true), Var::Int(1)]))
+  );
+}
+
+/// Runs its block twice, feeding the first result to the second.
+const TWICE: &str = "@fn(Twice input: Int output: Int params: {action: Flow(input: Int output: Int)} {\n  Run(action) | Run(action)\n})\n";
+
+/// A loop over the first `n` elements, as a function: inlined with its
+/// block when the block is straight-line code (`n` is a parameter because
+/// `Count` has no VM form), framed otherwise.
+const EACH: &str = r#"@fn(Each input: [Int] output: [Int] params: {n: Int action: Flow(input: Int)} {
+  = xs
+  0 | Var(i)
+  While({i | IsLess(n)} { xs | Take(i) | Run(action) Inc(i) })
+  xs
+})
+"#;
+
+/// `Each`, counting the sequence itself: `Count` has no VM form, so the
+/// call keeps its frame, and `Run` runs a block of leaf code in place.
+const EACH_COUNTED: &str = r#"@fn(Each input: [Int] output: [Int] params: {n: Int action: Flow(input: Int)} {
+  = xs
+  0 | Var(i)
+  xs | Count = m
+  While({i | IsLess(n)} { xs | Take(i) | Run(action) Inc(i) })
+  xs
+})
+"#;
+
+#[test]
+fn the_inlined_and_the_framed_paths_behave_the_same() {
+  // Inlined with its callee; run in place by a framed callee's `Run`; in a
+  // frame of its own (`Probe` is not leaf code).
+  for (each, framed) in [(EACH, ""), (EACH_COUNTED, ""), (EACH, r#"Probe("b")"#)] {
+    let case = format!("{framed:?} counted: {}", each == EACH_COUNTED);
+    // Caller mutation.
+    let text = format!(
+      "{each}0 | Var(total)\n[1 2 3] | Each(n: 3 action: {{{framed} Math.Add(total) | Update(total)}})\ntotal"
+    );
+    assert_eq!(
+      completed(&run(&text, &no_defines()), "root"),
+      Var::Int(6),
+      "{case}"
+    );
+    // A failure inside the block, after it updated the caller.
+    let text = format!(
+      "{each}0 | Var(total)\n[0 1 2] = ks\nMaybe({{[1 5 2] | Each(n: 3 action: {{{framed} = k ks | Take(k) | Math.Add(total) | Update(total)}})}} silent: true)\ntotal"
+    );
+    assert_eq!(
+      completed(&run(&text, &no_defines()), "root"),
+      Var::Int(1),
+      "{case}"
+    );
+    // Cancellation: the caller suspends after the call; nothing leaks.
+    shards_core::shards::take_probe_events();
+    let text = format!(
+      "{each}@wire(main {{ Probe(\"caller\") 0 | Var(total) [1 2] | Each(n: 2 action: {{{framed} Math.Add(total) | Update(total)}}) Pause(10.0) }} looped: true)\n@mesh(m) @schedule(m main) @run(m)"
+    );
+    let mut session = shards_lang::Session::new();
+    session
+      .reload(Source::new("t.shs", &text), &catalog(), &no_defines())
+      .unwrap_or_else(|(_, d)| panic!("load failed: {d:?}"));
+    session.tick();
+    session.stop();
+    let events = shards_core::shards::take_probe_events();
+    let count = |kind| events.iter().filter(|e| e.kind == kind).count();
+    use shards_core::shards::ProbeEventKind::*;
+    assert_eq!(count(Instantiate), count(Cleanup), "{case}");
+  }
+}
+
+#[test]
+fn a_flow_parameter_passes_on_to_functions_and_native_shards() {
+  let text = format!(
+    "{RETRY}@fn(Twice input: None output: None params: {{action: Flow(input: None)}} {{ Retry(times: 2 action: action) When({{true}} action) none }})\n0 | Var(n)\nTwice(action: {{Inc(n)}})\nn"
+  );
+  assert_eq!(completed(&run(&text, &no_defines()), "root"), Var::Int(2));
+}
+
+#[test]
+fn output_none_discards_a_functions_output() {
+  // As a block for an `output: None` parameter: a body that ends on a
+  // value outputs None, inlined or framed, the value released.
+  for (body, logged) in [
+    ("\"kept\" | Log(\"in\") [1 2]", true),
+    ("Pause \"kept\" | Log(\"in\") [1 2]", true),
+    ("\"kept\" 1 | Math.Add(1)", false),
+  ] {
+    let text = format!(
+      "@fn(Note input: None output: None params: {{}} {{ {body} }})\nNote | Log(\"out\")\nNote | IsNone"
+    );
+    let (report, lines) = shards_core::log::capture(|| run(&text, &no_defines()));
+    assert_eq!(completed(&report, "root"), Var::Bool(true), "{body}");
+    let expected: &[&str] = if logged {
+      &["in: kept", "out: none", "in: kept"]
+    } else {
+      &["out: none"]
+    };
+    assert_eq!(lines, expected, "{body}");
+  }
+  // A declared output other than None is still checked.
+  let d = check_errors("@fn(One input: None output: String params: {} { 1 })\nOne");
+  assert_eq!(d[0].code, "output-type-mismatch", "{d:?}");
+}
+
+#[test]
+fn count_runs_in_the_vm_for_every_kind() {
+  // Inlined into the caller (its call site reports `inlined`), and the
+  // same at compose time, where a string's length is metered.
+  let text = "@fn(Len input: Any output: Int params: {} { Count })
+[1 2 3] | Len | Log
+\"h\u{e9}llo\" | Len | Log
+{a: 1 b: 2} | Len | Log
+\"abc\" | StringToBytes | Len | Log
+#(\"h\u{e9}llo\" | Count) | Log";
+  // (The function on its own fails: its declared input is `Any`.)
+  let report = check(text);
+  let paths: Vec<&str> = report.wires[0]
+    .occurrences
+    .iter()
+    .filter_map(|o| o.occurrence.call.as_ref().map(|c| c.path))
+    .collect();
+  assert_eq!(paths, ["inlined"; 4]);
+  let (_, lines) = shards_core::log::capture(|| run(text, &no_defines()));
+  assert_eq!(lines, ["3", "5", "2", "3", "5"]);
+}
+
+#[test]
+fn check_reports_how_each_call_site_runs() {
+  let adds = vec!["Math.Add(1)"; 30].join(" ");
+  let text = format!(
+    "@fn(Each input: [Int] output: [Int] params: {{action: Flow(input: Int)}} {{
+  = xs 0 | Var(i) xs | Count = n
+  While({{i | IsLess(n)}} {{ xs | Take(i) | Run(action) Inc(i) }})
+  xs
+}})
+@fn(Noisy input: Int output: Int params: {{}} {{ Log(\"n\") }})
+@fn(Long input: Int output: Int params: {{}} {{ {adds} }})
+@fn(Counter stateful: true input: None output: Int params: {{}} {{ Keep(c 0) Inc(c) Get(c) }})
+0 | Var(total)
+[1 2 3] | Each(action: {{Math.Add(total) | Update(total)}})
+[1 2 3] | Each(action: {{Log | Math.Add(total) | Update(total)}})
+1 | Noisy
+1 | Long
+Counter"
+  );
+  let report = check(&text);
+  assert!(report.ok(), "{}", report.to_json());
+  let sites: Vec<(u32, String, Option<String>)> = report.wires[0]
+    .occurrences
+    .iter()
+    .filter_map(|o| {
+      let call = o.occurrence.call.as_ref()?;
+      Some((
+        o.line?,
+        call.path.to_string(),
+        call.reason.as_ref().map(|r| r.to_string()),
+      ))
+    })
+    .collect();
+  let reason = |r: &str| Some(r.to_string());
+  assert_eq!(
+    sites,
+    [
+      (10, "inlined".into(), None),
+      (
+        11,
+        "framed".into(),
+        reason("the block for action: Log has no VM form")
+      ),
+      (12, "framed".into(), reason("its body: Log has no VM form")),
+      (
+        13,
+        "vm".into(),
+        reason("its body is 30 instructions, over the budget of 24")
+      ),
+      (
+        14,
+        "framed".into(),
+        reason("it is stateful (each site keeps an instance)")
+      ),
+    ]
+  );
+  // In JSON (a small program: the whole report above is tens of KB, more
+  // than the device's largest free block).
+  let json = check(
+    "@fn(Noisy input: Int output: Int params: {} { Log(\"n\") })\n@fn(One input: Int output: Int params: {} { Math.Add(1) })\n1 | Noisy | One",
+  )
+  .to_json();
+  assert!(json.contains("\"call\":{\"path\":\"inlined\"}"), "{json}");
+  assert!(
+    json.contains("\"call\":{\"path\":\"framed\",\"reason\":\"its body: Log has no VM form\"}"),
+    "{json}"
+  );
+}
+
+#[test]
+fn a_block_cannot_own_state() {
+  // A block starts fresh each time it runs: a stateful call inside it is
+  // refused, at a wire's top level and inside a stateful function, as a
+  // `Once` is. Before, the callee's state survived between runs of one
+  // `Run` and not between two.
+  const COUNTER: &str =
+    "@fn(Counter stateful: true input: None output: Int params: {} { Keep(n 0) Inc(n) Get(n) })\n";
+  let d = check_errors(&format!(
+    "{RETRY}{COUNTER}Retry(times: 2 action: {{Counter | Log}})"
+  ));
+  assert_eq!(d[0].code, "stateful-call-in-stateless", "{d:?}");
+  assert_eq!(d[0].shard.as_deref(), Some("Counter"));
+  assert!(d[0].message.contains("starts fresh"), "{}", d[0].message);
+  let d = check_errors(&format!(
+    "{RETRY}{COUNTER}@fn(Outer stateful: true input: None output: Int params: {{}} {{ Retry(times: 2 action: {{Counter | Log}}) Counter }})\nOuter"
+  ));
+  assert_eq!(d[0].code, "stateful-call-in-stateless", "{d:?}");
+  let d = check_errors(&format!(
+    "{RETRY}Retry(times: 2 action: {{Once({{1 | Log}})}})"
+  ));
+  assert_eq!(d[0].code, "once-in-stateless", "{d:?}");
+  // Outside the block, the caller owns the instance and keeps it.
+  let text = format!(
+    "{RETRY}{COUNTER}0 | Var(last)\nRepeat({{Counter | Update(last)}} times: 3)\nRetry(times: 2 action: {{last | Log}})\nlast"
+  );
+  assert_eq!(completed(&run(&text, &no_defines()), "root"), Var::Int(3));
+}
+
+#[test]
+fn return_and_stop_inside_blocks() {
+  // A Return leaving the block is refused, located at the Return.
+  let d = check_errors(&format!("{RETRY}Retry(times: 2 action: {{Return}})"));
+  assert_eq!((d[0].code, at(&d[0])), ("control-in-flow", (11, 25)));
+  // A Return inside a function the block calls ends that function.
+  let text = format!(
+    "{RETRY}@fn(Early input: None output: Int params: {{}} {{ 1 | Return 2 }})\n0 | Var(n)\nRetry(times: 2 action: {{Early | Update(n)}})\nn"
+  );
+  assert_eq!(completed(&run(&text, &no_defines()), "root"), Var::Int(1));
+  // Stop inside a block ends the wire.
+  let text = format!("{RETRY}Retry(times: 2 action: {{Stop}})\n\"after\" | Log");
+  let (report, lines) = shards_core::log::capture(|| run(&text, &no_defines()));
+  assert!(lines.is_empty(), "{lines:?}");
+  assert!(
+    matches!(&report.outcomes[0].1, Some(Outcome::Stopped)),
+    "{:?}",
+    report.outcomes
+  );
+}
+
+#[test]
+fn a_flow_parameter_cannot_escape_its_call() {
+  let header = "@fn(F input: Int output: Int params: {action: Flow(input: Int output: Int)} {";
+  for (body, column) in [
+    ("action = f 1", 79),                     // bound with `=`
+    ("action | Var(f) 1", 79),                // bound with Var
+    ("action | Return", 79),                  // returned
+    ("[action] | Count", 79),                 // stored in a collection
+    ("1 | Var(xs) [1] | Push(action) 1", 97), // assigned
+  ] {
+    let d = check_errors(&format!(
+      "{header} {body} }})\n1 | F(action: {{Math.Add(1)}})"
+    ));
+    assert_eq!(d[0].code, "flow-escapes", "{body}: {:?}", d[0]);
+    assert_eq!(at(&d[0]), (1, column), "{body}");
+  }
+  // Kept, or written to a mesh variable, from a stateful function.
+  let d = check_errors(
+    "@fn(F stateful: true input: Int output: Int params: {action: Flow(input: Int output: Int)} { Keep(action 0) })\n1 | F(action: {Math.Add(1)})",
+  );
+  assert_eq!(d[0].code, "duplicate-binding", "{:?}", d[0]);
+  let d = check_errors(
+    "@fn(F input: Int output: Int params: {action: Flow(input: Int output: Int)} { action | Update(level) })\n1 | F(action: {Math.Add(1)})",
+  );
+  assert_eq!(d[0].code, "flow-escapes", "{:?}", d[0]);
+}
+
+#[test]
+fn the_same_function_has_the_effects_of_each_sites_block() {
+  let report = check(
+    "@fn(Twice input: Int output: Int params: {action: Flow(input: Int output: Int)} { Run(action) | Run(action) })\n1 | Twice(action: {Math.Add(1)})\n2 | Twice(action: {Pause Math.Add(1)})",
+  );
+  assert!(report.ok(), "{}", report.to_json());
+  let sites: Vec<bool> = report.wires[0]
+    .occurrences
+    .iter()
+    .filter(|o| o.occurrence.path.len() == 2)
+    .filter(|o| {
+      matches!(&o.occurrence.path[1], shards_core::diagnostic::PathStep::Shard { name, .. } if name == "Twice")
+    })
+    .map(|o| o.occurrence.effects.suspends)
+    .collect();
+  assert_eq!(sites, [false, true]);
+  let json = report.to_json();
+  assert!(json.contains("\"suspends\":true"), "{json}");
+}
+
+#[test]
+fn ignored_inputs_and_outputs_of_blocks() {
+  // `input: None`: the block receives none, whatever Run's input; `output:
+  // None`: the block's output is discarded and Run outputs none.
+  let text = "@fn(Both input: Int output: None params: {action: Flow(input: None output: None)} { Run(action) })\n0 | Var(n)\n5 | Both(action: {Inc(n) n | Math.Add(10)}) = out\n[out n]";
+  assert_eq!(
+    completed(&run(text, &no_defines()), "root"),
+    Var::from_seq(std::sync::Arc::new(vec![Var::None, Var::Int(1)]))
+  );
+}
+
+// --- `@include` and `@read`, and Bytes ---
+
+fn files(entries: &[(&str, &str)]) -> shards_lang::MemoryFiles {
+  let mut files = shards_lang::MemoryFiles::new();
+  for (name, text) in entries {
+    files.insert(name, text.as_bytes());
+  }
+  files
+}
+
+fn load_with(text: &str, files: &shards_lang::MemoryFiles) -> Result<Program, Vec<Diagnostic>> {
+  Program::load_with(
+    Source::new("main.shs", text),
+    &catalog(),
+    &no_defines(),
+    files,
+  )
+  .map_err(|(_, d)| d)
+}
+
+#[test]
+fn an_included_file_declares_once_wherever_it_is_named() {
+  let files = files(&[
+    (
+      "lib/flow.shs",
+      "@include(\"../lib/flow.shs\")\n@include(\"more.shs\")\n@fn(Twice input: Int output: Int params: {} { Math.Multiply(2) })",
+    ),
+    ("lib/more.shs", "@const(base 10)\n@include(\"flow.shs\")"),
+  ]);
+  let program = load_with(
+    "@include(\"lib/flow.shs\")\n@include(\"./lib/more.shs\")\n@base | Twice",
+    &files,
+  )
+  .unwrap_or_else(|d| panic!("{d:?}"));
+  assert_eq!(program.files, ["lib/flow.shs", "lib/more.shs"]);
+  let report = program.run().unwrap_or_else(|d| panic!("{d:?}"));
+  assert_eq!(completed(&report, "root"), Var::Int(20));
+}
+
+#[test]
+fn problems_in_included_files_are_located_there() {
+  let files = files(&[
+    (
+      "lib.shs",
+      "// helpers\n@fn(Bad input: Int output: Int params: {} {\n  \"x\" | Math.Add(1)\n})",
+    ),
+    (
+      "broken.shs",
+      "@fn(B input: Int output: Int params: {} {\n  Math.Add(\n})",
+    ),
+  ]);
+  // A compose error inside an included function.
+  let program = load_with("@include(\"lib.shs\")\n1 | Bad", &files).unwrap();
+  let d = &program.compose()[0];
+  assert_eq!(
+    (d.code, d.file.as_deref(), at(d)),
+    ("input-type-mismatch", Some("lib.shs"), (3, 9))
+  );
+  // A syntax error in an included file.
+  let d = load_with("@include(\"broken.shs\")", &files)
+    .err()
+    .expect("load errors");
+  assert_eq!(
+    (d[0].code, d[0].file.as_deref(), at(&d[0])),
+    ("unclosed", Some("broken.shs"), (2, 11))
+  );
+  // A missing file, and an include inside a wire.
+  let d = load_with("1 | Log\n@include(\"nope.shs\")", &files)
+    .err()
+    .expect("load errors");
+  assert_eq!(
+    (d[0].code, d[0].file.as_deref(), at(&d[0])),
+    ("file-not-found", Some("main.shs"), (2, 1))
+  );
+  let d = load_with("When({true} {@include(\"lib.shs\")})", &files)
+    .err()
+    .expect("load errors");
+  assert_eq!((d[0].code, at(&d[0])), ("unsupported", (1, 14)));
+}
+
+#[test]
+fn read_gives_a_files_text_or_bytes_as_a_literal() {
+  let mut files = files(&[("data/hello.txt", "hi\n")]);
+  files.insert("data/blob.bin", [0u8, 255, 16]);
+  let text = r#"@const(greeting @read("data/hello.txt"))
+@read("data/blob.bin" bytes: true) = blob
+[@greeting
+ blob | Count
+ blob | ToHex
+ "hi\n" | StringToBytes | BytesToString | Is(@greeting)
+ blob | Is(@read("data/blob.bin" bytes: true))]"#;
+  let program = load_with(text, &files).unwrap_or_else(|d| panic!("{d:?}"));
+  assert_eq!(program.files, ["data/hello.txt", "data/blob.bin"]);
+  let report = program.run().unwrap_or_else(|d| panic!("{d:?}"));
+  assert_eq!(
+    completed(&report, "root"),
+    Var::from_seq(std::sync::Arc::new(vec![
+      Var::string("hi\n"),
+      Var::Int(3),
+      Var::string("00ff10"),
+      Var::Bool(true),
+      Var::Bool(true),
+    ]))
+  );
+  // Text that is not UTF-8 needs `bytes: true`.
+  let d = load_with(r#"@read("data/blob.bin") | Log"#, &files)
+    .err()
+    .expect("load errors");
+  assert_eq!((d[0].code, at(&d[0])), ("not-utf8", (1, 1)));
+}
+
+#[test]
+fn bytes_are_a_type_with_their_own_printing() {
+  let report = check(
+    "@fn(Size input: Bytes output: Int params: {} { Count })\n\"abc\" | StringToBytes | Size\n#( \"ab\" | StringToBytes ) | Log",
+  );
+  assert!(report.ok(), "{}", report.to_json());
+  let (report, lines) = shards_core::log::capture(|| {
+    run(
+      "\"ab\" | StringToBytes | Log\n[1] | Count | Log",
+      &no_defines(),
+    )
+  });
+  assert!(report.succeeded());
+  assert_eq!(lines, ["@bytes(6162)", "1"]);
+  let d = check_errors("1 | BytesToString");
+  assert_eq!(d[0].code, "input-type-mismatch");
+}
+
+#[test]
+fn a_session_records_the_files_a_revision_read() {
+  let mut session = shards_lang::Session::new();
+  session.set_files(files(&[("lib.shs", "@const(x 1)"), ("v.txt", "v")]));
+  session
+    .reload(
+      Source::new("main.shs", "@include(\"lib.shs\")\n@read(\"v.txt\") | Log"),
+      &catalog(),
+      &no_defines(),
+    )
+    .unwrap_or_else(|(_, d)| panic!("{d:?}"));
+  assert_eq!(session.files_read(), ["lib.shs", "v.txt"]);
+  // A rejected revision still says what it read.
+  assert!(
+    session
+      .reload(
+        Source::new("main.shs", "@include(\"lib.shs\")\nNope"),
+        &catalog(),
+        &no_defines(),
+      )
+      .is_err()
+  );
+  assert_eq!(session.files_read(), ["lib.shs"]);
+}
+
+#[cfg(not(any(target_arch = "wasm32", target_os = "espidf")))]
+#[test]
+fn file_watcher_reloads_when_an_included_file_changes() {
+  use shards_lang::{FileWatcher, WatchControl, WatchEvent};
+  use std::cell::Cell;
+  use std::time::{Duration, Instant};
+  let dir = std::env::temp_dir().join(format!("shards-watch-include-{}", std::process::id()));
+  std::fs::create_dir_all(&dir).unwrap();
+  struct Remove(std::path::PathBuf);
+  impl Drop for Remove {
+    fn drop(&mut self) {
+      let _ = std::fs::remove_dir_all(&self.0);
+    }
+  }
+  let _remove = Remove(dir.clone());
+  let (main, lib) = (dir.join("main.shs"), dir.join("lib.shs"));
+  let lib_source =
+    |value| format!("@fn(Step input: None output: Int params: {{}} {{{value} Log}})");
+  std::fs::write(&lib, lib_source(10)).unwrap();
+  std::fs::write(
+    &main,
+    "@include(\"lib.shs\")\n@wire(main {Step} looped: true)\n@mesh(m) @schedule(m main) @run(m fps: 0.1)",
+  )
+  .unwrap();
+  let command = Cell::new(WatchControl::Continue);
+  let mut revisions = 0;
+  let start = Instant::now();
+  let mut session = shards_lang::Session::new();
+  let (_, lines) = shards_core::log::capture(|| {
+    FileWatcher::new(&main).run(
+      &mut session,
+      &catalog(),
+      &no_defines(),
+      || {
+        assert!(
+          start.elapsed() < Duration::from_secs(5),
+          "watcher did not exit"
+        );
+        command.replace(WatchControl::Continue)
+      },
+      |event| match event {
+        WatchEvent::Reloaded { .. } => {
+          revisions += 1;
+          match revisions {
+            // Only the included file changes.
+            1 => std::fs::write(&lib, lib_source(20)).unwrap(),
+            2 => command.set(WatchControl::Stop),
+            _ => panic!("unexpected reload"),
+          }
+        }
+        WatchEvent::Rejected { diagnostics, .. } => panic!("{diagnostics:?}"),
+        WatchEvent::ReadError(error) => panic!("{error}"),
+        _ => {}
+      },
+    )
+  });
+  assert_eq!(revisions, 2);
+  assert_eq!(lines, ["10", "20"]);
+}
+
+/// The watcher's view of the files a program reads (review
+/// 2026-10-10-e982fe9-codex-3bec98): exact bytes, files a load looked for
+/// and did not find, and files a load first named.
+#[cfg(not(any(target_arch = "wasm32", target_os = "espidf")))]
+mod watched_files {
+  use shards_core::Catalog;
+  use shards_lang::{FileWatcher, Session, WatchEvent};
+  use std::{collections::HashMap, path::PathBuf, time::Duration};
+
+  struct Fixture {
+    dir: PathBuf,
+    watcher: FileWatcher,
+    session: Session,
+    catalog: Catalog,
+  }
+  impl Fixture {
+    fn new(name: &str, script: &str) -> Self {
+      let dir = std::env::temp_dir().join(format!("shards-watched-{}-{name}", std::process::id()));
+      std::fs::create_dir_all(&dir).unwrap();
+      let main = dir.join("main.shs");
+      std::fs::write(&main, script).unwrap();
+      Self {
+        dir,
+        watcher: FileWatcher::new(main),
+        session: Session::new(),
+        catalog: Catalog::new(&[shards_core::shards::CATALOG]).unwrap(),
+      }
+    }
+    fn poll(&mut self, restart: bool) -> (usize, usize) {
+      let (mut loaded, mut rejected) = (0, 0);
+      self.watcher.poll(
+        &mut self.session,
+        &self.catalog,
+        &HashMap::new(),
+        restart,
+        |event| match event {
+          WatchEvent::Reloaded { .. } => loaded += 1,
+          WatchEvent::Rejected { .. } => rejected += 1,
+          WatchEvent::ReadError(e) => panic!("{e}"),
+          _ => {}
+        },
+      );
+      (loaded, rejected)
+    }
+    fn settle(&mut self) -> (usize, usize) {
+      let mut total = (0, 0);
+      for _ in 0..4 {
+        std::thread::sleep(Duration::from_millis(110));
+        let got = self.poll(false);
+        total.0 += got.0;
+        total.1 += got.1;
+      }
+      total
+    }
+  }
+  impl Drop for Fixture {
+    fn drop(&mut self) {
+      let _ = std::fs::remove_dir_all(&self.dir);
+    }
+  }
+
+  #[test]
+  fn binary_edit_is_a_new_revision() {
+    let mut f = Fixture::new("binary", "@read(\"data.bin\" bytes: true) | ToHex");
+    std::fs::write(f.dir.join("data.bin"), [0xff]).unwrap();
+    assert_eq!(f.poll(true), (1, 0));
+    f.settle(); // Establish the dependency list in the watcher's observation.
+    std::fs::write(f.dir.join("data.bin"), [0xfe]).unwrap();
+    assert_eq!(
+      f.settle(),
+      (1, 0),
+      "different invalid UTF-8 bytes must reload"
+    );
+  }
+
+  #[test]
+  fn creating_a_missing_include_retries_the_revision() {
+    let mut f = Fixture::new("missing", "@include(\"lib.shs\")\n1");
+    assert_eq!(f.poll(true), (0, 1));
+    f.settle();
+    std::fs::write(f.dir.join("lib.shs"), "").unwrap();
+    assert_eq!(
+      f.settle(),
+      (1, 0),
+      "creating the missing file must retry the failed load"
+    );
+  }
+
+  #[test]
+  fn unchanged_dependencies_do_not_reload_twice() {
+    let mut f = Fixture::new(
+      "unchanged",
+      "@include(\"lib.shs\")\n1 | Log | Math.Divide(0)",
+    );
+    std::fs::write(f.dir.join("lib.shs"), "").unwrap();
+    let (revisions, logs) = shards_core::log::capture(|| f.settle());
+    eprintln!("revisions={revisions:?}, logs={logs:?}");
+    assert_eq!(
+      logs,
+      ["1"],
+      "an unchanged failing entry must not repeat its effects"
+    );
+    assert_eq!(
+      revisions,
+      (1, 0),
+      "one initial load; no source file changed"
+    );
+  }
+
+  #[test]
+  fn a_file_created_earlier_in_the_search_order_is_a_change() {
+    // `lib.shs` is found through an include path; creating one next to the
+    // script, which is searched first, changes what loads.
+    let mut f = Fixture::new("search", "@include(\"lib.shs\")\n@v | Log");
+    let include = f.dir.join("include");
+    std::fs::create_dir_all(&include).unwrap();
+    std::fs::write(include.join("lib.shs"), "@const(v 1)").unwrap();
+    f.session.set_files(shards_lang::FsFiles {
+      include_paths: vec![include],
+    });
+    let (first, lines) = shards_core::log::capture(|| {
+      let first = f.poll(true);
+      f.session.tick();
+      first
+    });
+    assert_eq!((first, lines), ((1, 0), vec!["1".to_string()]));
+    f.settle();
+    std::fs::write(f.dir.join("lib.shs"), "@const(v 2)").unwrap();
+    let (revisions, lines) = shards_core::log::capture(|| {
+      let revisions = f.settle();
+      f.session.tick();
+      revisions
+    });
+    assert_eq!(revisions, (1, 0));
+    assert!(lines.contains(&"2".to_string()), "{lines:?}");
+  }
 }

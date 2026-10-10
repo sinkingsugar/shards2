@@ -1,0 +1,18 @@
+{
+  "head": "692ee62f309f7bf085f1e00240daf6d5172a001c",
+  "command": "CARGO_TARGET_DIR=$PWD/target bash bench/http-concurrency/run.sh /Users/sugar/devel/shards/build/Release/shards 3",
+  "latency_ms": 50,
+  "counts": [
+    1,
+    32,
+    100,
+    1000
+  ],
+  "cpu_affinity": "unpinned; server and clients use normal affinity (macOS, Apple Silicon laptop; thread counts are n/a: no /proc)",
+  "validation": "24/24 runs: ok == server_completed == instances; failed == 0 where reported",
+  "binaries_sha256": {
+    "/Users/sugar/devel/shards/build/Release/shards": "f2e92b7e449e645e2864ead7c2f74197a32b1966cc931352848f8717d939bb04",
+    "target/release/examples/bench_http": "90165c8317714bab2be8d1ce8c786e35e8a44cb8c4aaab34d63f858a60d9b24f",
+    "target/release/examples/latency_server": "bb87f969b3ac96529445f49f250e3e4156c602d75f833270f39c5e7cec137902"
+  }
+}

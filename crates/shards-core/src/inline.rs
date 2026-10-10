@@ -10,6 +10,7 @@
 use std::any::{Any, TypeId};
 
 use crate::compose::Binding;
+use crate::compose_time::Meter;
 use crate::error::{Error, Result};
 use crate::shards::Operand;
 use crate::shards::data;
@@ -17,7 +18,7 @@ use crate::shards::leaf::{self, LeafShard};
 use crate::shards::math::{self, BinOp};
 use crate::shards::values;
 use crate::types::{Shape, Type};
-use crate::var::{Float4, Table, Var};
+use crate::var::{Float4, Table, Var, assign, assign_copy, copy, release, seq_mut};
 
 /// Opaque internal optimization hook. Ordinary shards use the default `None`.
 #[doc(hidden)]
@@ -58,6 +59,9 @@ pub(crate) enum Op {
   Compare(Cmp, Operand),
   /// The language's equality (`Is`, or `IsNot` when negated).
   Equal(bool, Operand),
+  /// `Count`, through one out-of-line call. A function looping over its
+  /// input counts it, and without this its call could not be inlined.
+  Count,
   /// Passes the value through (`Keep`: its slot was set at frame creation).
   Pass,
   /// A call to a straight-line body from a stateless, non-recursive site:
@@ -114,6 +118,10 @@ pub(crate) fn leaf_code(code: &[Instruction]) -> bool {
 /// frame being run. Copyable, so a nested run gets its own for the frame
 /// it runs in.
 pub(crate) trait VmCalls: Copy {
+  /// Whether runs meter their work (a compose-time evaluation,
+  /// [`Metered`]). A constant, so the runtime's instantiation of `run`
+  /// carries no metering at all.
+  const METERED: bool = false;
   /// The callee of the call site at instruction `site`, when it can run
   /// here: a stateless, non-recursive site with a kept frame, the current
   /// revision, a straight-line body whose own sites are ready too, and
@@ -122,6 +130,70 @@ pub(crate) trait VmCalls: Copy {
   /// The same test without entering: readiness of the site and, through
   /// it, of everything its body would run.
   fn site_ready(&self, site: usize) -> bool;
+  /// The call depth of the frame being run.
+  fn depth(&self) -> usize {
+    0
+  }
+  /// The meter, when `METERED`.
+  fn meter(&self) -> Option<&Meter> {
+    None
+  }
+  /// A metered run of a callee failed at instruction `pc` of its code:
+  /// called for the callee's level before the failure leaves the caller's
+  /// run, to locate it (`stackless::failure_path`). Runtime runs never call
+  /// it.
+  #[cold]
+  fn failed(&self, _pc: usize) {}
+  /// `failed`, from a [`Metered`] run: where its meter keeps the location.
+  #[cold]
+  fn failed_in(&self, _pc: usize, _meter: &Meter) {}
+}
+
+/// A run of a compose-time evaluation: `C`'s calls, with every instruction
+/// charged to the meter, and the allocations and traversals of the VM's
+/// own operations checked against its limits.
+#[derive(Clone, Copy)]
+pub(crate) struct Metered<'m, C> {
+  pub inner: C,
+  pub meter: &'m Meter,
+}
+
+impl<C: VmCalls> VmCalls for Metered<'_, C> {
+  const METERED: bool = true;
+
+  fn enter(&self, site: usize) -> Option<VmCallee<Self>> {
+    let callee = self.inner.enter(site)?;
+    self.meter.note_depth(callee.calls.depth());
+    Some(VmCallee {
+      code: callee.code,
+      constructors: callee.constructors,
+      locals: callee.locals,
+      param_slots: callee.param_slots,
+      input_slot: callee.input_slot,
+      args: callee.args,
+      ignores_input: callee.ignores_input,
+      calls: Metered {
+        inner: callee.calls,
+        meter: self.meter,
+      },
+    })
+  }
+
+  fn site_ready(&self, site: usize) -> bool {
+    self.inner.site_ready(site)
+  }
+
+  fn depth(&self) -> usize {
+    self.inner.depth()
+  }
+
+  fn meter(&self) -> Option<&Meter> {
+    Some(self.meter)
+  }
+
+  fn failed(&self, pc: usize) {
+    self.inner.failed_in(pc, self.meter);
+  }
 }
 
 /// A callee a run enters: its code, its kept locals (a buffer that outlives
@@ -160,10 +232,12 @@ impl VmCalls for NoCalls {
 /// ticks). A frame's own code needs no such check: the engine continues it
 /// from the instruction the run stopped at.
 pub(crate) fn vm_ready<C: VmCalls>(code: &[Instruction], calls: &C) -> bool {
-  code
-    .iter()
-    .enumerate()
-    .all(|(i, instruction)| !matches!(instruction.op, Op::VmCall) || calls.site_ready(i))
+  for (i, instruction) in code.iter().enumerate() {
+    if matches!(instruction.op, Op::VmCall) && !calls.site_ready(i) {
+      return false;
+    }
+  }
+  true
 }
 
 /// Runs `code` from `from` as far as the VM goes: constructors through
@@ -182,7 +256,15 @@ pub(crate) fn run_segment<C: VmCalls>(
   loop {
     let before = pc;
     (pc, value) = if pc < code.len() && code[pc].is_constructor() {
-      construct(code, pc, value, locals, mesh)?
+      match construct(code, pc, value, locals, mesh, calls.meter()) {
+        Ok(next) => next,
+        Err(err) => {
+          if let Some(meter) = calls.meter() {
+            meter.at(pc);
+          }
+          return Err(err);
+        }
+      }
     } else {
       run(code, pc, value, locals, mesh, calls)?
     };
@@ -241,6 +323,7 @@ impl Op {
       Op::Arith(..) => "arith",
       Op::Compare(..) => "compare",
       Op::Equal(..) => "equal",
+      Op::Count => "count",
       Op::Pass => "pass",
       Op::VmCall => "vm-call",
       Op::Jump(_) => "jump",
@@ -308,6 +391,30 @@ impl Instruction {
     }
   }
 
+  /// Whether the instruction replaces the accumulator without reading it:
+  /// the value before it is dead there.
+  pub(crate) fn ignores_accumulator(&self) -> bool {
+    matches!(
+      self.op,
+      Op::Const(_)
+        | Op::GetLocal(_)
+        | Op::GetMesh(_)
+        | Op::Inc(_)
+        | Op::ConstDrop(_)
+        | Op::GetLocalDrop(_)
+        | Op::GetMeshDrop(_)
+        | Op::IncDrop(_)
+    )
+  }
+
+  /// A jump's target; `None` for any other instruction.
+  pub(crate) fn jump_target(&self) -> Option<u32> {
+    match self.op {
+      Op::Jump(t) | Op::JumpIfNot(t) | Op::JumpIf(t) | Op::LoopTest(_, t) => Some(t),
+      _ => None,
+    }
+  }
+
   /// Offsets a jump target by `base`: the instruction moved into a parent
   /// flow's code at that index.
   pub(crate) fn relocate(&mut self, base: u32) {
@@ -362,6 +469,7 @@ impl Instruction {
       | Op::AddFloatConst(_)
       | Op::AddFloat4Const(_)
       | Op::Pass
+      | Op::Count
       | Op::VmCall
       | Op::Jump(_)
       | Op::JumpIfNot(_)
@@ -449,6 +557,7 @@ pub(crate) fn lower_scratch_releases(code: &mut [Instruction]) {
       | Op::Arith(..)
       | Op::Compare(..)
       | Op::Equal(..)
+      | Op::Count
       | Op::Pass
       | Op::Jump(_)
       | Op::JumpIfNot(_)
@@ -517,10 +626,31 @@ pub(crate) fn leaf<L: LeafShard>(c: &L::Compiled, output: Type) -> Option<Inline
     Op::Equal(false, c.downcast_ref::<Operand>()?.clone())
   } else if id == TypeId::of::<values::Equality<values::IsNotSpec>>() {
     Op::Equal(true, c.downcast_ref::<Operand>()?.clone())
+  } else if id == TypeId::of::<values::Pure<values::CountOp>>() {
+    Op::Count
   } else {
     return None;
   };
   Some(InlineOp(op))
+}
+
+/// `Op::Count`, charged to the meter in a compose-time evaluation as the
+/// shard is. Out of line: in place, even only for sequences, its arm moved
+/// `run`'s blocks and cost the constructor cases 5 to 14 percent
+/// (2026-10-10); it runs once per loop, not per element.
+#[inline(never)]
+fn count(value: &Var, meter: Option<&crate::compose_time::Meter>) -> Result<i64> {
+  use values::PureOp;
+  if let Var::Seq(items) = value {
+    return Ok(items.len() as i64);
+  }
+  if let Some(meter) = meter {
+    values::CountOp::meter(value, meter)?;
+  }
+  match values::CountOp::apply(value)? {
+    Var::Int(n) => Ok(n),
+    _ => unreachable!("Count outputs an Int"),
+  }
 }
 
 #[cold]
@@ -608,6 +738,16 @@ pub(crate) fn run<C: VmCalls>(
   let mut numeric = std::mem::MaybeUninit::<Var>::uninit();
   let mut value: *const Var = &scratch;
   while let Some(instruction) = code.get(index) {
+    if C::METERED {
+      // The meter keeps the instruction being run, so a failure can be
+      // located (`Meter::at`). Nothing else in this loop knows about
+      // locating: an extra parameter or a closure around it (to read
+      // `index` after a failure) cost the VM suite's push, take and float4
+      // cases 7 to 16 percent at runtime (3ceac16).
+      let meter = calls.meter().expect("metered");
+      meter.at(index);
+      meter.charge(1)?;
+    }
     // SAFETY: `value` starts at scratch and each arm reanchors it to live
     // code, scratch, numeric storage or a checked frame slot. Reads end before
     // any write. No reference survives replacement of its owner; no callback
@@ -623,8 +763,7 @@ pub(crate) fn run<C: VmCalls>(
         Op::Set(b) => {
           let target = frames.slot(*b);
           if !std::ptr::eq(value, target) {
-            let copy = (*value).clone();
-            *target = copy;
+            assign_copy(&mut *target, &*value);
           }
           value = target;
         }
@@ -640,24 +779,23 @@ pub(crate) fn run<C: VmCalls>(
         }
         Op::ConstDrop(v) => {
           value = v;
-          scratch = Var::None;
+          assign(&mut scratch, Var::None);
         }
         Op::GetLocalDrop(offset) => {
           value = frames.slot_offset::<false>(*offset);
-          scratch = Var::None;
+          assign(&mut scratch, Var::None);
         }
         Op::GetMeshDrop(offset) => {
           value = frames.slot_offset::<true>(*offset);
-          scratch = Var::None;
+          assign(&mut scratch, Var::None);
         }
         Op::SetDrop(b) => {
           let target = frames.slot(*b);
           if !std::ptr::eq(value, target) {
-            let copy = (*value).clone();
-            *target = copy;
+            assign_copy(&mut *target, &*value);
           }
           value = target;
-          scratch = Var::None;
+          assign(&mut scratch, Var::None);
         }
         Op::IncDrop(b) => {
           let target = frames.slot(*b);
@@ -668,7 +806,7 @@ pub(crate) fn run<C: VmCalls>(
             .checked_add(1)
             .ok_or_else(|| Error::Activation("Inc: integer overflow".into()))?;
           value = target;
-          scratch = Var::None;
+          assign(&mut scratch, Var::None);
         }
         Op::Take(key) => {
           let key = match key {
@@ -677,13 +815,14 @@ pub(crate) fn run<C: VmCalls>(
           };
           // The common reads inline (an element by index, an entry by
           // key); the generic lookup, with its errors, stays out of line.
-          scratch = match (&*value, key) {
+          let new = match (&*value, key) {
             (Var::Seq(items), Var::Int(i)) if *i >= 0 && (*i as usize) < items.len() => {
-              items[*i as usize].clone()
+              copy(&items[*i as usize])
             }
-            (Var::Table(entries), Var::String(k)) => entries.get(k).cloned().unwrap_or(Var::None),
+            (Var::Table(entries), Var::String(k)) => entries.get(k).map(copy).unwrap_or(Var::None),
             _ => data::take_value(&*value, key)?,
           };
+          assign(&mut scratch, new);
           value = &scratch;
         }
         Op::TakeSlot(index) => {
@@ -692,10 +831,11 @@ pub(crate) fn run<C: VmCalls>(
             Var::Table(entries) => entries.slot(*index),
             _ => None,
           };
-          scratch = match slot {
-            Some(v) => v.clone(),
+          let new = match slot {
+            Some(v) => copy(v),
             None => data::take_slot(&*value, *index)?,
           };
+          assign(&mut scratch, new);
           value = &scratch;
         }
         Op::Push(b) => {
@@ -704,15 +844,19 @@ pub(crate) fn run<C: VmCalls>(
           // destination itself (a sequence pushing itself) needs a
           // snapshot before the slot is mutated.
           let target = frames.slot(*b);
+          if C::METERED {
+            meter_push(calls.meter().expect("metered"), &*target, &*value)?;
+          }
           let pushed = if std::ptr::eq(value, target) {
-            scratch = (*value).clone();
+            let new = copy(&*value);
+            assign(&mut scratch, new);
             value = &scratch;
-            scratch.clone()
+            copy(&scratch)
           } else {
-            (*value).clone()
+            copy(&*value)
           };
           match &mut *target {
-            Var::Seq(items) => std::sync::Arc::make_mut(items).push(pushed),
+            Var::Seq(items) => seq_mut(items).push(pushed),
             _ => {
               return Err(Error::Activation(
                 "Push: the variable is not a sequence".into(),
@@ -757,35 +901,49 @@ pub(crate) fn run<C: VmCalls>(
         }
         Op::AddFloat4Const(rhs) => {
           if let Var::Float4(lhs) = &*value {
-            let result = std::array::from_fn(|i| lhs[i] + rhs[i]);
+            let result = [
+              lhs[0] + rhs[0],
+              lhs[1] + rhs[1],
+              lhs[2] + rhs[2],
+              lhs[3] + rhs[3],
+            ];
             numeric.write(Var::Float4(Float4(result)));
             value = numeric.as_ptr();
           } else {
-            scratch = add_generic(&*value, &Var::Float4(*rhs))?;
+            let new = add_generic(&*value, &Var::Float4(*rhs))?;
+            assign(&mut scratch, new);
             value = &scratch;
           }
         }
         Op::AddFloat4Bound(b) => {
           let rhs = &*frames.slot(*b);
           if let (Var::Float4(lhs), Var::Float4(rhs)) = (&*value, rhs) {
-            let result = std::array::from_fn(|i| lhs[i] + rhs[i]);
+            let result = [
+              lhs[0] + rhs[0],
+              lhs[1] + rhs[1],
+              lhs[2] + rhs[2],
+              lhs[3] + rhs[3],
+            ];
             numeric.write(Var::Float4(Float4(result)));
             value = numeric.as_ptr();
           } else {
-            scratch = add_generic(&*value, rhs)?;
+            let new = add_generic(&*value, rhs)?;
+            assign(&mut scratch, new);
             value = &scratch;
           }
         }
         Op::Pass => {}
         Op::Clear(b) => {
           if let Some(moved) = clear_slot(frames.slot(*b), value) {
-            scratch = moved;
+            let new = moved;
+            assign(&mut scratch, new);
             value = &scratch;
           }
         }
         Op::VmCall => match vm_call_op(calls, index, value, &frames)? {
           Some(output) => {
-            scratch = output;
+            let new = output;
+            assign(&mut scratch, new);
             value = &scratch;
           }
           None => break,
@@ -843,7 +1001,16 @@ pub(crate) fn run<C: VmCalls>(
             Operand::Const(v) => v,
             Operand::Bound(b) => &*frames.slot(*b),
           };
+          if C::METERED {
+            let meter = calls.meter().expect("metered");
+            meter.traverse(&*value)?;
+            meter.traverse(rhs)?;
+          }
           numeric.write(Var::Bool(values::values_equal(&*value, rhs) != *negate));
+          value = numeric.as_ptr();
+        }
+        Op::Count => {
+          numeric.write(Var::Int(count(&*value, calls.meter())?));
           value = numeric.as_ptr();
         }
       }
@@ -857,9 +1024,29 @@ pub(crate) fn run<C: VmCalls>(
   let output = if std::ptr::eq(value, &scratch) {
     scratch
   } else {
-    unsafe { (*value).clone() }
+    let output = unsafe { copy(&*value) };
+    release(scratch);
+    output
   };
   Ok((index, output))
+}
+
+/// The meter's side of a `Push` onto `target` (the sequence before the
+/// push): the grown buffer within the value limit, and one element's bytes
+/// charged, or the whole copy when the sequence is shared (it is copied
+/// before it grows). Shared by the VM and the `Push` shard.
+pub(crate) fn meter_push(meter: &Meter, target: &Var, pushed: &Var) -> Result<()> {
+  let Var::Seq(items) = target else {
+    return Ok(());
+  };
+  meter.nest(pushed)?;
+  let bytes = (items.len() + 1) * size_of::<Var>();
+  if std::sync::Arc::strong_count(items) == 1 {
+    meter.admit(bytes)?;
+    meter.charge(size_of::<Var>() as u64)
+  } else {
+    meter.allocate(bytes)
+  }
 }
 
 /// The shard name an arithmetic error reports.
@@ -909,6 +1096,12 @@ unsafe fn vm_call_op<C: VmCalls>(
     } else {
       run(callee.code, 0, input, callee_locals, mesh, &callee.calls)
     };
+    if C::METERED && result.is_err() {
+      // The callee's level, then this run's own instruction again.
+      let meter = calls.meter().expect("metered");
+      callee.calls.failed(meter.pc());
+      meter.at(index);
+    }
     // The invocation's values end with it, returned or failed: the kept
     // locals hold nothing between calls (the body is stateless), so a
     // collection passed in is uniquely owned again by the caller.
@@ -939,6 +1132,16 @@ unsafe fn clear_slot(target: *mut Var, value: *const Var) -> Option<Var> {
   }
 }
 
+/// A constructor operand's value.
+#[inline(always)]
+fn read(operand: &Operand, locals: &[Var], mesh: &[Var]) -> Var {
+  match operand {
+    Operand::Const(v) => v.clone(),
+    Operand::Bound(Binding::Local(i)) => locals[*i].clone(),
+    Operand::Bound(Binding::Mesh(i)) => mesh[*i].clone(),
+  }
+}
+
 #[cold]
 fn not_a_bool() -> Error {
   Error::Activation("predicate did not output a Bool".into())
@@ -959,40 +1162,49 @@ pub(crate) fn construct(
   mut value: Var,
   locals: &[Var],
   mesh: &[Var],
+  meter: Option<&Meter>,
 ) -> Result<(usize, Var)> {
   use std::sync::Arc;
-  let read = |operand: &Operand| match operand {
-    Operand::Const(v) => v.clone(),
-    Operand::Bound(Binding::Local(i)) => locals[*i].clone(),
-    Operand::Bound(Binding::Mesh(i)) => mesh[*i].clone(),
-  };
   while let Some(instruction) = code.get(index) {
     match &instruction.op {
       Op::SeqMake(_) => {
         // Consume the old output. A uniquely owned sequence is rebuilt in
         // place, handle and buffer included; a shared one belongs to a
         // saved snapshot, so it is left alone and a new one is built.
-        let mut output: Option<Arc<Vec<Var>>> = match std::mem::take(&mut value) {
-          Var::Seq(items) => Some(items),
-          _ => None,
-        };
+        let mut output: Option<Arc<Vec<Var>>> = std::mem::take(&mut value).into_seq().ok();
         while let Some(instruction) = code.get(index) {
           let Op::SeqMake(items) = &instruction.op else {
             break;
           };
+          if let Some(meter) = meter {
+            meter.charge(1)?;
+            meter.allocate(items.len() * size_of::<Var>())?;
+            for operand in items {
+              meter.nest(&read(operand, locals, mesh))?;
+            }
+          }
           match output.as_mut().and_then(Arc::get_mut) {
             // Same length: overwrite the slots (one drop and one write
             // each, no length bookkeeping).
             Some(buffer) if buffer.len() == items.len() => {
               for (slot, operand) in buffer.iter_mut().zip(items) {
-                *slot = read(operand);
+                *slot = read(operand, locals, mesh);
               }
             }
             Some(buffer) => {
               buffer.clear();
-              buffer.extend(items.iter().map(&read));
+              buffer.reserve(items.len());
+              for operand in items {
+                buffer.push(read(operand, locals, mesh));
+              }
             }
-            None => output = Some(Arc::new(items.iter().map(&read).collect())),
+            None => {
+              let mut buffer = Vec::with_capacity(items.len());
+              for operand in items {
+                buffer.push(read(operand, locals, mesh));
+              }
+              output = Some(Arc::new(buffer));
+            }
           }
           // Checking builds materialize each intermediate output; release
           // keeps the owned buffer until the constructor segment ends.
@@ -1000,42 +1212,61 @@ pub(crate) fn construct(
           leaf::check_output(
             instruction.check.0,
             instruction.check.1,
-            &Var::Seq(output.clone().expect("built above")),
+            &Var::from_seq(output.clone().expect("built above")),
           )?;
           index += 1;
         }
-        value = Var::Seq(output.expect("a constructor ran"));
+        value = Var::from_seq(output.expect("a constructor ran"));
       }
       Op::TableMake(..) => {
         // Consume the old output: a struct table of the same shape that
         // nobody else holds is overwritten in place; anything else is left
         // to its owners and a new table is built. There are no callbacks
         // or frame writes between constructors.
-        let mut output = match std::mem::take(&mut value) {
-          Var::Table(table) => Some(table),
-          _ => None,
-        };
+        let mut output = std::mem::take(&mut value).into_table().ok();
         while let Some(instruction) = code.get(index) {
           let Op::TableMake(shape, operands) = &instruction.op else {
             break;
           };
-          match output.as_mut().and_then(|t| t.unique_slots(*shape)) {
+          if let Some(meter) = meter {
+            meter.charge(1)?;
+            meter.allocate(operands.len() * size_of::<Var>())?;
+            for operand in operands {
+              meter.nest(&read(operand, locals, mesh))?;
+            }
+          }
+          let reused = match output.as_mut() {
+            Some(table) => table.unique_slots(*shape),
+            None => None,
+          };
+          match reused {
             Some(slots) => {
               for (slot, operand) in slots.iter_mut().zip(operands) {
-                *slot = read(operand);
+                *slot = read(operand, locals, mesh);
               }
             }
-            None => output = Some(Table::with_shape(*shape, operands.iter().map(&read))),
+            None => {
+              // One allocation, filled in place.
+              let mut slots = Arc::<[Var]>::new_uninit_slice(operands.len());
+              let uninit = Arc::get_mut(&mut slots).expect("just allocated");
+              for (slot, operand) in uninit.iter_mut().zip(operands) {
+                slot.write(read(operand, locals, mesh));
+              }
+              // SAFETY: `slots` has one entry per operand, each written
+              // above.
+              let slots = unsafe { slots.assume_init() };
+              output = Some(Table::with_slots(*shape, slots));
+            }
           }
           #[cfg(any(debug_assertions, feature = "output-checks"))]
           leaf::check_output(
             instruction.check.0,
             instruction.check.1,
-            &Var::Table(output.clone().expect("built above")),
+            &Var::from_table(output.clone().expect("built above")),
           )?;
           index += 1;
         }
-        value = Var::Table(output.expect("a constructor ran"));
+        value = Var::from_table(output.expect("a constructor ran"));
       }
       _ => break,
     }
@@ -1069,18 +1300,22 @@ mod tests {
         Operand::Const(Var::Int(4)),
       ]),
     ]);
-    let (index, output) = construct(&code, 0, Var::Seq(Arc::new(buffer)), &[], &[]).unwrap();
+    let (index, output) =
+      construct(&code, 0, Var::from_seq(Arc::new(buffer)), &[], &[], None).unwrap();
     assert_eq!(index, 2);
-    let Var::Seq(items) = output else {
+    let Var::Seq(items) = &output else {
       panic!("expected sequence")
     };
     assert_eq!(items.as_ptr(), allocation);
-    assert_eq!(&**items, &[Var::Int(3), Var::Int(4)]);
-    let snapshot = Var::Seq(items);
+    assert_eq!(items.as_slice(), &[Var::Int(3), Var::Int(4)]);
+    let snapshot = output;
     let code = instructions([Op::SeqMake(vec![Operand::Const(Var::Int(5))])]);
-    let (_, output) = construct(&code, 0, snapshot.clone(), &[], &[]).unwrap();
-    assert_eq!(snapshot, Var::Seq(Arc::new(vec![Var::Int(3), Var::Int(4)])));
-    assert_eq!(output, Var::Seq(Arc::new(vec![Var::Int(5)])));
+    let (_, output) = construct(&code, 0, snapshot.clone(), &[], &[], None).unwrap();
+    assert_eq!(
+      snapshot,
+      Var::from_seq(Arc::new(vec![Var::Int(3), Var::Int(4)]))
+    );
+    assert_eq!(output, Var::from_seq(Arc::new(vec![Var::Int(5)])));
   }
 
   #[test]
@@ -1088,15 +1323,15 @@ mod tests {
     use std::sync::Arc;
     for through_take in [false, true] {
       for replacement in [Op::Const(Var::Int(1)), Op::get(Binding::Local(1))] {
-        let mut locals = vec![Var::Seq(Arc::new(vec![Var::Int(7)])), Var::Int(1)];
+        let mut locals = vec![Var::from_seq(Arc::new(vec![Var::Int(7)])), Var::Int(1)];
         let Var::Seq(items) = &locals[0] else {
           unreachable!()
         };
         let allocation = Arc::as_ptr(items);
-        let captured = Var::Seq(Arc::new(vec![locals[0].clone()]));
+        let captured = Var::from_seq(Arc::new(vec![locals[0].clone()]));
         let (input, mut ops) = if through_take {
           (
-            Var::Seq(Arc::new(vec![captured])),
+            Var::from_seq(Arc::new(vec![captured])),
             vec![Op::Take(Operand::Const(Var::Int(0)))],
           )
         } else {
@@ -1110,7 +1345,7 @@ mod tests {
           unreachable!()
         };
         assert_eq!(Arc::as_ptr(items), allocation);
-        assert_eq!(&**items, &[Var::Int(7), Var::Int(1)]);
+        assert_eq!(items.as_slice(), &[Var::Int(7), Var::Int(1)]);
       }
     }
   }
@@ -1141,7 +1376,7 @@ mod tests {
   #[test]
   fn owned_input_is_released_after_a_generic_boundary() {
     use std::sync::Arc;
-    let mut locals = vec![Var::Seq(Arc::new(vec![Var::Int(7)]))];
+    let mut locals = vec![Var::from_seq(Arc::new(vec![Var::Int(7)]))];
     let Var::Seq(items) = &locals[0] else {
       unreachable!()
     };
@@ -1156,20 +1391,20 @@ mod tests {
     assert_eq!(next, 1);
     // The fallback can return a fresh owner even though the preceding segment
     // had already cleared scratch. Its successor must release that new owner.
-    let input = Var::Seq(Arc::new(vec![locals[0].clone()]));
+    let input = Var::from_seq(Arc::new(vec![locals[0].clone()]));
     let (_, output) = run(&code, next + 1, input, &mut locals, &mut [], &NoCalls).unwrap();
     assert_eq!(output, Var::Int(1));
     let Var::Seq(items) = &locals[0] else {
       unreachable!()
     };
     assert_eq!(Arc::as_ptr(items), allocation);
-    assert_eq!(&**items, &[Var::Int(7), Var::Int(1)]);
+    assert_eq!(items.as_slice(), &[Var::Int(7), Var::Int(1)]);
   }
 
   #[test]
   fn owned_input_survives_passthrough_and_self_push() {
     use std::sync::Arc;
-    let input = Var::Seq(Arc::new(vec![Var::Int(7)]));
+    let input = Var::from_seq(Arc::new(vec![Var::Int(7)]));
     let code = instructions([Op::Fallback]);
     let (_, output) = run(&code, 0, input.clone(), &mut [], &mut [], &NoCalls).unwrap();
     assert_eq!(output, input);
@@ -1177,7 +1412,7 @@ mod tests {
     let code = instructions([Op::Push(Binding::Local(0))]);
     let (_, output) = run(&code, 0, input.clone(), &mut locals, &mut [], &NoCalls).unwrap();
     assert_eq!(output, input);
-    assert_eq!(locals[0], Var::Seq(Arc::new(vec![Var::Int(7), input])));
+    assert_eq!(locals[0], Var::from_seq(Arc::new(vec![Var::Int(7), input])));
   }
 
   #[test]
@@ -1266,7 +1501,7 @@ mod tests {
   #[test]
   fn take_then_replace_owner_and_push_self_preserve_snapshots() {
     use std::sync::Arc;
-    let old = Var::Seq(Arc::new(vec![Var::string("element")]));
+    let old = Var::from_seq(Arc::new(vec![Var::string("element")]));
     let mut locals = vec![old.clone()];
     let code = instructions([
       Op::get(Binding::Local(0)),
@@ -1286,7 +1521,7 @@ mod tests {
     assert_eq!(output, old);
     assert_eq!(
       locals[0],
-      Var::Seq(Arc::new(vec![Var::string("element"), old.clone(), old]))
+      Var::from_seq(Arc::new(vec![Var::string("element"), old.clone(), old]))
     );
   }
 
@@ -1335,7 +1570,7 @@ mod tests {
   fn clear_unsets_a_slot_and_moves_a_value_the_accumulator_reads() {
     use std::sync::Arc;
     let items = Arc::new(vec![Var::Int(7)]);
-    let mut locals = vec![Var::Seq(items.clone()), Var::Seq(items.clone())];
+    let mut locals = vec![Var::from_seq(items.clone()), Var::from_seq(items.clone())];
     // The accumulator reads slot 0 when it is cleared: the value moves into
     // it (no copy, no dangling read); slot 1 is not read and is dropped.
     let code = instructions([
@@ -1346,10 +1581,10 @@ mod tests {
     let (pc, out) = run(&code, 0, Var::None, &mut locals, &mut [], &NoCalls).unwrap();
     assert_eq!(pc, 3);
     assert_eq!(locals, [Var::None, Var::None]);
-    let Var::Seq(out) = out else {
+    let Var::Seq(read) = &out else {
       panic!("the read value is the output")
     };
-    assert!(Arc::ptr_eq(&out, &items));
+    assert!(Arc::ptr_eq(read, &items));
     drop(out);
     assert_eq!(
       Arc::strong_count(&items),

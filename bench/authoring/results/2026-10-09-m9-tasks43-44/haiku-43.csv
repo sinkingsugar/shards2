@@ -1,0 +1,4 @@
+Task,Model,ModelId,Variant,Trial,SemanticSuccess,FirstPassSuccess,FirstFailure,RepairRounds,Tokens,OutputTokens,LatencyMs,Failure
+43-retry-block,claude-haiku-4-5-20251001,claude-haiku-4-5-20251001,functions,2,false,false,compose,1,90877,15865,134457,wrong-output
+43-retry-block,claude-haiku-4-5-20251001,claude-haiku-4-5-20251001,functions,1,false,false,syntax,2,141671,29084,221153,wrong-output
+43-retry-block,claude-haiku-4-5-20251001,claude-haiku-4-5-20251001,functions,3,true,false,compose,3,192411,41846,339736,

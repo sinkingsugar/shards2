@@ -116,32 +116,34 @@ impl LeafShard for Take {
         if key_ty != Type::string() {
           return key_error(TypeName::String);
         }
-        match literal {
-          Some(Var::String(k)) => match table.keys.binary_search_by(|(name, _)| (**name).cmp(&k)) {
-            Ok(index) => {
-              if table.is_fixed() {
-                code = TakeCode::Slot(index);
+        match &literal {
+          Some(Var::String(k)) => {
+            match table.keys.binary_search_by(|(name, _)| (**name).cmp(&***k)) {
+              Ok(index) => {
+                if table.is_fixed() {
+                  code = TakeCode::Slot(index);
+                }
+                table.keys[index].1
               }
-              table.keys[index].1
+              Err(_) => match table.rest {
+                // An open table may not have the key at runtime.
+                Some(rest) => Type::union([rest, Type::none()]),
+                None => {
+                  let keys: Vec<String> = table.keys.iter().map(|(n, _)| n.to_string()).collect();
+                  let mut d = Diagnostic::new(
+                    Phase::Compose,
+                    "compose-error",
+                    "unknown-key",
+                    format!("{input} has no key `{}` (keys: {})", &***k, keys.join(", ")),
+                  )
+                  .shard("Take")
+                  .param("key", Some(0));
+                  d.did_you_mean = closest(k, keys, 3);
+                  return Err(Error::Diagnostic(Box::new(d)));
+                }
+              },
             }
-            Err(_) => match table.rest {
-              // An open table may not have the key at runtime.
-              Some(rest) => Type::union([rest, Type::none()]),
-              None => {
-                let keys: Vec<String> = table.keys.iter().map(|(n, _)| n.to_string()).collect();
-                let mut d = Diagnostic::new(
-                  Phase::Compose,
-                  "compose-error",
-                  "unknown-key",
-                  format!("{input} has no key `{k}` (keys: {})", keys.join(", ")),
-                )
-                .shard("Take")
-                .param("key", Some(0));
-                d.did_you_mean = closest(&k, keys, 3);
-                return Err(Error::Diagnostic(Box::new(d)));
-              }
-            },
-          },
+          }
           // A key read at activation: any value type, or none if missing.
           _ => Type::union(
             table
@@ -197,13 +199,14 @@ impl LeafShard for Take {
 #[inline]
 pub(crate) fn take_slot(input: &Var, index: usize) -> Result<Var> {
   match input {
-    Var::Table(table) => table.slot(index).cloned().ok_or_else(|| {
-      Error::Activation(format!(
+    Var::Table(table) => match table.slot(index) {
+      Some(value) => Ok(value.clone()),
+      None => Err(Error::Activation(format!(
         "Take: the table has {} keys, not the {} its type declares",
         table.len(),
         index + 1
-      ))
-    }),
+      ))),
+    },
     _ => Err(Error::Activation("Take: input type mismatch".into())),
   }
 }
@@ -211,18 +214,11 @@ pub(crate) fn take_slot(input: &Var, index: usize) -> Result<Var> {
 /// The VM's `Take` inlines the sequence-by-index and table-by-key reads
 /// and calls this for everything else.
 pub(crate) fn take_value(input: &Var, key: &Var) -> Result<Var> {
-  let index = |len: usize| match key {
-    Var::Int(i) if *i >= 0 && (*i as usize) < len => Ok(*i as usize),
-    Var::Int(i) => Err(Error::Activation(format!(
-      "Take: index {i} is out of range (length {len})"
-    ))),
-    _ => Err(Error::Activation("Take: the key must be an Int".into())),
-  };
   let value = match input {
-    Var::Seq(items) => items[index(items.len())?].clone(),
-    Var::Float2(v) => Var::Float(f64::from(v[index(2)?])),
-    Var::Float3(v) => Var::Float(f64::from(v[index(3)?])),
-    Var::Float4(v) => Var::Float(f64::from(v[index(4)?])),
+    Var::Seq(items) => items[take_index(key, items.len())?].clone(),
+    Var::Float2(v) => Var::Float(f64::from(v[take_index(key, 2)?])),
+    Var::Float3(v) => Var::Float(f64::from(v[take_index(key, 3)?])),
+    Var::Float4(v) => Var::Float(f64::from(v[take_index(key, 4)?])),
     Var::Table(entries) => match &key {
       Var::String(k) => entries.get(k).cloned().unwrap_or(Var::None),
       _ => return Err(Error::Activation("Take: the key must be a String".into())),
@@ -230,6 +226,18 @@ pub(crate) fn take_value(input: &Var, key: &Var) -> Result<Var> {
     _ => return Err(Error::Activation("Take: input type mismatch".into())),
   };
   Ok(value)
+}
+
+/// `key` as an index into something of length `len`.
+#[inline(always)]
+fn take_index(key: &Var, len: usize) -> Result<usize> {
+  match key {
+    Var::Int(i) if *i >= 0 && (*i as usize) < len => Ok(*i as usize),
+    Var::Int(i) => Err(Error::Activation(format!(
+      "Take: index {i} is out of range (length {len})"
+    ))),
+    _ => Err(Error::Activation("Take: the key must be an Int".into())),
+  }
 }
 
 // --- Push ---
@@ -303,13 +311,28 @@ impl LeafShard for Push {
     // Take the value out of its slot so the sequence is unshared and grows
     // in place instead of being copied.
     let current = ctx.get(*b);
-    ctx.set(*b, Var::None);
-    let seq = match current {
-      Var::Seq(mut items) => {
-        Arc::make_mut(&mut items).push(input.clone());
-        Var::Seq(items)
+    if let Some(meter) = ctx.meter() {
+      meter.nest(input)?;
+      // Before taking it out of its slot: the slot's own reference counts.
+      let shared = matches!(&current, Var::Seq(items) if Arc::strong_count(items) > 2);
+      let bytes = match &current {
+        Var::Seq(items) => (items.len() + 1) * std::mem::size_of::<Var>(),
+        _ => 0,
+      };
+      if shared {
+        meter.allocate(bytes)?;
+      } else {
+        meter.admit(bytes)?;
+        meter.charge(std::mem::size_of::<Var>() as u64)?;
       }
-      other => {
+    }
+    ctx.set(*b, Var::None);
+    let seq = match current.into_seq() {
+      Ok(mut items) => {
+        crate::var::seq_mut(&mut items).push(input.clone());
+        Var::from_seq(items)
+      }
+      Err(other) => {
         ctx.set(*b, other);
         return Err(Error::Activation(
           "Push: the variable is not a sequence".into(),
@@ -396,9 +419,17 @@ impl LeafShard for SeqMake {
   }
 
   fn activate(items: &Vec<Operand>, _: &mut (), ctx: &mut impl LeafCtx, _: &Var) -> Result<Flow> {
-    Ok(Flow::Next(Var::Seq(Arc::new(
-      items.iter().map(|o| o.get(ctx)).collect(),
-    ))))
+    if let Some(meter) = ctx.meter() {
+      meter.allocate(items.len() * std::mem::size_of::<Var>())?;
+      for item in items {
+        meter.nest(&item.get(ctx))?;
+      }
+    }
+    let mut values = Vec::with_capacity(items.len());
+    for item in items {
+      values.push(item.get(ctx));
+    }
+    Ok(Flow::Next(Var::from_seq(Arc::new(values))))
   }
 }
 
@@ -468,7 +499,7 @@ impl LeafShard for TableMake {
         let mut keys = Vec::with_capacity(items.len());
         for item in items.iter() {
           match item {
-            Var::String(s) if !keys.contains(s) => keys.push(s.clone()),
+            Var::String(s) if !keys.contains(&**s) => keys.push(Arc::clone(s)),
             _ => return bad_keys(),
           }
         }
@@ -505,9 +536,22 @@ impl LeafShard for TableMake {
   }
 
   fn activate(code: &TableCode, _: &mut (), ctx: &mut impl LeafCtx, _: &Var) -> Result<Flow> {
-    Ok(Flow::Next(Var::Table(Table::with_shape(
-      code.shape,
-      code.values.iter().map(|o| o.get(ctx)),
+    if let Some(meter) = ctx.meter() {
+      meter.allocate(code.values.len() * std::mem::size_of::<Var>())?;
+      for value in &code.values {
+        meter.nest(&value.get(ctx))?;
+      }
+    }
+    // One allocation, filled in place.
+    let mut slots = Arc::<[Var]>::new_uninit_slice(code.values.len());
+    let uninit = Arc::get_mut(&mut slots).expect("just allocated");
+    for (slot, value) in uninit.iter_mut().zip(&code.values) {
+      slot.write(value.get(ctx));
+    }
+    // SAFETY: `slots` has one entry per value, each written above.
+    let slots = unsafe { slots.assume_init() };
+    Ok(Flow::Next(Var::from_table(Table::with_slots(
+      code.shape, slots,
     ))))
   }
 }
@@ -564,7 +608,12 @@ impl LeafShard for StringFormat {
     Ok(())
   }
 
-  fn activate(_: &(), _: &mut (), _: &mut impl LeafCtx, input: &Var) -> Result<Flow> {
+  fn activate(_: &(), _: &mut (), ctx: &mut impl LeafCtx, input: &Var) -> Result<Flow> {
+    if let Some(meter) = ctx.meter() {
+      // The text is at most the input's size as text.
+      let bytes = meter.traverse(input)?;
+      meter.allocate(bytes)?;
+    }
     let Var::Seq(items) = input else {
       return Err(Error::Activation(
         "String.Format: input is not a sequence".into(),
@@ -574,6 +623,6 @@ impl LeafShard for StringFormat {
     for item in items.iter() {
       out.push_str(&item.text());
     }
-    Ok(Flow::Next(Var::String(Arc::from(out))))
+    Ok(Flow::Next(Var::from_string(Arc::from(out))))
   }
 }

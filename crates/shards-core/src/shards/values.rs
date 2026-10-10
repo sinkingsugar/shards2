@@ -9,6 +9,7 @@ use std::time::Instant;
 
 use super::leaf::{LeafShard, leaf_type};
 use super::*;
+use crate::compose_time::Meter;
 use crate::instance::{InstanceCtx, LeafCtx};
 use crate::shard::Flow;
 
@@ -29,6 +30,8 @@ pub static TO_STRING: ShardType = leaf_type::<Pure<ToStringOp>>();
 pub static TO_INT: ShardType = leaf_type::<Pure<ToIntOp>>();
 pub static TO_FLOAT: ShardType = leaf_type::<Pure<ToFloatOp>>();
 pub static TO_HEX: ShardType = leaf_type::<Pure<ToHexOp>>();
+pub static BYTES_TO_STRING: ShardType = leaf_type::<Pure<BytesToStringOp>>();
+pub static STRING_TO_BYTES: ShardType = leaf_type::<Pure<StringToBytesOp>>();
 pub static PARSE_FLOAT: ShardType = leaf_type::<Pure<ParseFloatOp>>();
 pub static TO_FLOAT2: ShardType = leaf_type::<Pure<ToVector<2>>>();
 pub static TO_FLOAT3: ShardType = leaf_type::<Pure<ToVector<3>>>();
@@ -73,13 +76,27 @@ pub fn values_equal(a: &Var, b: &Var) -> bool {
     (Var::Float3(x), Var::Float3(y)) => x == y,
     (Var::Float4(x), Var::Float4(y)) => x == y,
     (Var::Seq(x), Var::Seq(y)) => {
-      x.len() == y.len() && x.iter().zip(y.iter()).all(|(a, b)| values_equal(a, b))
+      if x.len() != y.len() {
+        return false;
+      }
+      for (a, b) in x.iter().zip(y.iter()) {
+        if !values_equal(a, b) {
+          return false;
+        }
+      }
+      true
     }
     (Var::Table(x), Var::Table(y)) => {
-      x.len() == y.len()
-        && x
-          .iter()
-          .all(|(k, v)| y.get(k).is_some_and(|w| values_equal(v, w)))
+      if x.len() != y.len() {
+        return false;
+      }
+      for (k, v) in x.iter() {
+        match y.get(k) {
+          Some(w) if values_equal(v, w) => {}
+          _ => return false,
+        }
+      }
+      true
     }
     _ => a == b,
   }
@@ -303,8 +320,13 @@ impl<S: EqualitySpec> LeafShard for Equality<S> {
   }
 
   fn activate(op: &Operand, _: &mut (), ctx: &mut impl LeafCtx, input: &Var) -> Result<Flow> {
+    let operand = op.get(ctx);
+    if let Some(meter) = ctx.meter() {
+      meter.traverse(input)?;
+      meter.traverse(&operand)?;
+    }
     Ok(Flow::Next(Var::Bool(
-      values_equal(input, &op.get(ctx)) == S::EQUAL,
+      values_equal(input, &operand) == S::EQUAL,
     )))
   }
 }
@@ -458,12 +480,22 @@ impl LeafShard for IsAny {
   }
 
   fn activate(op: &Operand, _: &mut (), ctx: &mut impl LeafCtx, input: &Var) -> Result<Flow> {
-    let Var::Seq(items) = op.get(ctx) else {
+    let values = op.get(ctx);
+    if let Some(meter) = ctx.meter() {
+      meter.traverse(input)?;
+      meter.traverse(&values)?;
+    }
+    let Var::Seq(items) = &values else {
       return Err(Error::Activation("IsAny: Values is not a sequence".into()));
     };
-    Ok(Flow::Next(Var::Bool(
-      items.iter().any(|v| values_equal(input, v)),
-    )))
+    let mut found = false;
+    for item in items.iter() {
+      if values_equal(input, item) {
+        found = true;
+        break;
+      }
+    }
+    Ok(Flow::Next(Var::Bool(found)))
   }
 }
 
@@ -526,13 +558,19 @@ impl LeafShard for ParseInt {
     Ok(())
   }
 
-  fn activate(base: &u32, _: &mut (), _: &mut impl LeafCtx, input: &Var) -> Result<Flow> {
+  fn activate(base: &u32, _: &mut (), ctx: &mut impl LeafCtx, input: &Var) -> Result<Flow> {
+    if let Some(meter) = ctx.meter() {
+      meter_bytes(input, meter)?;
+    }
     let Var::String(s) = input else {
       return Err(Error::Activation("ParseInt: input is not a string".into()));
     };
-    i64::from_str_radix(s.trim(), *base)
-      .map(|i| Flow::Next(Var::Int(i)))
-      .map_err(|_| Error::Activation(format!("ParseInt: {s:?} is not an Int in base {base}")))
+    match i64::from_str_radix(s.trim(), *base) {
+      Ok(i) => Ok(Flow::Next(Var::Int(i))),
+      Err(_) => Err(Error::Activation(format!(
+        "ParseInt: {s:?} is not an Int in base {base}"
+      ))),
+    }
   }
 }
 
@@ -544,6 +582,22 @@ pub trait PureOp: 'static {
   /// The output type for an input type, or the accepted input types.
   fn output(input: Type) -> std::result::Result<Type, &'static [TypeName]>;
   fn apply(input: &Var) -> Result<Var>;
+  /// In a compose-time evaluation, charges the work `apply` does beyond
+  /// constant (`compose_time`'s list): by default none.
+  fn meter(_input: &Var, _meter: &Meter) -> Result<()> {
+    Ok(())
+  }
+}
+
+/// A string's bytes, charged as the work of reading it through.
+fn meter_bytes(input: &Var, meter: &Meter) -> Result<()> {
+  let len = match input {
+    Var::String(s) => s.len(),
+    Var::Bytes(b) => b.len(),
+    _ => return Ok(()),
+  };
+  meter.charge((len / crate::compose_time::TRAVERSAL_BYTES) as u64)?;
+  Ok(())
 }
 
 pub struct Pure<P>(std::marker::PhantomData<P>);
@@ -568,7 +622,10 @@ impl<P: PureOp> LeafShard for Pure<P> {
     Ok(())
   }
 
-  fn activate(_: &(), _: &mut (), _: &mut impl LeafCtx, input: &Var) -> Result<Flow> {
+  fn activate(_: &(), _: &mut (), ctx: &mut impl LeafCtx, input: &Var) -> Result<Flow> {
+    if let Some(meter) = ctx.meter() {
+      P::meter(input, meter)?;
+    }
     P::apply(input).map(Flow::Next)
   }
 }
@@ -617,26 +674,26 @@ impl PureOp for CountOp {
   const DESC: ShardDesc = pure_desc(
     "Count",
     crate::shard_doc!(
-      "Outputs how many elements a sequence or table has, or characters a string has."
+      "Outputs how many elements a sequence or table has, characters a string has, or bytes a byte string has."
     ),
     "",
-    InputDesc::Types(&[TypeName::Seq, TypeName::Table, TypeName::String]),
+    InputDesc::Types(COUNTED),
     OutputDesc::Fixed(TypeName::Int),
   );
   fn output(input: Type) -> std::result::Result<Type, &'static [TypeName]> {
-    one_of(
-      input,
-      &[TypeName::Seq, TypeName::Table, TypeName::String],
-      Type::int(),
-    )
+    one_of(input, COUNTED, Type::int())
   }
   fn apply(input: &Var) -> Result<Var> {
     Ok(Var::Int(match input {
       Var::Seq(s) => s.len() as i64,
       Var::Table(t) => t.len() as i64,
       Var::String(s) => s.chars().count() as i64,
+      Var::Bytes(b) => b.len() as i64,
       _ => return Err(fail("Count", "input type mismatch")),
     }))
+  }
+  fn meter(input: &Var, meter: &Meter) -> Result<()> {
+    meter_bytes(input, meter)
   }
 }
 
@@ -739,6 +796,13 @@ impl PureOp for ToStringOp {
       other => Var::string(&other.text()),
     })
   }
+  fn meter(input: &Var, meter: &Meter) -> Result<()> {
+    if !matches!(input, Var::String(_)) {
+      let bytes = meter.traverse(input)?;
+      meter.allocate(bytes)?;
+    }
+    Ok(())
+  }
 }
 
 const SCALARS: &[TypeName] = &[
@@ -776,12 +840,15 @@ impl PureOp for ToIntOp {
         ));
       }
       Var::Bool(b) => i64::from(*b),
-      Var::String(s) => s
-        .trim()
-        .parse()
-        .map_err(|_| fail("ToInt", &format!("{s:?} is not an Int")))?,
+      Var::String(s) => match s.trim().parse() {
+        Ok(i) => i,
+        Err(_) => return Err(fail("ToInt", &format!("{s:?} is not an Int"))),
+      },
       _ => return Err(fail("ToInt", "input type mismatch")),
     }))
+  }
+  fn meter(input: &Var, meter: &Meter) -> Result<()> {
+    meter_bytes(input, meter)
   }
 }
 
@@ -802,12 +869,15 @@ impl PureOp for ToFloatOp {
       Var::Int(i) => *i as f64,
       Var::Float(f) => *f,
       Var::Bool(b) => f64::from(u8::from(*b)),
-      Var::String(s) => s
-        .trim()
-        .parse()
-        .map_err(|_| fail("ToFloat", &format!("{s:?} is not a Float")))?,
+      Var::String(s) => match s.trim().parse() {
+        Ok(f) => f,
+        Err(_) => return Err(fail("ToFloat", &format!("{s:?} is not a Float"))),
+      },
       _ => return Err(fail("ToFloat", "input type mismatch")),
     }))
+  }
+  fn meter(input: &Var, meter: &Meter) -> Result<()> {
+    meter_bytes(input, meter)
   }
 }
 
@@ -827,13 +897,15 @@ impl PureOp for ParseFloatOp {
   }
   fn apply(input: &Var) -> Result<Var> {
     match input {
-      Var::String(s) => s
-        .trim()
-        .parse()
-        .map(Var::Float)
-        .map_err(|_| fail("ParseFloat", &format!("{s:?} is not a Float"))),
+      Var::String(s) => match s.trim().parse() {
+        Ok(f) => Ok(Var::Float(f)),
+        Err(_) => Err(fail("ParseFloat", &format!("{s:?} is not a Float"))),
+      },
       _ => Err(fail("ParseFloat", "input is not a string")),
     }
+  }
+  fn meter(input: &Var, meter: &Meter) -> Result<()> {
+    meter_bytes(input, meter)
   }
 }
 
@@ -841,22 +913,101 @@ pub struct ToHexOp;
 impl PureOp for ToHexOp {
   const DESC: ShardDesc = pure_desc(
     "ToHex",
-    crate::shard_doc!("Writes an Int in hexadecimal, or a string's bytes as hex."),
+    crate::shard_doc!("Writes an Int in hexadecimal, or a string's or byte string's bytes as hex."),
     crate::shard_doc!(
-      "An Int becomes `0x` and its bits as an unsigned 64-bit number (addresses); a string becomes two hex digits per byte."
+      "An Int becomes `0x` and its bits as an unsigned 64-bit number (addresses); a string or byte string becomes two hex digits per byte."
     ),
-    InputDesc::Types(&[TypeName::Int, TypeName::String]),
+    InputDesc::Types(HEXED),
     OutputDesc::Fixed(TypeName::String),
   );
   fn output(input: Type) -> std::result::Result<Type, &'static [TypeName]> {
-    one_of(input, &[TypeName::Int, TypeName::String], Type::string())
+    one_of(input, HEXED, Type::string())
   }
   fn apply(input: &Var) -> Result<Var> {
+    fn hex(bytes: &[u8]) -> String {
+      use std::fmt::Write;
+      let mut hex = String::with_capacity(2 * bytes.len());
+      for b in bytes {
+        let _ = write!(hex, "{b:02x}");
+      }
+      hex
+    }
     Ok(Var::string(&match input {
       Var::Int(i) => format!("0x{:x}", *i as u64),
-      Var::String(s) => s.bytes().map(|b| format!("{b:02x}")).collect(),
+      Var::String(s) => hex(s.as_bytes()),
+      Var::Bytes(b) => hex(b),
       _ => return Err(fail("ToHex", "input type mismatch")),
     }))
+  }
+  fn meter(input: &Var, meter: &Meter) -> Result<()> {
+    match input {
+      Var::String(s) => meter.allocate(2 * s.len()),
+      Var::Bytes(b) => meter.allocate(2 * b.len()),
+      _ => Ok(()),
+    }
+  }
+}
+
+const COUNTED: &[TypeName] = &[
+  TypeName::Seq,
+  TypeName::Table,
+  TypeName::String,
+  TypeName::Bytes,
+];
+const HEXED: &[TypeName] = &[TypeName::Int, TypeName::String, TypeName::Bytes];
+
+pub struct BytesToStringOp;
+impl PureOp for BytesToStringOp {
+  const DESC: ShardDesc = pure_desc(
+    "BytesToString",
+    crate::shard_doc!("Reads a byte string as UTF-8 text."),
+    crate::shard_doc!("Fails when the bytes are not valid UTF-8."),
+    InputDesc::Types(&[TypeName::Bytes]),
+    OutputDesc::Fixed(TypeName::String),
+  );
+  fn output(input: Type) -> std::result::Result<Type, &'static [TypeName]> {
+    one_of(input, &[TypeName::Bytes], Type::string())
+  }
+  fn apply(input: &Var) -> Result<Var> {
+    let Var::Bytes(b) = input else {
+      return Err(fail("BytesToString", "input type mismatch"));
+    };
+    match std::str::from_utf8(b) {
+      Ok(text) => Ok(Var::string(text)),
+      Err(err) => Err(fail("BytesToString", &format!("not UTF-8: {err}"))),
+    }
+  }
+  fn meter(input: &Var, meter: &Meter) -> Result<()> {
+    match input {
+      Var::Bytes(b) => meter.allocate(b.len()),
+      _ => Ok(()),
+    }
+  }
+}
+
+pub struct StringToBytesOp;
+impl PureOp for StringToBytesOp {
+  const DESC: ShardDesc = pure_desc(
+    "StringToBytes",
+    crate::shard_doc!("Outputs a string's UTF-8 bytes."),
+    "",
+    InputDesc::Types(&[TypeName::String]),
+    OutputDesc::Fixed(TypeName::Bytes),
+  );
+  fn output(input: Type) -> std::result::Result<Type, &'static [TypeName]> {
+    one_of(input, &[TypeName::String], Type::bytes())
+  }
+  fn apply(input: &Var) -> Result<Var> {
+    match input {
+      Var::String(s) => Ok(Var::bytes(s.as_bytes())),
+      _ => Err(fail("StringToBytes", "input type mismatch")),
+    }
+  }
+  fn meter(input: &Var, meter: &Meter) -> Result<()> {
+    match input {
+      Var::String(s) => meter.allocate(s.len()),
+      _ => Ok(()),
+    }
   }
 }
 
@@ -900,9 +1051,21 @@ impl<const N: usize> PureOp for ToVector<N> {
   fn apply(input: &Var) -> Result<Var> {
     let mut c = [0.0f64; 4];
     match input {
-      Var::Float2(v) => v.iter().enumerate().for_each(|(i, x)| c[i] = f64::from(*x)),
-      Var::Float3(v) => v.iter().enumerate().for_each(|(i, x)| c[i] = f64::from(*x)),
-      Var::Float4(v) => v.iter().enumerate().for_each(|(i, x)| c[i] = f64::from(*x)),
+      Var::Float2(v) => {
+        for (i, x) in v.iter().enumerate() {
+          c[i] = f64::from(*x);
+        }
+      }
+      Var::Float3(v) => {
+        for (i, x) in v.iter().enumerate() {
+          c[i] = f64::from(*x);
+        }
+      }
+      Var::Float4(v) => {
+        for (i, x) in v.iter().enumerate() {
+          c[i] = f64::from(*x);
+        }
+      }
       Var::Seq(items) if items.len() == N => {
         for (i, item) in items.iter().enumerate() {
           c[i] = match item {
@@ -921,7 +1084,7 @@ impl<const N: usize> PureOp for ToVector<N> {
       _ => return Err(fail(Self::NAME, "input type mismatch")),
     }
     // Rounded once to f32; out-of-range values become infinite.
-    let c = c.map(|x| x as f32);
+    let c = [c[0] as f32, c[1] as f32, c[2] as f32, c[3] as f32];
     Ok(match N {
       2 => Var::float2(c[0], c[1]),
       3 => Var::float3(c[0], c[1], c[2]),
@@ -994,6 +1157,15 @@ impl<K: ExpectKind> PureOp for Expect<K> {
       }
       _ => Err(K::TARGETS),
     }
+  }
+  fn meter(input: &Var, meter: &Meter) -> Result<()> {
+    // The check reads the elements or entries, not what they hold.
+    let len = match input {
+      Var::Seq(items) => items.len(),
+      Var::Table(table) => table.len(),
+      _ => 0,
+    };
+    meter.charge(len as u64)
   }
   fn apply(input: &Var) -> Result<Var> {
     // Checked on the value: interning its type on every activation would

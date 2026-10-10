@@ -753,6 +753,7 @@ fn every_declared_parameter_accepts_exactly_its_documented_forms() {
         Some(TypeName::Float3) => Var::Float3(Float3([1.0, 1.0, 1.0])),
         Some(TypeName::Float4) => Var::Float4(Float4([1.0, 1.0, 1.0, 1.0])),
         Some(TypeName::String) => Var::string("s"),
+        Some(TypeName::Bytes) => Var::bytes(b"s"),
         Some(TypeName::Seq) => Var::Seq(Default::default()),
         Some(TypeName::Table) => Var::table(Vec::<(&str, Var)>::new()),
         Some(TypeName::None) | Some(TypeName::Any) => Var::None,
@@ -867,7 +868,7 @@ fn table_seq_and_vector_parameters_decode_by_acceptance() {
     ..ShardDesc::undocumented("Shapes", 1)
   };
   let table = Var::table([("a", Var::Int(1)), ("b", Var::string("s"))]);
-  let mixed = Var::Seq(std::sync::Arc::new(vec![Var::Int(1), Var::Float(2.0)]));
+  let mixed = Var::from_seq(std::sync::Arc::new(vec![Var::Int(1), Var::Float(2.0)]));
   let decoded = decode(
     &desc,
     &[
@@ -1007,7 +1008,7 @@ fn full_parameter_types_check_literals_and_are_documented() {
     params: Params::Declared(PARAMS),
     ..ShardDesc::undocumented("Typed", 1)
   });
-  let ints = Var::Seq(std::sync::Arc::new(vec![Var::Int(1), Var::Int(2)]));
+  let ints = Var::from_seq(std::sync::Arc::new(vec![Var::Int(1), Var::Int(2)]));
   assert!(
     decode(
       &TYPED.desc,
@@ -1016,7 +1017,7 @@ fn full_parameter_types_check_literals_and_are_documented() {
     .is_ok()
   );
 
-  let strings = Var::Seq(std::sync::Arc::new(vec![Var::string("a")]));
+  let strings = Var::from_seq(std::sync::Arc::new(vec![Var::string("a")]));
   let err = decode(
     &TYPED.desc,
     &[Arg::named("offsets", ParamValue::Value(strings))],
@@ -1034,7 +1035,10 @@ fn full_parameter_types_check_literals_and_are_documented() {
 
   let record = Var::table([
     ("addr", Var::Int(1)),
-    ("guid", Var::Seq(std::sync::Arc::new(vec![Var::Int(2)]))),
+    (
+      "guid",
+      Var::from_seq(std::sync::Arc::new(vec![Var::Int(2)])),
+    ),
   ]);
   assert!(
     decode(

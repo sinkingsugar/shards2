@@ -69,10 +69,10 @@ pub(crate) fn check_output(name: &str, output: Type, value: &Var) -> Result<()> 
   }
   let mut text = value.to_string();
   if text.len() > 120 {
-    let cut = (0..=120)
-      .rev()
-      .find(|i| text.is_char_boundary(*i))
-      .unwrap_or(0);
+    let mut cut = 120;
+    while !text.is_char_boundary(cut) {
+      cut -= 1;
+    }
     text.truncate(cut);
     text.push_str("...");
   }

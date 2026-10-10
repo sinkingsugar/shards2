@@ -193,7 +193,7 @@ impl AsyncShard for Get {
     // Owned inputs only: nothing borrowed from the frames goes into the task.
     let url = match &c.url {
       Url::Const(url) => url.clone(),
-      Url::Bound(binding) => match ctx.get(*binding) {
+      Url::Bound(binding) => match &ctx.get(*binding) {
         Var::String(url) => url.to_string(),
         other => {
           return Err(Error::Activation(format!(

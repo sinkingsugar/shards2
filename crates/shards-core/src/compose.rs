@@ -1456,7 +1456,7 @@ impl ComposeCtx<'_> {
         }
       };
       let call = match composed.compiled.control() {
-        Some(Control::Call(c)) => Some(Box::new(call_site(c))),
+        Some(Control::Call(c)) if self.cache.record_call_sites => Some(Box::new(call_site(c))),
         _ => None,
       };
       node_analysis.occurrences.insert(
@@ -2275,6 +2275,10 @@ pub struct ComposeCache {
   /// Flows composed through this cache record where each instruction comes
   /// from (`CompiledFlow::origins`): a cache made to locate a failure.
   pub(crate) record_origins: bool,
+  /// Call occurrences record how each call site runs (`Occurrence::call`),
+  /// for `check --json`: off unless a check asks, so a device's compiled
+  /// flows carry none of it (`Mesh::record_call_sites`).
+  pub record_call_sites: bool,
 }
 
 impl Default for ComposeCache {
@@ -2296,6 +2300,7 @@ impl ComposeCache {
       evaluations: HashMap::new(),
       eval_floors: Vec::new(),
       record_origins: false,
+      record_call_sites: false,
     }
   }
 

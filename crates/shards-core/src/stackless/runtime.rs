@@ -111,6 +111,13 @@ impl Mesh {
     self.eval_limits = limits;
   }
 
+  /// Records how each call site runs in the composed analysis
+  /// (`Occurrence::call`), for tooling such as `check --json`. Off by
+  /// default: it costs memory per call occurrence.
+  pub fn record_call_sites(&mut self) {
+    self.cache.record_call_sites = true;
+  }
+
   pub fn eval_limits(&self) -> crate::compose_time::EvalLimits {
     self.eval_limits
   }

@@ -338,6 +338,9 @@ impl Program {
 
   fn compose_report(&self, include_analysis: bool) -> CheckReport {
     let mut mesh = self.mesh();
+    if include_analysis {
+      mesh.record_call_sites();
+    }
     let mut out: Vec<Diagnostic> = Vec::new();
     let mut wires = Vec::new();
     for wire in self.entries().into_iter().chain(self.unreachable_roots()) {

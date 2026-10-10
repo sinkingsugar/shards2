@@ -80,7 +80,23 @@ impl FileWatcher {
     mut event: impl FnMut(WatchEvent),
   ) -> Duration {
     if restart || Instant::now() >= self.poll_at {
-      let read = std::fs::read_to_string(&self.path).map_err(|e| e.to_string());
+      let text = std::fs::read_to_string(&self.path).map_err(|e| e.to_string());
+      // The script and the files it included or read, as one observation:
+      // an edit to any of them is a new revision (of the script's text).
+      let read = text.map(|text| {
+        // `length:text`, then each file, so the text comes back exactly.
+        let mut observed = format!("{}:{text}", text.len());
+        for name in session.files_read() {
+          observed.push('\0');
+          observed.push_str(name);
+          observed.push('\0');
+          match std::fs::read(name) {
+            Ok(bytes) => observed.push_str(&String::from_utf8_lossy(&bytes)),
+            Err(e) => observed.push_str(&e.to_string()),
+          }
+        }
+        observed
+      });
       let change = if restart {
         self.changes.previous = Some(read.clone());
         self.changes.attempted = Some(read.clone());
@@ -90,7 +106,9 @@ impl FileWatcher {
       };
       if let Some(change) = change {
         match change {
-          Ok(text) => {
+          Ok(observed) => {
+            let (length, rest) = observed.split_once(':').expect("length-prefixed");
+            let text = rest[..length.parse::<usize>().expect("a length")].to_string();
             let source = Source::new(self.path.to_string_lossy(), text);
             let result = if restart {
               session.reload(source, catalog, defines)

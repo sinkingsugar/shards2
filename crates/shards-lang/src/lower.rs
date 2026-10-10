@@ -197,6 +197,12 @@ struct Lowerer<'a> {
   /// The flow parameters of the function whose body is being lowered: a
   /// shard's flow argument naming one runs it (`{ Run(name) }`).
   flow_params: Vec<String>,
+  /// What `@read` reads from: the source (which says which file a span is
+  /// in, for relative paths) and the reader. `None` when lowering a tree
+  /// alone.
+  files: Option<(&'a crate::Source, &'a dyn crate::Files)>,
+  /// The files `@read` read, by name.
+  reads: Vec<String>,
 }
 
 /// What a value constant built from others may expand to, by its size as
@@ -278,6 +284,28 @@ pub fn lower(
   catalog: &Catalog,
   defines: &HashMap<String, String>,
 ) -> (Lowered, Vec<Problem>) {
+  let (lowered, problems, _) = lower_files(program, catalog, defines, None);
+  (lowered, problems)
+}
+
+/// [`lower`], with `@read` reading from `files`, relative to the file of
+/// `source` that names the path. Returns the names of the files it read.
+pub fn lower_with(
+  program: &Program,
+  catalog: &Catalog,
+  defines: &HashMap<String, String>,
+  source: &crate::Source,
+  files: &dyn crate::Files,
+) -> (Lowered, Vec<Problem>, Vec<String>) {
+  lower_files(program, catalog, defines, Some((source, files)))
+}
+
+fn lower_files<'a>(
+  program: &Program,
+  catalog: &'a Catalog,
+  defines: &'a HashMap<String, String>,
+  files: Option<(&'a crate::Source, &'a dyn crate::Files)>,
+) -> (Lowered, Vec<Problem>, Vec<String>) {
   let mut l = Lowerer {
     catalog,
     defines,
@@ -294,6 +322,8 @@ pub fn lower(
     const_expansion: 0,
     const_overflow: None,
     flow_params: Vec::new(),
+    files,
+    reads: Vec::new(),
   };
   let mut out = Lowered::default();
   // Function signatures first: a call may precede its declaration, and
@@ -405,7 +435,8 @@ pub fn lower(
   l.map.nodes.shrink_to_fit();
   out.map = l.map;
   l.problems.extend(l.const_overflow);
-  (out, l.problems)
+  let reads = std::mem::take(&mut l.reads);
+  (out, l.problems, reads)
 }
 
 /// A top-level `@name(...)` statement (one block, nothing piped).
@@ -458,7 +489,8 @@ fn upper_name_of(pipe: &Pipe) -> Option<String> {
 
 /// The type names written in signatures.
 const TYPE_NAMES: &[&str] = &[
-  "None", "Any", "Bool", "Int", "Float", "Float2", "Float3", "Float4", "String", "Seq", "Table",
+  "None", "Any", "Bool", "Int", "Float", "Float2", "Float3", "Float4", "String", "Bytes", "Seq",
+  "Table",
 ];
 
 fn named_type(name: &str) -> Option<Type> {
@@ -472,6 +504,7 @@ fn named_type(name: &str) -> Option<Type> {
     "Float3" => Type::float3(),
     "Float4" => Type::float4(),
     "String" => Type::string(),
+    "Bytes" => Type::bytes(),
     "Seq" => Type::seq(Type::any()),
     "Table" => Type::any_table(),
     _ => return None,
@@ -1315,6 +1348,25 @@ impl Lowerer<'_> {
       }
       BlockKind::Func {
         name,
+        params: Some(params),
+      } if name.node == "read" => {
+        if let Some(v) = self.read_file(block, params) {
+          self.emit(
+            out,
+            prefix,
+            span,
+            ShardDef::with_args(&CONST, vec![Arg::pos(ParamValue::Value(v))]),
+          );
+        }
+      }
+      BlockKind::Func { name, .. } if name.node == "include" => {
+        self.unsupported(
+          span,
+          "`@include` goes at the top level of a file, outside every wire and function",
+        );
+      }
+      BlockKind::Func {
+        name,
         params: Some(_),
       } if self.functions.contains_key(&name.node) => {
         // One way to evaluate at compose time, one way to expand: they
@@ -1424,7 +1476,7 @@ impl Lowerer<'_> {
             None => return,
           }
         }
-        let keys = Var::Seq(Arc::new(keys.iter().map(|k| Var::string(k)).collect()));
+        let keys = Var::from_seq(Arc::new(keys.iter().map(|k| Var::string(k)).collect()));
         args.insert(0, Arg::pos(ParamValue::Value(keys)));
         self.emit(out, prefix, span, ShardDef::with_args(&TABLE_MAKE, args));
       }
@@ -1807,6 +1859,86 @@ impl Lowerer<'_> {
     walk(self, block, &mut Vec::new())
   }
 
+  /// `@read("path")`: the file's text, or with `bytes: true` its bytes, as
+  /// a literal. The path is relative to the file naming it.
+  fn read_file(&mut self, block: &Block, params: &Params) -> Option<Var> {
+    let usage = "`@read(\"file.txt\")`, or `@read(\"file.bin\" bytes: true)` for its bytes";
+    let mut path = None;
+    let mut bytes = false;
+    for param in &params.items {
+      let literal = match &param.value.blocks[..] {
+        [b] => match &b.kind {
+          BlockKind::Literal(literal) => Some(literal),
+          _ => None,
+        },
+        _ => None,
+      };
+      match (param.name.as_ref().map(|n| n.node.as_str()), literal) {
+        (None, Some(Literal::String(p))) if path.is_none() => path = Some(p.clone()),
+        (Some("bytes"), Some(Literal::Bool(b))) => bytes = *b,
+        _ => {
+          self.problem(Problem::construct(
+            param.value.span,
+            "generic",
+            "declaration",
+            format!("`@read` takes a file name and an optional `bytes:` flag: {usage}"),
+          ));
+          return None;
+        }
+      }
+    }
+    let Some(path) = path else {
+      self.problem(Problem::construct(
+        block.span,
+        "generic",
+        "declaration",
+        format!("`@read` needs a file name: {usage}"),
+      ));
+      return None;
+    };
+    let Some((source, files)) = self.files else {
+      self.unsupported(
+        block.span,
+        "`@read` needs a program loaded with files to read",
+      );
+      return None;
+    };
+    let from = source.file_name(block.span.start).to_string();
+    let file = match files.read(&from, &path) {
+      Ok(file) => file,
+      Err(message) => {
+        self.problem(Problem::construct(
+          block.span,
+          "generic",
+          "file-not-found",
+          format!("cannot read {path}: {message}"),
+        ));
+        return None;
+      }
+    };
+    if !self.reads.contains(&file.name) {
+      self.reads.push(file.name.clone());
+    }
+    if bytes {
+      return Some(Var::bytes(&file.bytes));
+    }
+    match String::from_utf8(file.bytes) {
+      Ok(text) => Some(Var::string(&text)),
+      Err(_) => {
+        self.problem(Problem::construct(
+          block.span,
+          "generic",
+          "not-utf8",
+          format!(
+            "{} is not UTF-8 text; read it with `bytes: true`",
+            file.name
+          ),
+        ));
+        None
+      }
+    }
+  }
+
   /// A literal value: numbers, strings, `none`, booleans, `@name`, `#( )`,
   /// and sequences and tables of them. Reports anything else. A literal
   /// holding a `#( )` is an `Eval` of the pipeline that builds it (its
@@ -1821,6 +1953,10 @@ impl Lowerer<'_> {
       BlockKind::Literal(Literal::Float(f)) => value(Var::Float(*f)),
       BlockKind::Literal(Literal::String(s)) => value(Var::string(s)),
       BlockKind::Func { name, params: None } => self.read_name(name, at),
+      BlockKind::Func {
+        name,
+        params: Some(params),
+      } if name.node == "read" => self.read_file(block, params).map(ParamValue::Value),
       BlockKind::EmptyBraces => value(Var::table(Vec::<(&str, Var)>::new())),
       BlockKind::Eval(stmts) => Some(ParamValue::Eval(self.eval_flow(stmts, at))),
       BlockKind::Seq(items) => {
@@ -1832,7 +1968,7 @@ impl Lowerer<'_> {
           values.push(self.constant_pipe(item, &element)?);
         }
         Some(match Self::all_literal(values) {
-          Ok(vars) => ParamValue::Value(Var::Seq(Arc::new(vars))),
+          Ok(vars) => ParamValue::Value(Var::from_seq(Arc::new(vars))),
           Err(values) => ParamValue::Eval(vec![ShardDef::with_args(
             &SEQ_MAKE,
             values.into_iter().map(Arg::pos).collect(),
@@ -1853,7 +1989,7 @@ impl Lowerer<'_> {
         Some(match Self::all_literal(values) {
           Ok(vars) => ParamValue::Value(Var::table(keys.into_iter().zip(vars))),
           Err(values) => {
-            let keys = Var::Seq(Arc::new(keys.iter().map(|k| Var::string(k)).collect()));
+            let keys = Var::from_seq(Arc::new(keys.iter().map(|k| Var::string(k)).collect()));
             let args = std::iter::once(ParamValue::Value(keys))
               .chain(values)
               .map(Arg::pos)
@@ -2315,6 +2451,7 @@ fn is_constant(block: &Block) -> bool {
     | BlockKind::EmptyBraces
     | BlockKind::Func { params: None, .. }
     | BlockKind::Eval(_) => true,
+    BlockKind::Func { name, .. } => name.node == "read",
     BlockKind::Seq(items) => items.iter().all(single),
     BlockKind::Table(entries) => entries.iter().all(|(_, v)| single(v)),
     _ => false,

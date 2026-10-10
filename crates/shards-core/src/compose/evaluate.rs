@@ -432,7 +432,7 @@ mod tests {
     // `Maybe` handles a failure in a child run inside its own step (leaf
     // code), then one in a child frame (a shard without a VM form); the
     // failure that ends the run is located at its own shard.
-    let seq = || konst(Var::Seq(Arc::new(vec![Var::Int(1), Var::Int(2)])));
+    let seq = || konst(Var::from_seq(Arc::new(vec![Var::Int(1), Var::Int(2)])));
     let flow = vec![
       maybe(
         vec![seq(), take(val(Var::Int(5)))],

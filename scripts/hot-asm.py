@@ -91,7 +91,8 @@ def disassemble(tool, binary, symbol):
     lines = []
     for line in out.splitlines():
         m = re.match(r"\s*[0-9a-f]+:\s+(.*)", line)
-        if m:
+        # Alignment padding (.cargo/config.toml aligns branch targets) is not code.
+        if m and not re.match(r"nop\b", m.group(1).strip()):
             lines.append(m.group(1).strip())
     return lines
 

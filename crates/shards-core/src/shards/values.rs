@@ -30,6 +30,8 @@ pub static TO_STRING: ShardType = leaf_type::<Pure<ToStringOp>>();
 pub static TO_INT: ShardType = leaf_type::<Pure<ToIntOp>>();
 pub static TO_FLOAT: ShardType = leaf_type::<Pure<ToFloatOp>>();
 pub static TO_HEX: ShardType = leaf_type::<Pure<ToHexOp>>();
+pub static BYTES_TO_STRING: ShardType = leaf_type::<Pure<BytesToStringOp>>();
+pub static STRING_TO_BYTES: ShardType = leaf_type::<Pure<StringToBytesOp>>();
 pub static PARSE_FLOAT: ShardType = leaf_type::<Pure<ParseFloatOp>>();
 pub static TO_FLOAT2: ShardType = leaf_type::<Pure<ToVector<2>>>();
 pub static TO_FLOAT3: ShardType = leaf_type::<Pure<ToVector<3>>>();
@@ -483,7 +485,7 @@ impl LeafShard for IsAny {
       meter.traverse(input)?;
       meter.traverse(&values)?;
     }
-    let Var::Seq(items) = values else {
+    let Var::Seq(items) = &values else {
       return Err(Error::Activation("IsAny: Values is not a sequence".into()));
     };
     let mut found = false;
@@ -589,9 +591,12 @@ pub trait PureOp: 'static {
 
 /// A string's bytes, charged as the work of reading it through.
 fn meter_bytes(input: &Var, meter: &Meter) -> Result<()> {
-  if let Var::String(s) = input {
-    meter.charge((s.len() / crate::compose_time::TRAVERSAL_BYTES) as u64)?;
-  }
+  let len = match input {
+    Var::String(s) => s.len(),
+    Var::Bytes(b) => b.len(),
+    _ => return Ok(()),
+  };
+  meter.charge((len / crate::compose_time::TRAVERSAL_BYTES) as u64)?;
   Ok(())
 }
 
@@ -669,24 +674,21 @@ impl PureOp for CountOp {
   const DESC: ShardDesc = pure_desc(
     "Count",
     crate::shard_doc!(
-      "Outputs how many elements a sequence or table has, or characters a string has."
+      "Outputs how many elements a sequence or table has, characters a string has, or bytes a byte string has."
     ),
     "",
-    InputDesc::Types(&[TypeName::Seq, TypeName::Table, TypeName::String]),
+    InputDesc::Types(COUNTED),
     OutputDesc::Fixed(TypeName::Int),
   );
   fn output(input: Type) -> std::result::Result<Type, &'static [TypeName]> {
-    one_of(
-      input,
-      &[TypeName::Seq, TypeName::Table, TypeName::String],
-      Type::int(),
-    )
+    one_of(input, COUNTED, Type::int())
   }
   fn apply(input: &Var) -> Result<Var> {
     Ok(Var::Int(match input {
       Var::Seq(s) => s.len() as i64,
       Var::Table(t) => t.len() as i64,
       Var::String(s) => s.chars().count() as i64,
+      Var::Bytes(b) => b.len() as i64,
       _ => return Err(fail("Count", "input type mismatch")),
     }))
   }
@@ -911,35 +913,101 @@ pub struct ToHexOp;
 impl PureOp for ToHexOp {
   const DESC: ShardDesc = pure_desc(
     "ToHex",
-    crate::shard_doc!("Writes an Int in hexadecimal, or a string's bytes as hex."),
+    crate::shard_doc!("Writes an Int in hexadecimal, or a string's or byte string's bytes as hex."),
     crate::shard_doc!(
-      "An Int becomes `0x` and its bits as an unsigned 64-bit number (addresses); a string becomes two hex digits per byte."
+      "An Int becomes `0x` and its bits as an unsigned 64-bit number (addresses); a string or byte string becomes two hex digits per byte."
     ),
-    InputDesc::Types(&[TypeName::Int, TypeName::String]),
+    InputDesc::Types(HEXED),
     OutputDesc::Fixed(TypeName::String),
   );
   fn output(input: Type) -> std::result::Result<Type, &'static [TypeName]> {
-    one_of(input, &[TypeName::Int, TypeName::String], Type::string())
+    one_of(input, HEXED, Type::string())
   }
   fn apply(input: &Var) -> Result<Var> {
+    fn hex(bytes: &[u8]) -> String {
+      use std::fmt::Write;
+      let mut hex = String::with_capacity(2 * bytes.len());
+      for b in bytes {
+        let _ = write!(hex, "{b:02x}");
+      }
+      hex
+    }
     Ok(Var::string(&match input {
       Var::Int(i) => format!("0x{:x}", *i as u64),
-      Var::String(s) => {
-        use std::fmt::Write;
-        let mut hex = String::with_capacity(2 * s.len());
-        for b in s.bytes() {
-          let _ = write!(hex, "{b:02x}");
-        }
-        hex
-      }
+      Var::String(s) => hex(s.as_bytes()),
+      Var::Bytes(b) => hex(b),
       _ => return Err(fail("ToHex", "input type mismatch")),
     }))
   }
   fn meter(input: &Var, meter: &Meter) -> Result<()> {
-    if let Var::String(s) = input {
-      meter.allocate(2 * s.len())?;
+    match input {
+      Var::String(s) => meter.allocate(2 * s.len()),
+      Var::Bytes(b) => meter.allocate(2 * b.len()),
+      _ => Ok(()),
     }
-    Ok(())
+  }
+}
+
+const COUNTED: &[TypeName] = &[
+  TypeName::Seq,
+  TypeName::Table,
+  TypeName::String,
+  TypeName::Bytes,
+];
+const HEXED: &[TypeName] = &[TypeName::Int, TypeName::String, TypeName::Bytes];
+
+pub struct BytesToStringOp;
+impl PureOp for BytesToStringOp {
+  const DESC: ShardDesc = pure_desc(
+    "BytesToString",
+    crate::shard_doc!("Reads a byte string as UTF-8 text."),
+    crate::shard_doc!("Fails when the bytes are not valid UTF-8."),
+    InputDesc::Types(&[TypeName::Bytes]),
+    OutputDesc::Fixed(TypeName::String),
+  );
+  fn output(input: Type) -> std::result::Result<Type, &'static [TypeName]> {
+    one_of(input, &[TypeName::Bytes], Type::string())
+  }
+  fn apply(input: &Var) -> Result<Var> {
+    let Var::Bytes(b) = input else {
+      return Err(fail("BytesToString", "input type mismatch"));
+    };
+    match std::str::from_utf8(b) {
+      Ok(text) => Ok(Var::string(text)),
+      Err(err) => Err(fail("BytesToString", &format!("not UTF-8: {err}"))),
+    }
+  }
+  fn meter(input: &Var, meter: &Meter) -> Result<()> {
+    match input {
+      Var::Bytes(b) => meter.allocate(b.len()),
+      _ => Ok(()),
+    }
+  }
+}
+
+pub struct StringToBytesOp;
+impl PureOp for StringToBytesOp {
+  const DESC: ShardDesc = pure_desc(
+    "StringToBytes",
+    crate::shard_doc!("Outputs a string's UTF-8 bytes."),
+    "",
+    InputDesc::Types(&[TypeName::String]),
+    OutputDesc::Fixed(TypeName::Bytes),
+  );
+  fn output(input: Type) -> std::result::Result<Type, &'static [TypeName]> {
+    one_of(input, &[TypeName::String], Type::bytes())
+  }
+  fn apply(input: &Var) -> Result<Var> {
+    match input {
+      Var::String(s) => Ok(Var::bytes(s.as_bytes())),
+      _ => Err(fail("StringToBytes", "input type mismatch")),
+    }
+  }
+  fn meter(input: &Var, meter: &Meter) -> Result<()> {
+    match input {
+      Var::String(s) => meter.allocate(s.len()),
+      _ => Ok(()),
+    }
   }
 }
 

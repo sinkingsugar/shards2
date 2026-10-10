@@ -119,6 +119,8 @@ pub static CATALOG: &[&ShardType] = &[
   &values::TO_INT,
   &values::TO_FLOAT,
   &values::TO_HEX,
+  &values::BYTES_TO_STRING,
+  &values::STRING_TO_BYTES,
   &values::PARSE_FLOAT,
   &values::TO_FLOAT2,
   &values::TO_FLOAT3,

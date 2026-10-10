@@ -1,0 +1,9 @@
+# Align every branch target that is not a fallthrough to 16 bytes on native
+# builds. Without it, the VM loop's speed depends on where unrelated code
+# changes happen to place its blocks: on Apple M-series the same loop runs
+# up to 40% faster or slower from placement alone, which hides real changes
+# in benchmarks and makes shipped speed a matter of luck. It costs about 5%
+# of binary size. Wasm and the ESP32 targets do not match this and are
+# unaffected (docs/runtime-performance-overview.md, lesson 7).
+[target.'cfg(any(target_arch = "aarch64", target_arch = "x86_64"))']
+rustflags = ["-C", "llvm-args=-align-all-nofallthru-blocks=4"]

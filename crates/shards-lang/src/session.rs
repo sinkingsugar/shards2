@@ -9,6 +9,7 @@ use shards_core::{
   Catalog, CompiledWire, InstanceId, Mesh, Outcome, ReloadReport, ResetPolicy, Type, Var,
 };
 
+use crate::files::{Files, FsFiles};
 use crate::{Program, Source};
 
 /// An entry or spawned instance that finished, failed or was cancelled.
@@ -48,6 +49,10 @@ struct Execution {
 pub struct Session {
   active: Option<Execution>,
   reset_policy: ResetPolicy,
+  /// Where `@include` and `@read` read from (the filesystem by default).
+  files: Box<dyn Files>,
+  /// The files the last reload read, accepted or not.
+  read: Vec<String>,
 }
 
 impl Default for Session {
@@ -61,7 +66,37 @@ impl Session {
     Self {
       active: None,
       reset_policy: ResetPolicy::default(),
+      files: Box::new(FsFiles::default()),
+      read: Vec::new(),
     }
+  }
+
+  /// Where `@include` and `@read` find files: a filesystem with include
+  /// paths, or files held in memory ([`crate::MemoryFiles`]).
+  pub fn set_files(&mut self, files: impl Files + 'static) {
+    self.files = Box::new(files);
+  }
+
+  /// The files the last reload included or read, by name, whether or not
+  /// it was accepted: an edit to any of them is a new revision.
+  pub fn files_read(&self) -> &[String] {
+    &self.read
+  }
+
+  /// Loads a program through the session's files, recording what it read.
+  fn load(
+    &mut self,
+    source: Source,
+    catalog: &Catalog,
+    defines: &HashMap<String, String>,
+  ) -> Result<Program, (Source, Vec<Diagnostic>)> {
+    let recording = Recording {
+      inner: &*self.files,
+      read: std::cell::RefCell::new(Vec::new()),
+    };
+    let program = Program::load_with(source, catalog, defines, &recording);
+    self.read = recording.read.into_inner();
+    program
   }
 
   /// What a preserving reload does when a stateful function's state would
@@ -95,6 +130,8 @@ impl Session {
         iterations: None,
         frame_interval: None,
       }),
+      files: Box::new(FsFiles::default()),
+      read: Vec::new(),
     }
   }
 
@@ -112,7 +149,7 @@ impl Session {
     catalog: &Catalog,
     defines: &HashMap<String, String>,
   ) -> Result<Vec<Finished>, (Source, Vec<Diagnostic>)> {
-    let program = Program::load(source, catalog, defines)?;
+    let program = self.load(source, catalog, defines)?;
     let mut mesh = program.mesh();
     mesh.set_reset_policy(self.reset_policy);
     let entries = match compose_entries(&program, &mut mesh) {
@@ -229,7 +266,7 @@ impl Session {
     if self.active.is_none() {
       return self.reload(source, catalog, defines);
     }
-    let program = Program::load(source, catalog, defines)?;
+    let program = self.load(source, catalog, defines)?;
     let active = self.active.as_mut().expect("active mesh");
     let mut candidate = active.mesh.revision();
     program.declare_on(&mut candidate);
@@ -321,5 +358,26 @@ fn compose_entries(
     Ok(entries)
   } else {
     Err(diagnostics)
+  }
+}
+
+/// A reader that remembers what it read (`Session::files_read`).
+struct Recording<'a> {
+  inner: &'a dyn Files,
+  read: std::cell::RefCell<Vec<String>>,
+}
+
+impl Files for Recording<'_> {
+  fn read(&self, from: &str, path: &str) -> Result<crate::files::File, String> {
+    let file = self.inner.read(from, path)?;
+    let mut read = self.read.borrow_mut();
+    if !read.contains(&file.name) {
+      read.push(file.name.clone());
+    }
+    Ok(file)
+  }
+
+  fn key(&self, name: &str) -> String {
+    self.inner.key(name)
   }
 }

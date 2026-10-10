@@ -59,7 +59,7 @@ fn constructor_segments_preserve_snapshots_and_change_table_shapes() {
   );
   assert_eq!(
     completed(&report, "root"),
-    Var::Seq(std::sync::Arc::new(vec![
+    Var::from_seq(std::sync::Arc::new(vec![
       Var::table([("a", Var::Int(3)), ("z", Var::Int(1))]),
       Var::table([("a", Var::Int(4)), ("b", Var::Int(6))]),
     ]))
@@ -1023,7 +1023,7 @@ t",
       ("ratio", Var::Float(0.25)),
       (
         "tags",
-        Var::Seq(std::sync::Arc::new(vec![
+        Var::from_seq(std::sync::Arc::new(vec![
           Var::string("a"),
           Var::string("b")
         ]))
@@ -1082,7 +1082,7 @@ fn paths_read_tables_and_sequences() {
   );
   assert_eq!(
     completed(&report, "root"),
-    Var::Seq(std::sync::Arc::new(vec![Var::Int(20), Var::string("deep")]))
+    Var::from_seq(std::sync::Arc::new(vec![Var::Int(20), Var::string("deep")]))
   );
   // A typo on a fixed table is a compose error at the key, with suggestions.
   let report = check("{name: 1 count: 2} = t\nt.cuont");
@@ -1104,7 +1104,7 @@ f\"n is {n}, next {n | Add(1)}, {{literal}}\" = text
 [text items table sum]",
     &no_defines(),
   );
-  let seq = |v: Vec<Var>| Var::Seq(std::sync::Arc::new(v));
+  let seq = |v: Vec<Var>| Var::from_seq(std::sync::Arc::new(v));
   assert_eq!(
     completed(&report, "root"),
     seq(vec![
@@ -1124,7 +1124,7 @@ fn push_appends_to_a_sequence() {
   );
   assert_eq!(
     completed(&report, "root"),
-    Var::Seq(std::sync::Arc::new(vec![Var::Int(1), Var::Int(2)]))
+    Var::from_seq(std::sync::Arc::new(vec![Var::Int(1), Var::Int(2)]))
   );
   let report = check("[0] | Var(xs)\n\"s\" | Push(xs)");
   assert_eq!(report.diagnostics[0].code, "variable-type-mismatch");
@@ -1160,7 +1160,7 @@ fn numbers_mix_in_arithmetic_and_comparisons() {
 [a b c d e f]",
     &no_defines(),
   );
-  let seq = |v: Vec<Var>| Var::Seq(std::sync::Arc::new(v));
+  let seq = |v: Vec<Var>| Var::from_seq(std::sync::Arc::new(v));
   let len = ((1.0f64).powi(2) + 3.0f64.powi(2) + 5.0f64.powi(2)).sqrt();
   assert_eq!(
     completed(&report, "root"),
@@ -1199,7 +1199,7 @@ Time.Now | Math.Subtract(t0) | IsMoreEqual(0.0) = later
   assert_eq!(lines, ["count: 2", "42"]);
   assert_eq!(
     completed(&report, "root"),
-    Var::Seq(std::sync::Arc::new(vec![
+    Var::from_seq(std::sync::Arc::new(vec![
       Var::string("0xff"),
       Var::Bool(false),
       Var::Bool(true),
@@ -1237,7 +1237,7 @@ Repeat({Inc(count)} until: {count | IsMoreEqual(100)} times: 2)
   let s = Var::string;
   assert_eq!(
     completed(&report, "root"),
-    Var::Seq(std::sync::Arc::new(vec![
+    Var::from_seq(std::sync::Arc::new(vec![
       s("big"),
       Var::Int(5),
       s("despawned"),
@@ -1263,7 +1263,7 @@ fn match_is_exhaustive_or_has_a_default() {
   );
   assert_eq!(
     completed(&report, "root"),
-    Var::Seq(std::sync::Arc::new(vec![Var::Int(1), Var::Int(3)]))
+    Var::from_seq(std::sync::Arc::new(vec![Var::Int(1), Var::Int(3)]))
   );
   let report = check("2 | Match([1 {10}])");
   let d = &report.diagnostics[0];
@@ -1378,7 +1378,7 @@ If(Any(b {a}) {4} {5}) = z
   );
   assert_eq!(
     completed(&report, "root"),
-    Var::Seq(std::sync::Arc::new(vec![Var::Int(2), Var::Int(4)]))
+    Var::from_seq(std::sync::Arc::new(vec![Var::Int(2), Var::Int(4)]))
   );
 }
 
@@ -1403,7 +1403,7 @@ fn mixed_number_equality_and_order_are_exact_and_consistent() {
   );
   assert_eq!(
     completed(&report, "root"),
-    Var::Seq(std::sync::Arc::new(vec![
+    Var::from_seq(std::sync::Arc::new(vec![
       Var::Bool(false),
       Var::Bool(true),
       Var::Bool(true),
@@ -1452,7 +1452,7 @@ fn computed_elements_keep_source_order() {
   let report = run("0 | Var(n)\n[n (Inc(n) n)]", &no_defines());
   assert_eq!(
     completed(&report, "root"),
-    Var::Seq(std::sync::Arc::new(vec![Var::Int(0), Var::Int(1)]))
+    Var::from_seq(std::sync::Arc::new(vec![Var::Int(0), Var::Int(1)]))
   );
 }
 
@@ -1672,7 +1672,7 @@ fn maybe_without_else_passes_its_input_through() {
   );
   assert_eq!(
     completed(&report, "root"),
-    Var::Seq(std::sync::Arc::new(vec![Var::Int(5), Var::Int(5)]))
+    Var::from_seq(std::sync::Arc::new(vec![Var::Int(5), Var::Int(5)]))
   );
 }
 
@@ -3147,7 +3147,7 @@ fn timed_outputs_the_seconds_its_block_took() {
   );
   assert_eq!(
     completed(&run(&text, &no_defines()), "root"),
-    Var::Seq(std::sync::Arc::new(vec![Var::Bool(true), Var::Int(1)]))
+    Var::from_seq(std::sync::Arc::new(vec![Var::Bool(true), Var::Int(1)]))
   );
 }
 
@@ -3301,6 +3301,220 @@ fn ignored_inputs_and_outputs_of_blocks() {
   let text = "@fn(Both input: Int output: None params: {action: Flow(input: None output: None)} { Run(action) })\n0 | Var(n)\n5 | Both(action: {Inc(n) n | Math.Add(10)}) = out\n[out n]";
   assert_eq!(
     completed(&run(text, &no_defines()), "root"),
-    Var::Seq(std::sync::Arc::new(vec![Var::None, Var::Int(1)]))
+    Var::from_seq(std::sync::Arc::new(vec![Var::None, Var::Int(1)]))
   );
+}
+
+// --- `@include` and `@read`, and Bytes ---
+
+fn files(entries: &[(&str, &str)]) -> shards_lang::MemoryFiles {
+  let mut files = shards_lang::MemoryFiles::new();
+  for (name, text) in entries {
+    files.insert(name, text.as_bytes());
+  }
+  files
+}
+
+fn load_with(text: &str, files: &shards_lang::MemoryFiles) -> Result<Program, Vec<Diagnostic>> {
+  Program::load_with(
+    Source::new("main.shs", text),
+    &catalog(),
+    &no_defines(),
+    files,
+  )
+  .map_err(|(_, d)| d)
+}
+
+#[test]
+fn an_included_file_declares_once_wherever_it_is_named() {
+  let files = files(&[
+    (
+      "lib/flow.shs",
+      "@include(\"../lib/flow.shs\")\n@include(\"more.shs\")\n@fn(Twice input: Int output: Int params: {} { Math.Multiply(2) })",
+    ),
+    ("lib/more.shs", "@const(base 10)\n@include(\"flow.shs\")"),
+  ]);
+  let program = load_with(
+    "@include(\"lib/flow.shs\")\n@include(\"./lib/more.shs\")\n@base | Twice",
+    &files,
+  )
+  .unwrap_or_else(|d| panic!("{d:?}"));
+  assert_eq!(program.files, ["lib/flow.shs", "lib/more.shs"]);
+  let report = program.run().unwrap_or_else(|d| panic!("{d:?}"));
+  assert_eq!(completed(&report, "root"), Var::Int(20));
+}
+
+#[test]
+fn problems_in_included_files_are_located_there() {
+  let files = files(&[
+    (
+      "lib.shs",
+      "// helpers\n@fn(Bad input: Int output: Int params: {} {\n  \"x\" | Math.Add(1)\n})",
+    ),
+    (
+      "broken.shs",
+      "@fn(B input: Int output: Int params: {} {\n  Math.Add(\n})",
+    ),
+  ]);
+  // A compose error inside an included function.
+  let program = load_with("@include(\"lib.shs\")\n1 | Bad", &files).unwrap();
+  let d = &program.compose()[0];
+  assert_eq!(
+    (d.code, d.file.as_deref(), at(d)),
+    ("input-type-mismatch", Some("lib.shs"), (3, 9))
+  );
+  // A syntax error in an included file.
+  let d = load_with("@include(\"broken.shs\")", &files)
+    .err()
+    .expect("load errors");
+  assert_eq!(
+    (d[0].code, d[0].file.as_deref(), at(&d[0])),
+    ("unclosed", Some("broken.shs"), (2, 11))
+  );
+  // A missing file, and an include inside a wire.
+  let d = load_with("1 | Log\n@include(\"nope.shs\")", &files)
+    .err()
+    .expect("load errors");
+  assert_eq!(
+    (d[0].code, d[0].file.as_deref(), at(&d[0])),
+    ("file-not-found", Some("main.shs"), (2, 1))
+  );
+  let d = load_with("When({true} {@include(\"lib.shs\")})", &files)
+    .err()
+    .expect("load errors");
+  assert_eq!((d[0].code, at(&d[0])), ("unsupported", (1, 14)));
+}
+
+#[test]
+fn read_gives_a_files_text_or_bytes_as_a_literal() {
+  let mut files = files(&[("data/hello.txt", "hi\n")]);
+  files.insert("data/blob.bin", [0u8, 255, 16]);
+  let text = r#"@const(greeting @read("data/hello.txt"))
+@read("data/blob.bin" bytes: true) = blob
+[@greeting
+ blob | Count
+ blob | ToHex
+ "hi\n" | StringToBytes | BytesToString | Is(@greeting)
+ blob | Is(@read("data/blob.bin" bytes: true))]"#;
+  let program = load_with(text, &files).unwrap_or_else(|d| panic!("{d:?}"));
+  assert_eq!(program.files, ["data/hello.txt", "data/blob.bin"]);
+  let report = program.run().unwrap_or_else(|d| panic!("{d:?}"));
+  assert_eq!(
+    completed(&report, "root"),
+    Var::from_seq(std::sync::Arc::new(vec![
+      Var::string("hi\n"),
+      Var::Int(3),
+      Var::string("00ff10"),
+      Var::Bool(true),
+      Var::Bool(true),
+    ]))
+  );
+  // Text that is not UTF-8 needs `bytes: true`.
+  let d = load_with(r#"@read("data/blob.bin") | Log"#, &files)
+    .err()
+    .expect("load errors");
+  assert_eq!((d[0].code, at(&d[0])), ("not-utf8", (1, 1)));
+}
+
+#[test]
+fn bytes_are_a_type_with_their_own_printing() {
+  let report = check(
+    "@fn(Size input: Bytes output: Int params: {} { Count })\n\"abc\" | StringToBytes | Size\n#( \"ab\" | StringToBytes ) | Log",
+  );
+  assert!(report.ok(), "{}", report.to_json());
+  let (report, lines) = shards_core::log::capture(|| {
+    run(
+      "\"ab\" | StringToBytes | Log\n[1] | Count | Log",
+      &no_defines(),
+    )
+  });
+  assert!(report.succeeded());
+  assert_eq!(lines, ["@bytes(6162)", "1"]);
+  let d = check_errors("1 | BytesToString");
+  assert_eq!(d[0].code, "input-type-mismatch");
+}
+
+#[test]
+fn a_session_records_the_files_a_revision_read() {
+  let mut session = shards_lang::Session::new();
+  session.set_files(files(&[("lib.shs", "@const(x 1)"), ("v.txt", "v")]));
+  session
+    .reload(
+      Source::new("main.shs", "@include(\"lib.shs\")\n@read(\"v.txt\") | Log"),
+      &catalog(),
+      &no_defines(),
+    )
+    .unwrap_or_else(|(_, d)| panic!("{d:?}"));
+  assert_eq!(session.files_read(), ["lib.shs", "v.txt"]);
+  // A rejected revision still says what it read.
+  assert!(
+    session
+      .reload(
+        Source::new("main.shs", "@include(\"lib.shs\")\nNope"),
+        &catalog(),
+        &no_defines(),
+      )
+      .is_err()
+  );
+  assert_eq!(session.files_read(), ["lib.shs"]);
+}
+
+#[cfg(not(any(target_arch = "wasm32", target_os = "espidf")))]
+#[test]
+fn file_watcher_reloads_when_an_included_file_changes() {
+  use shards_lang::{FileWatcher, WatchControl, WatchEvent};
+  use std::cell::Cell;
+  use std::time::{Duration, Instant};
+  let dir = std::env::temp_dir().join(format!("shards-watch-include-{}", std::process::id()));
+  std::fs::create_dir_all(&dir).unwrap();
+  struct Remove(std::path::PathBuf);
+  impl Drop for Remove {
+    fn drop(&mut self) {
+      let _ = std::fs::remove_dir_all(&self.0);
+    }
+  }
+  let _remove = Remove(dir.clone());
+  let (main, lib) = (dir.join("main.shs"), dir.join("lib.shs"));
+  let lib_source =
+    |value| format!("@fn(Step input: None output: Int params: {{}} {{{value} Log}})");
+  std::fs::write(&lib, lib_source(10)).unwrap();
+  std::fs::write(
+    &main,
+    "@include(\"lib.shs\")\n@wire(main {Step} looped: true)\n@mesh(m) @schedule(m main) @run(m fps: 0.1)",
+  )
+  .unwrap();
+  let command = Cell::new(WatchControl::Continue);
+  let mut revisions = 0;
+  let start = Instant::now();
+  let mut session = shards_lang::Session::new();
+  let (_, lines) = shards_core::log::capture(|| {
+    FileWatcher::new(&main).run(
+      &mut session,
+      &catalog(),
+      &no_defines(),
+      || {
+        assert!(
+          start.elapsed() < Duration::from_secs(5),
+          "watcher did not exit"
+        );
+        command.replace(WatchControl::Continue)
+      },
+      |event| match event {
+        WatchEvent::Reloaded { .. } => {
+          revisions += 1;
+          match revisions {
+            // Only the included file changes.
+            1 => std::fs::write(&lib, lib_source(20)).unwrap(),
+            2 => command.set(WatchControl::Stop),
+            _ => panic!("unexpected reload"),
+          }
+        }
+        WatchEvent::Rejected { diagnostics, .. } => panic!("{diagnostics:?}"),
+        WatchEvent::ReadError(error) => panic!("{error}"),
+        _ => {}
+      },
+    )
+  });
+  assert_eq!(revisions, 2);
+  assert_eq!(lines, ["10", "20"]);
 }

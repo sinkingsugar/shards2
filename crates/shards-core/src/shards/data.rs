@@ -116,32 +116,34 @@ impl LeafShard for Take {
         if key_ty != Type::string() {
           return key_error(TypeName::String);
         }
-        match literal {
-          Some(Var::String(k)) => match table.keys.binary_search_by(|(name, _)| (**name).cmp(&k)) {
-            Ok(index) => {
-              if table.is_fixed() {
-                code = TakeCode::Slot(index);
+        match &literal {
+          Some(Var::String(k)) => {
+            match table.keys.binary_search_by(|(name, _)| (**name).cmp(&***k)) {
+              Ok(index) => {
+                if table.is_fixed() {
+                  code = TakeCode::Slot(index);
+                }
+                table.keys[index].1
               }
-              table.keys[index].1
+              Err(_) => match table.rest {
+                // An open table may not have the key at runtime.
+                Some(rest) => Type::union([rest, Type::none()]),
+                None => {
+                  let keys: Vec<String> = table.keys.iter().map(|(n, _)| n.to_string()).collect();
+                  let mut d = Diagnostic::new(
+                    Phase::Compose,
+                    "compose-error",
+                    "unknown-key",
+                    format!("{input} has no key `{}` (keys: {})", &***k, keys.join(", ")),
+                  )
+                  .shard("Take")
+                  .param("key", Some(0));
+                  d.did_you_mean = closest(k, keys, 3);
+                  return Err(Error::Diagnostic(Box::new(d)));
+                }
+              },
             }
-            Err(_) => match table.rest {
-              // An open table may not have the key at runtime.
-              Some(rest) => Type::union([rest, Type::none()]),
-              None => {
-                let keys: Vec<String> = table.keys.iter().map(|(n, _)| n.to_string()).collect();
-                let mut d = Diagnostic::new(
-                  Phase::Compose,
-                  "compose-error",
-                  "unknown-key",
-                  format!("{input} has no key `{k}` (keys: {})", keys.join(", ")),
-                )
-                .shard("Take")
-                .param("key", Some(0));
-                d.did_you_mean = closest(&k, keys, 3);
-                return Err(Error::Diagnostic(Box::new(d)));
-              }
-            },
-          },
+          }
           // A key read at activation: any value type, or none if missing.
           _ => Type::union(
             table
@@ -325,12 +327,12 @@ impl LeafShard for Push {
       }
     }
     ctx.set(*b, Var::None);
-    let seq = match current {
-      Var::Seq(mut items) => {
-        Arc::make_mut(&mut items).push(input.clone());
-        Var::Seq(items)
+    let seq = match current.into_seq() {
+      Ok(mut items) => {
+        crate::var::seq_mut(&mut items).push(input.clone());
+        Var::from_seq(items)
       }
-      other => {
+      Err(other) => {
         ctx.set(*b, other);
         return Err(Error::Activation(
           "Push: the variable is not a sequence".into(),
@@ -427,7 +429,7 @@ impl LeafShard for SeqMake {
     for item in items {
       values.push(item.get(ctx));
     }
-    Ok(Flow::Next(Var::Seq(Arc::new(values))))
+    Ok(Flow::Next(Var::from_seq(Arc::new(values))))
   }
 }
 
@@ -497,7 +499,7 @@ impl LeafShard for TableMake {
         let mut keys = Vec::with_capacity(items.len());
         for item in items.iter() {
           match item {
-            Var::String(s) if !keys.contains(s) => keys.push(s.clone()),
+            Var::String(s) if !keys.contains(&**s) => keys.push(Arc::clone(s)),
             _ => return bad_keys(),
           }
         }
@@ -548,7 +550,9 @@ impl LeafShard for TableMake {
     }
     // SAFETY: `slots` has one entry per value, each written above.
     let slots = unsafe { slots.assume_init() };
-    Ok(Flow::Next(Var::Table(Table::with_slots(code.shape, slots))))
+    Ok(Flow::Next(Var::from_table(Table::with_slots(
+      code.shape, slots,
+    ))))
   }
 }
 
@@ -619,6 +623,6 @@ impl LeafShard for StringFormat {
     for item in items.iter() {
       out.push_str(&item.text());
     }
-    Ok(Flow::Next(Var::String(Arc::from(out))))
+    Ok(Flow::Next(Var::from_string(Arc::from(out))))
   }
 }

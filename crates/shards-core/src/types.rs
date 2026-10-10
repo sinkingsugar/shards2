@@ -29,6 +29,7 @@ pub enum TypeDesc {
   Float3,
   Float4,
   String,
+  Bytes,
   Seq(Type),
   Table(TableType),
   /// A union of at least two members, canonical (see [`Type::union`]).
@@ -76,7 +77,7 @@ struct Registry {
 /// The primitive descriptions, interned first and in this order, so their
 /// handles are constants: `Type::none()` and friends do no lookup (they
 /// are compared on activation hot paths, such as a call's input check).
-const PRIMITIVES: [TypeDesc; 10] = [
+const PRIMITIVES: [TypeDesc; 11] = [
   TypeDesc::None,
   TypeDesc::Never,
   TypeDesc::Any,
@@ -87,6 +88,7 @@ const PRIMITIVES: [TypeDesc; 10] = [
   TypeDesc::Float3,
   TypeDesc::Float4,
   TypeDesc::String,
+  TypeDesc::Bytes,
 ];
 
 impl Default for Registry {
@@ -276,6 +278,9 @@ impl Type {
   pub const fn string() -> Type {
     Type(9)
   }
+  pub const fn bytes() -> Type {
+    Type(10)
+  }
   pub fn seq(inner: Type) -> Type {
     Type::intern(TypeDesc::Seq(inner))
   }
@@ -401,6 +406,7 @@ pub fn structural_cmp(a: Type, b: Type) -> std::cmp::Ordering {
       TypeDesc::Union(_) => 10,
       TypeDesc::None => 11,
       TypeDesc::Never => 12,
+      TypeDesc::Bytes => 13,
     }
   }
   let (da, db) = (a.desc(), b.desc());
@@ -501,6 +507,7 @@ impl fmt::Display for Type {
       TypeDesc::Float3 => write!(f, "Float3"),
       TypeDesc::Float4 => write!(f, "Float4"),
       TypeDesc::String => write!(f, "String"),
+      TypeDesc::Bytes => write!(f, "Bytes"),
       TypeDesc::Seq(inner) => write!(f, "[{}]", Nested(*inner)),
       TypeDesc::Table(t) => {
         write!(f, "{{")?;
@@ -599,7 +606,8 @@ impl Admits {
       | (TypeDesc::Float2, Var::Float2(_))
       | (TypeDesc::Float3, Var::Float3(_))
       | (TypeDesc::Float4, Var::Float4(_))
-      | (TypeDesc::String, Var::String(_)) => true,
+      | (TypeDesc::String, Var::String(_))
+      | (TypeDesc::Bytes, Var::Bytes(_)) => true,
       (TypeDesc::Seq(e), Var::Seq(items)) => {
         let mut all = true;
         for v in items.iter() {

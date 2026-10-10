@@ -9,12 +9,13 @@
 
 use std::fmt;
 use std::hash::{Hash, Hasher};
+use std::mem::ManuallyDrop;
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 
 use crate::types::{Shape, Type};
 
-#[derive(Clone, Debug, Default)]
+#[derive(Default)]
 #[repr(u8, align(16))]
 pub enum Var {
   #[default]
@@ -25,10 +26,77 @@ pub enum Var {
   Float2(Float2),
   Float3(Float3),
   Float4(Float4),
-  String(Arc<str>),
-  Seq(Arc<Vec<Var>>),
+  /// The variants holding shared storage come last (`is_plain`), and
+  /// their storage is released by `Var`'s own drop (see `Drop for Var`):
+  /// build them with [`Var::from_string`], [`Var::seq`] and the like.
+  String(ManuallyDrop<Arc<str>>),
+  Seq(ManuallyDrop<Arc<Vec<Var>>>),
   /// String keys in sorted order (docs/values-and-types.md §2).
-  Table(Table),
+  Table(ManuallyDrop<Table>),
+  /// Raw bytes (a file read with `@read(... bytes: true)`, binary data).
+  Bytes(ManuallyDrop<Arc<[u8]>>),
+}
+
+/// 1.x's `destroyVar`: a plain value needs nothing, inline; anything else
+/// releases its storage out of line (`drop_storage`, its
+/// `destroyVarSlow`). Written by hand so a value's drop is this small
+/// wherever it happens (the VM, the engine, a sequence freeing its
+/// elements), however many variants hold storage: a derived drop grows
+/// with every one, and past the compiler's inlining budget every drop of a
+/// number became a call (adding `Bytes` made the VM suite 10 to 88 percent
+/// slower, 2026-10-09).
+impl Drop for Var {
+  #[inline(always)]
+  fn drop(&mut self) {
+    if !self.is_plain() {
+      drop_storage(self);
+    }
+  }
+}
+
+#[inline(never)]
+fn drop_storage(value: &mut Var) {
+  // SAFETY: the storage is dropped once, here, as the value goes away; the
+  // payload's own drop is a no-op (`ManuallyDrop`).
+  unsafe {
+    match value {
+      Var::String(s) => ManuallyDrop::drop(s),
+      Var::Seq(items) => ManuallyDrop::drop(items),
+      Var::Table(table) => ManuallyDrop::drop(table),
+      Var::Bytes(bytes) => ManuallyDrop::drop(bytes),
+      _ => {}
+    }
+  }
+}
+
+/// As derived, without the storage wrappers: `Int(1)`, `String("a")`.
+impl fmt::Debug for Var {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    match self {
+      Var::None => f.write_str("None"),
+      Var::Bool(v) => f.debug_tuple("Bool").field(v).finish(),
+      Var::Int(v) => f.debug_tuple("Int").field(v).finish(),
+      Var::Float(v) => f.debug_tuple("Float").field(v).finish(),
+      Var::Float2(v) => f.debug_tuple("Float2").field(v).finish(),
+      Var::Float3(v) => f.debug_tuple("Float3").field(v).finish(),
+      Var::Float4(v) => f.debug_tuple("Float4").field(v).finish(),
+      Var::String(v) => f.debug_tuple("String").field(&&***v).finish(),
+      Var::Seq(v) => f.debug_tuple("Seq").field(&***v).finish(),
+      Var::Table(v) => f.debug_tuple("Table").field(&**v).finish(),
+      Var::Bytes(v) => f.debug_tuple("Bytes").field(&&***v).finish(),
+    }
+  }
+}
+
+/// A plain value is copied bit for bit in place; anything else (a reference
+/// count) out of line, explicitly: a derived clone grows with every variant
+/// until the compiler stops inlining it, and then every copy of a number
+/// is a call (`copy`).
+impl Clone for Var {
+  #[inline(always)]
+  fn clone(&self) -> Var {
+    copy(self)
+  }
 }
 
 /// Two 32-bit floats. Derefs to the array; `Var::Float2(v)` reads `v[0]`.
@@ -88,7 +156,64 @@ vector_payload!(Float4, 4, Float4);
 
 impl Var {
   pub fn string(s: &str) -> Var {
-    Var::String(Arc::from(s))
+    Var::from_string(Arc::from(s))
+  }
+
+  pub fn bytes(b: &[u8]) -> Var {
+    Var::from_bytes(Arc::from(b))
+  }
+
+  pub fn from_string(s: Arc<str>) -> Var {
+    Var::String(ManuallyDrop::new(s))
+  }
+
+  pub fn from_bytes(b: Arc<[u8]>) -> Var {
+    Var::Bytes(ManuallyDrop::new(b))
+  }
+
+  /// A sequence of these values.
+  pub fn seq(items: Vec<Var>) -> Var {
+    Var::from_seq(Arc::new(items))
+  }
+
+  pub fn from_seq(items: Arc<Vec<Var>>) -> Var {
+    Var::Seq(ManuallyDrop::new(items))
+  }
+
+  pub fn from_table(table: Table) -> Var {
+    Var::Table(ManuallyDrop::new(table))
+  }
+
+  /// The sequence's storage, taken out of the value; the value itself when
+  /// it is not a sequence.
+  pub fn into_seq(self) -> std::result::Result<Arc<Vec<Var>>, Var> {
+    match self {
+      Var::Seq(_) => {
+        let mut this = ManuallyDrop::new(self);
+        let Var::Seq(items) = &mut *this else {
+          unreachable!()
+        };
+        // SAFETY: `this` is never dropped, so the storage is taken once.
+        Ok(unsafe { ManuallyDrop::take(items) })
+      }
+      other => Err(other),
+    }
+  }
+
+  /// The table, taken out of the value; the value itself when it is not a
+  /// table.
+  pub fn into_table(self) -> std::result::Result<Table, Var> {
+    match self {
+      Var::Table(_) => {
+        let mut this = ManuallyDrop::new(self);
+        let Var::Table(table) = &mut *this else {
+          unreachable!()
+        };
+        // SAFETY: `this` is never dropped, so the table is taken once.
+        Ok(unsafe { ManuallyDrop::take(table) })
+      }
+      other => Err(other),
+    }
   }
 
   pub fn float2(x: f32, y: f32) -> Var {
@@ -105,7 +230,7 @@ impl Var {
 
   /// A table from key/value pairs; a repeated key keeps the last value.
   pub fn table<K: Into<Arc<str>>>(entries: impl IntoIterator<Item = (K, Var)>) -> Var {
-    Var::Table(entries.into_iter().collect())
+    Var::from_table(entries.into_iter().collect())
   }
 
   /// The table, if this is one.
@@ -124,10 +249,35 @@ impl Var {
     }
   }
 
+  /// Whether the value holds no shared storage (the variants before
+  /// `String`): dropping it frees nothing, and a bitwise copy of it is a
+  /// whole, independent value. One compare of the tag.
+  #[inline(always)]
+  pub(crate) fn is_plain(&self) -> bool {
+    matches!(
+      self,
+      Var::None
+        | Var::Bool(_)
+        | Var::Int(_)
+        | Var::Float(_)
+        | Var::Float2(_)
+        | Var::Float3(_)
+        | Var::Float4(_)
+    )
+  }
+
   /// The text, if this is a string.
   pub fn as_str(&self) -> Option<&str> {
     match self {
       Var::String(s) => Some(s),
+      _ => None,
+    }
+  }
+
+  /// The bytes, if this is a byte string.
+  pub fn as_bytes(&self) -> Option<&[u8]> {
+    match self {
+      Var::Bytes(b) => Some(b),
       _ => None,
     }
   }
@@ -257,21 +407,23 @@ impl StructTables {
       return done.clone();
     }
     let converted = match v {
-      Var::Seq(items) => self.each(items).map(|items| Var::Seq(Arc::new(items))),
-      Var::Table(Table(TableRepr::Struct { shape, slots })) => self.each(slots).map(|slots| {
-        Var::Table(Table(TableRepr::Struct {
-          shape: *shape,
-          slots: slots.into(),
-        }))
-      }),
-      Var::Table(Table(TableRepr::Map(entries))) => {
-        let shape = Shape::new(entries.iter().map(|(k, _)| k.clone()));
-        let values: Vec<Var> = entries
-          .iter()
-          .map(|(_, v)| self.convert(v).unwrap_or_else(|| v.clone()))
-          .collect();
-        Some(Var::Table(Table::with_shape(shape, values)))
-      }
+      Var::Seq(items) => self.each(items).map(|items| Var::from_seq(Arc::new(items))),
+      Var::Table(table) => match &table.0 {
+        TableRepr::Struct { shape, slots } => self.each(slots).map(|slots| {
+          Var::from_table(Table::of(TableRepr::Struct {
+            shape: *shape,
+            slots: slots.into(),
+          }))
+        }),
+        TableRepr::Map(entries) => {
+          let shape = Shape::new(entries.iter().map(|(k, _)| k.clone()));
+          let values: Vec<Var> = entries
+            .iter()
+            .map(|(_, v)| self.convert(v).unwrap_or_else(|| v.clone()))
+            .collect();
+          Some(Var::from_table(Table::with_shape(shape, values)))
+        }
+      },
       _ => unreachable!("only sequences and tables have storage"),
     };
     if shared {
@@ -329,17 +481,19 @@ impl Types {
           Type::seq(Type::union(members))
         }
       }
-      Var::Table(Table(TableRepr::Struct { shape, slots })) => {
-        let slots: Vec<Type> = slots.iter().map(|v| self.of(v)).collect();
-        Type::fixed_table_of(*shape, slots)
-      }
-      Var::Table(Table(TableRepr::Map(entries))) => {
-        let entries: Vec<(Arc<str>, Type)> = entries
-          .iter()
-          .map(|(k, v)| (k.clone(), self.of(v)))
-          .collect();
-        Type::fixed_table(entries)
-      }
+      Var::Table(table) => match &table.0 {
+        TableRepr::Struct { shape, slots } => {
+          let slots: Vec<Type> = slots.iter().map(|v| self.of(v)).collect();
+          Type::fixed_table_of(*shape, slots)
+        }
+        TableRepr::Map(entries) => {
+          let entries: Vec<(Arc<str>, Type)> = entries
+            .iter()
+            .map(|(k, v)| (k.clone(), self.of(v)))
+            .collect();
+          Type::fixed_table(entries)
+        }
+      },
       _ => unreachable!("only sequences and tables have storage"),
     };
     if shared {
@@ -358,6 +512,7 @@ impl Types {
       Var::Float3(_) => Type::float3(),
       Var::Float4(_) => Type::float4(),
       Var::String(_) => Type::string(),
+      Var::Bytes(_) => Type::bytes(),
       Var::Seq(_) | Var::Table(_) => unreachable!("sequences and tables have storage"),
     }
   }
@@ -382,11 +537,46 @@ enum TableRepr {
 
 impl Default for Table {
   fn default() -> Table {
-    Table(TableRepr::Map(Arc::new(Vec::new())))
+    Table::of(TableRepr::Map(Arc::new(Vec::new())))
   }
 }
 
 impl Table {
+  fn of(repr: TableRepr) -> Table {
+    Table(repr)
+  }
+
+  /// Adds a reference to this table's storage, for a bitwise copy of it
+  /// (`clone_value`).
+  ///
+  /// # Safety
+  /// The reference belongs to a copy that is dropped once.
+  #[inline(always)]
+  unsafe fn retain(&self) {
+    // SAFETY: the caller's copy owns the new reference.
+    unsafe {
+      match &self.0 {
+        TableRepr::Struct { slots, .. } => Arc::increment_strong_count(Arc::as_ptr(slots)),
+        TableRepr::Map(entries) => Arc::increment_strong_count(Arc::as_ptr(entries)),
+      }
+    }
+  }
+
+  /// Drops this table's reference to its storage (`drop_value`).
+  ///
+  /// # Safety
+  /// The table must not be used or dropped afterwards.
+  #[inline(always)]
+  unsafe fn release(&self) {
+    // SAFETY: the caller gives up this table's reference.
+    unsafe {
+      match &self.0 {
+        TableRepr::Struct { slots, .. } => Arc::decrement_strong_count(Arc::as_ptr(slots)),
+        TableRepr::Map(entries) => Arc::decrement_strong_count(Arc::as_ptr(entries)),
+      }
+    }
+  }
+
   pub fn new() -> Table {
     Table::default()
   }
@@ -420,7 +610,7 @@ impl Table {
       "table of shape {shape} needs {} values",
       shape.len()
     );
-    Table(TableRepr::Struct { shape, slots })
+    Table::of(TableRepr::Struct { shape, slots })
   }
 
   /// A struct table of `shape` holding `slots`, in the shape's key order.
@@ -432,7 +622,7 @@ impl Table {
       "table of shape {shape} needs {} values",
       shape.len()
     );
-    Table(TableRepr::Struct { shape, slots })
+    Table::of(TableRepr::Struct { shape, slots })
   }
 
   /// The key shape of a struct table; `None` for a map table.
@@ -447,10 +637,14 @@ impl Table {
   /// nested tables are converted too. Same contents, same storage when it
   /// already is one.
   pub fn into_struct(self) -> Table {
-    let var = Var::Table(self);
-    match StructTables::default().convert(&var).unwrap_or(var) {
-      Var::Table(table) => table,
-      _ => unreachable!("a table converts to a table"),
+    let var = Var::from_table(self);
+    match StructTables::default()
+      .convert(&var)
+      .unwrap_or(var)
+      .into_table()
+    {
+      Ok(table) => table,
+      Err(_) => unreachable!("a table converts to a table"),
     }
   }
 
@@ -556,7 +750,7 @@ impl Table {
   }
 
   fn from_sorted(entries: Vec<(Arc<str>, Var)>) -> Table {
-    Table(TableRepr::Map(Arc::new(entries)))
+    Table::of(TableRepr::Map(Arc::new(entries)))
   }
 }
 
@@ -730,7 +924,7 @@ impl<K: Into<Arc<str>>> FromIterator<(K, Var)> for Table {
 
 impl From<Table> for Var {
   fn from(t: Table) -> Var {
-    Var::Table(t)
+    Var::from_table(t)
   }
 }
 
@@ -847,6 +1041,7 @@ fn write_text(v: &Var, out: &mut String) {
     Var::Float3(c) => vector(out, "@f3(", c.iter().map(|x| shortest(*x))),
     Var::Float4(c) => vector(out, "@f4(", c.iter().map(|x| shortest(*x))),
     Var::String(s) => out.push_str(s),
+    Var::Bytes(b) => bytes_text(b, out),
     Var::Seq(items) => {
       out.push('[');
       for (i, item) in items.iter().enumerate() {
@@ -901,7 +1096,12 @@ impl fmt::Display for Var {
       Var::Float2(v) => write!(f, "@f2({:?} {:?})", v[0], v[1]),
       Var::Float3(v) => write!(f, "@f3({:?} {:?} {:?})", v[0], v[1], v[2]),
       Var::Float4(v) => write!(f, "@f4({:?} {:?} {:?} {:?})", v[0], v[1], v[2], v[3]),
-      Var::String(s) => write!(f, "{s:?}"),
+      Var::String(s) => write!(f, "{:?}", &***s),
+      Var::Bytes(b) => {
+        let mut text = String::new();
+        bytes_text(b, &mut text);
+        f.write_str(&text)
+      }
       Var::Seq(items) => {
         write!(f, "[")?;
         for (i, item) in items.iter().enumerate() {
@@ -939,6 +1139,7 @@ impl PartialEq for Var {
       (Var::Float3(a), Var::Float3(b)) => same_bits(&a.0, &b.0),
       (Var::Float4(a), Var::Float4(b)) => same_bits(&a.0, &b.0),
       (Var::String(a), Var::String(b)) => a == b,
+      (Var::Bytes(a), Var::Bytes(b)) => a == b,
       (Var::Seq(a), Var::Seq(b)) => SameValues::default().seqs(a, b),
       (Var::Table(a), Var::Table(b)) => SameValues::default().tables(a, b),
       _ => false,
@@ -1065,19 +1266,241 @@ impl Hash for Var {
         }
       }
       Var::String(v) => v.hash(state),
+      Var::Bytes(v) => v.hash(state),
       Var::Seq(v) => v.hash(state),
       Var::Table(v) => v.hash(state),
     }
   }
 }
 
+/// Bytes as text: `@bytes(` and two lowercase hex digits per byte, `)`. No
+/// source literal reads it back yet (like the vector forms).
+fn bytes_text(bytes: &[u8], out: &mut String) {
+  use std::fmt::Write;
+  out.reserve(8 + 2 * bytes.len());
+  out.push_str("@bytes(");
+  for b in bytes {
+    let _ = write!(out, "{b:02x}");
+  }
+  out.push(')');
+}
+
+/// `*slot = value` for the VM and the engine's step, as 1.x's `destroyVar`:
+/// a plain old value is overwritten in place, anything else is dropped out
+/// of line. Hot code calls this instead of assigning, so its code never
+/// depends on whether the compiler inlines `Var`'s drop, which every
+/// variant owning storage makes larger (adding `Bytes` stopped it being
+/// inlined, and the whole VM suite got 10 to 88 percent slower,
+/// 2026-10-09).
+#[inline(always)]
+pub(crate) fn assign(slot: &mut Var, value: Var) {
+  if slot.is_plain() {
+    // SAFETY: the old value owns nothing, so not dropping it leaks nothing.
+    unsafe { std::ptr::write(slot, value) }
+  } else {
+    assign_slow(slot, value);
+  }
+}
+
+#[inline(never)]
+fn assign_slow(slot: &mut Var, value: Var) {
+  drop_value(std::mem::replace(slot, value));
+}
+
+/// The slow paths' drop and clone: matched here, with each storage's
+/// reference count handled in place, rather than through `Var`'s drop and
+/// clone (which are calls once not inlined). Their size is off the hot
+/// path.
+#[inline(always)]
+fn drop_value(value: Var) {
+  let value = ManuallyDrop::new(value);
+  // SAFETY: each storage loses the one reference this value held, once, and
+  // the value is not dropped again (`ManuallyDrop`). Through the storage's
+  // pointer rather than its `Arc`, so the value stays in registers: only
+  // the last reference's free needs memory (a cold call).
+  unsafe {
+    match &*value {
+      Var::String(s) => Arc::decrement_strong_count(Arc::as_ptr(&**s)),
+      Var::Seq(items) => Arc::decrement_strong_count(Arc::as_ptr(&**items)),
+      Var::Table(table) => table.release(),
+      Var::Bytes(bytes) => Arc::decrement_strong_count(Arc::as_ptr(&**bytes)),
+      _ => {}
+    }
+  }
+}
+
+#[inline(always)]
+fn clone_value(value: &Var) -> Var {
+  // SAFETY: the copy's bits are the value's, and its storage gains the
+  // reference the copy holds. One whole-value copy whatever the variant,
+  // rather than rebuilding each variant field by field.
+  unsafe {
+    match value {
+      Var::String(s) => Arc::increment_strong_count(Arc::as_ptr(&**s)),
+      Var::Seq(items) => Arc::increment_strong_count(Arc::as_ptr(&**items)),
+      Var::Table(table) => table.retain(),
+      Var::Bytes(bytes) => Arc::increment_strong_count(Arc::as_ptr(&**bytes)),
+      _ => {}
+    }
+    std::ptr::read(value)
+  }
+}
+
+/// Drops a value for hot code, as `assign` overwrites one: nothing to do
+/// for a plain value, anything else out of line.
+#[inline(always)]
+pub(crate) fn release(value: Var) {
+  if value.is_plain() {
+    std::mem::forget(value);
+  } else {
+    drop_slow(value);
+  }
+}
+
+#[inline(never)]
+fn drop_slow(value: Var) {
+  drop_value(value);
+}
+
+/// A copy of a value (`Clone for Var`), as `assign` is for overwriting: a
+/// plain value bit for bit in place, anything else cloned out of line.
+#[inline(always)]
+pub(crate) fn copy(value: &Var) -> Var {
+  if value.is_plain() {
+    // SAFETY: a plain value owns nothing; its bits are a whole value.
+    unsafe { std::ptr::read(value) }
+  } else {
+    copy_slow(value)
+  }
+}
+
+#[inline(never)]
+fn copy_slow(value: &Var) -> Var {
+  clone_value(value)
+}
+
+/// `*slot = value.clone()` for the VM's `Set`: plain values bit for bit,
+/// anything else with the references counted in place. Copying a string,
+/// sequence or table into a variable is the operation itself here, and a
+/// call per copy cost the heap assign cases about 2 ns each (2026-10-10).
+/// Explicit, so its size does not grow with `Var`'s glue.
+#[inline(always)]
+pub(crate) fn assign_copy(slot: &mut Var, value: &Var) {
+  if slot.is_plain() && value.is_plain() {
+    // SAFETY: neither owns anything; the bits are a whole value.
+    unsafe { std::ptr::write(slot, std::ptr::read(value)) }
+  } else {
+    let copied = clone_value(value);
+    drop_value(std::mem::replace(slot, copied));
+  }
+}
+
+/// A sequence's items to change in place, copied first when they are
+/// shared (copy on write, as `Arc::make_mut`). The copy is one allocation
+/// with room to grow, as the push that usually follows would make it, and
+/// copies the items bit for bit before counting the references the
+/// copies hold, rather than cloning one item at a time.
+#[inline(always)]
+pub(crate) fn seq_mut(items: &mut Arc<Vec<Var>>) -> &mut Vec<Var> {
+  if Arc::get_mut(items).is_none() {
+    unshare_seq(items);
+  }
+  // SAFETY: the items are not shared (checked, or just copied), and the
+  // `&mut` keeps them so; nothing holds a weak reference to a sequence.
+  unsafe { &mut *(Arc::as_ptr(items) as *mut Vec<Var>) }
+}
+
+#[inline(never)]
+fn unshare_seq(items: &mut Arc<Vec<Var>>) {
+  let len = items.len();
+  let mut copy: Vec<Var> = Vec::with_capacity((len * 2).max(4));
+  // SAFETY: the bits are copied into fresh room, then every item owning
+  // storage gets the reference its copy holds (which cannot fail or
+  // unwind: a reference count, a `Shape` copy) before the length covers
+  // them.
+  unsafe {
+    std::ptr::copy_nonoverlapping(items.as_ptr(), copy.as_mut_ptr(), len);
+    for item in items.iter() {
+      if !item.is_plain() {
+        std::mem::forget(clone_value(item));
+      }
+    }
+    copy.set_len(len);
+  }
+  *items = Arc::new(copy);
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
 
+  /// The storage counts `seq_mut` and `assign_copy` maintain by hand: every
+  /// heap kind, each representation of a table, plain values among them.
+  #[test]
+  fn hand_counted_copies_keep_storage_counts() {
+    let text: Arc<str> = Arc::from("text");
+    let inner = Arc::new(vec![Var::Int(1)]);
+    let bytes: Arc<[u8]> = Arc::from(&b"ab"[..]);
+    let map = Var::table([("k", Var::Int(1))]);
+    let shape = Shape::new(["a"]);
+    let fixed = Var::from_table(Table::with_shape(shape, [Var::Int(2)]));
+    let items = vec![
+      Var::from_string(text.clone()),
+      Var::Int(7),
+      Var::from_seq(inner.clone()),
+      Var::from_bytes(bytes.clone()),
+      map.clone(),
+      fixed.clone(),
+      Var::float4(1.0, 2.0, 3.0, 4.0),
+    ];
+    let mut shared = Arc::new(items);
+    let original = shared.clone();
+    seq_mut(&mut shared).push(Var::Int(8));
+    assert!(!Arc::ptr_eq(&shared, &original));
+    assert_eq!(original.len(), 7);
+    assert_eq!(shared.len(), 8);
+    assert_eq!(&shared[..7], &original[..]);
+    assert!(shared.capacity() >= 14);
+    assert_eq!(Arc::strong_count(&text), 3);
+    assert_eq!(Arc::strong_count(&inner), 3);
+    assert_eq!(Arc::strong_count(&bytes), 3);
+    // Unique now: changed in place, nothing copied.
+    let before = Arc::as_ptr(&shared);
+    seq_mut(&mut shared).push(Var::Int(9));
+    assert_eq!(Arc::as_ptr(&shared), before);
+
+    let mut slot = Var::Int(0);
+    for value in [
+      &original[0],
+      &original[2],
+      &original[3],
+      &original[4],
+      &original[5],
+      &Var::Int(3),
+    ] {
+      assign_copy(&mut slot, value);
+      assert_eq!(&slot, value);
+    }
+    assert_eq!(Arc::strong_count(&text), 3);
+    assert_eq!(Arc::strong_count(&inner), 3);
+    assert_eq!(Arc::strong_count(&bytes), 3);
+    assign_copy(&mut slot, &original[0]);
+    assert_eq!(Arc::strong_count(&text), 4);
+    // Over itself (the VM skips this, `Set` of a slot's own value) and onto
+    // a copy of the same storage.
+    let same = slot.clone();
+    assign_copy(&mut slot, &same);
+    assert_eq!(Arc::strong_count(&text), 5);
+    drop((slot, same, shared, original));
+    assert_eq!(Arc::strong_count(&text), 1);
+    assert_eq!(Arc::strong_count(&inner), 1);
+    assert_eq!(Arc::strong_count(&bytes), 1);
+    drop((map, fixed));
+  }
+
   #[test]
   fn text_prints_values_for_people() {
-    let seq = |v: Vec<Var>| Var::Seq(Arc::new(v));
+    let seq = |v: Vec<Var>| Var::from_seq(Arc::new(v));
     // Whole floats, strings and nesting as 1.x printed them; digits exact.
     assert_eq!(Var::Float(3.0).text(), "3");
     assert_eq!(Var::Float(0.1).text(), "0.1");

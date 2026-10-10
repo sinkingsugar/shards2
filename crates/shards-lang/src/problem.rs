@@ -114,7 +114,7 @@ impl Problem {
 /// Sets a diagnostic's file, line and column from a span.
 pub fn locate(d: &mut Diagnostic, source: &Source, span: Span) {
   let (line, column) = source.line_col(span.start);
-  d.file = Some(source.name.clone());
+  d.file = Some(source.file_name(span.start).to_string());
   d.line = Some(line);
   d.column = Some(column);
 }
@@ -135,7 +135,7 @@ pub fn render(d: &Diagnostic, source: &Source) -> String {
     d.code
   ));
   if let (Some(line), Some(column)) = (d.line, d.column)
-    && let Some(text) = source.text.lines().nth(line as usize - 1)
+    && let Some(text) = source.line(file, line)
   {
     let gutter = line.to_string();
     out.push_str(&format!("  {gutter} | {text}\n"));

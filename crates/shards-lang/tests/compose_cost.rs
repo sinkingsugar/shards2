@@ -163,7 +163,7 @@ fn walks_over_values_built_from_shared_copies_end() {
     let seqs = |leaf: i64| {
       let mut v = Var::table([("a", Var::Int(leaf))]);
       for _ in 0..64 {
-        v = Var::Seq(Arc::new(vec![v.clone(), v]));
+        v = Var::from_seq(Arc::new(vec![v.clone(), v]));
       }
       v
     };

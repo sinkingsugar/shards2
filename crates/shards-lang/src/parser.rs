@@ -3,7 +3,7 @@
 //! 1:9"), and never names grammar rules.
 
 use crate::ast::*;
-use crate::lexer::{Lexer, Tok, Token, lex};
+use crate::lexer::{Lexer, Tok, Token};
 use crate::problem::Problem;
 use crate::source::{Source, Span};
 
@@ -23,7 +23,13 @@ pub struct Parser<'a> {
 
 /// Parses a whole source. Problems include the lexer's.
 pub fn parse(source: &Source) -> (Program, Vec<Problem>) {
-  let (tokens, mut problems) = lex(&source.text);
+  parse_range(source, Span::new(0, source.text.len()))
+}
+
+/// Parses one file of a source (`Source::add`): its spans are offsets in
+/// the whole source.
+pub fn parse_range(source: &Source, range: Span) -> (Program, Vec<Problem>) {
+  let (tokens, mut problems) = Lexer::new(&source.text, range.start, range.end).tokenize();
   let mut parser = Parser::new(source, tokens);
   let statements = parser.statements(None);
   problems.append(&mut parser.problems);

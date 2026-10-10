@@ -318,6 +318,7 @@ fn basic_type(ty: Type) -> i32 {
     TypeDesc::Float2 => 11,
     TypeDesc::Float3 => 12,
     TypeDesc::Float4 => 13,
+    TypeDesc::Bytes => 51,
     TypeDesc::String => 52,
     TypeDesc::Seq(_) => 56,
     TypeDesc::Table(_) => 57,

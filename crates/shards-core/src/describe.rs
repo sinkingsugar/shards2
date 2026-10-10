@@ -44,6 +44,7 @@ pub enum TypeName {
   Float3,
   Float4,
   String,
+  Bytes,
   /// Any sequence.
   Seq,
   /// Any table.
@@ -62,6 +63,7 @@ impl TypeName {
       TypeName::Float3 => "Float3",
       TypeName::Float4 => "Float4",
       TypeName::String => "String",
+      TypeName::Bytes => "Bytes",
       TypeName::Seq => "Seq",
       TypeName::Table => "Table",
     }
@@ -79,6 +81,7 @@ impl TypeName {
       TypeName::Float2 => 11,
       TypeName::Float3 => 12,
       TypeName::Float4 => 13,
+      TypeName::Bytes => 51,
       TypeName::String => 52,
       TypeName::Seq => 56,
       TypeName::Table => 57,
@@ -96,6 +99,7 @@ impl TypeName {
       TypeName::Float3 => Type::float3(),
       TypeName::Float4 => Type::float4(),
       TypeName::String => Type::string(),
+      TypeName::Bytes => Type::bytes(),
       TypeName::Seq => Type::seq(Type::any()),
       TypeName::Table => Type::any_table(),
     }
@@ -120,6 +124,7 @@ impl TypeName {
       TypeDesc::Float3 => TypeName::Float3,
       TypeDesc::Float4 => TypeName::Float4,
       TypeDesc::String => TypeName::String,
+      TypeDesc::Bytes => TypeName::Bytes,
       _ if ty == Type::seq(Type::any()) => TypeName::Seq,
       _ if ty == Type::any_table() => TypeName::Table,
       TypeDesc::Seq(_) | TypeDesc::Table(_) | TypeDesc::Union(_) => return None,

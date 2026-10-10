@@ -262,6 +262,8 @@ pub fn text_size(value: &Var, cap: usize) -> Option<usize> {
       Var::Float3(_) => 8 + 3 * 33,
       Var::Float4(_) => 8 + 4 * 33,
       Var::String(s) => s.len(),
+      // `@bytes(`, two digits a byte, `)`.
+      Var::Bytes(b) => 8 + 2 * b.len(),
       Var::Seq(items) => 2 + items.len(),
       Var::Table(table) => {
         let mut keys = 2;
@@ -399,6 +401,8 @@ static SAFE: &[(&ShardType, u32)] = {
     (&values::TO_INT, 1),
     (&values::TO_FLOAT, 1),
     (&values::TO_HEX, 1),
+    (&values::BYTES_TO_STRING, 1),
+    (&values::STRING_TO_BYTES, 1),
     (&values::PARSE_INT, 1),
     (&values::PARSE_FLOAT, 1),
     (&values::EXPECT_INT, 1),
@@ -447,7 +451,7 @@ mod tests {
       Var::Float(f64::NAN),
       Var::float4(f32::MIN, f32::MIN_POSITIVE, -0.0, 1.0e-45),
       Var::string("héllo"),
-      Var::Seq(Arc::new(vec![Var::Int(1), Var::string("a b")])),
+      Var::from_seq(Arc::new(vec![Var::Int(1), Var::string("a b")])),
       Var::table([("key", Var::Float(0.1)), ("k", Var::None)]),
     ];
     for v in &values {
@@ -457,7 +461,7 @@ mod tests {
     // A widely shared value: 2^40 elements as text, measured in a few steps.
     let mut shared = Var::Int(1);
     for _ in 0..40 {
-      shared = Var::Seq(Arc::new(vec![shared.clone(), shared]));
+      shared = Var::from_seq(Arc::new(vec![shared.clone(), shared]));
     }
     assert_eq!(text_size(&shared, 1000), None);
   }
@@ -466,9 +470,9 @@ mod tests {
   fn walks_hold_one_iterator_per_level() {
     // Three levels of 1000 elements: a walk that queued the waiting
     // elements would hold thousands at once.
-    let row = Var::Seq(Arc::new(vec![Var::Int(1); 1000]));
+    let row = Var::from_seq(Arc::new(vec![Var::Int(1); 1000]));
     let table = Var::table([("row", row.clone())]);
-    let value = Var::Seq(Arc::new(vec![table; 1000]));
+    let value = Var::from_seq(Arc::new(vec![table; 1000]));
     let mut walk = Walk::new(&value);
     let (mut nodes, mut widest) = (0, 0);
     while let Some((v, level)) = walk.next() {

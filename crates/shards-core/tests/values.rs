@@ -51,7 +51,7 @@ fn var_is_32_bytes_with_float4_at_offset_16() {
 
 #[test]
 fn float2_rounds_to_f32_once_and_keeps_non_finite_components() {
-  let seq = |items: Vec<Var>| Var::Seq(Arc::new(items));
+  let seq = |items: Vec<Var>| Var::from_seq(Arc::new(items));
   let to_float2 = || shards_core::ShardDef::new(&shards_core::shards::values::TO_FLOAT2, vec![]);
   let mut mesh = Mesh::new();
   // Each component is rounded once, from the literal's f64.
@@ -118,7 +118,7 @@ fn table_representations_are_one_value() {
     assert_eq!(x, y);
     assert_eq!(hash_of(x), hash_of(y));
     assert_eq!(format!("{x:?}"), format!("{y:?}"));
-    let (vx, vy) = (Var::Table(x.clone()), Var::Table(y.clone()));
+    let (vx, vy) = (Var::from_table(x.clone()), Var::from_table(y.clone()));
     assert_eq!(vx.text(), vy.text());
     assert_eq!(vx.to_string(), "{a: 1 b: \"x\"}");
     assert_eq!(vx.type_of(), vy.type_of());
@@ -146,7 +146,7 @@ fn table_representations_are_one_value() {
   // Conversion reaches nested tables, inside sequences too.
   let nested = Var::table([(
     "inner",
-    Var::Seq(Arc::new(vec![Var::table([("k", Var::None)])])),
+    Var::from_seq(Arc::new(vec![Var::table([("k", Var::None)])])),
   )])
   .into_struct_tables();
   let inner = nested.as_table().unwrap().get("inner").unwrap();
@@ -158,7 +158,7 @@ fn table_representations_are_one_value() {
     nested.type_of(),
     Var::table([(
       "inner",
-      Var::Seq(Arc::new(vec![Var::table([("k", Var::None)])]))
+      Var::from_seq(Arc::new(vec![Var::table([("k", Var::None)])]))
     )])
     .type_of()
   );
@@ -252,12 +252,12 @@ fn fixed_types_admit_struct_values_by_shape_handle() {
   let ty = Type::fixed_table([("a", Type::int()), ("b", Type::string())]);
   let shape = ty.as_table().unwrap().shape.unwrap();
   assert_eq!(shape, Shape::new(["b", "a"]));
-  let right = Var::Table(Table::with_shape(shape, [Var::Int(1), Var::string("x")]));
-  let wrong_shape = Var::Table(Table::with_shape(
+  let right = Var::from_table(Table::with_shape(shape, [Var::Int(1), Var::string("x")]));
+  let wrong_shape = Var::from_table(Table::with_shape(
     Shape::new(["a", "c"]),
     [Var::Int(1), Var::string("x")],
   ));
-  let wrong_slot = Var::Table(Table::with_shape(
+  let wrong_slot = Var::from_table(Table::with_shape(
     shape,
     [Var::string("x"), Var::string("x")],
   ));
@@ -304,7 +304,7 @@ fn shapes_intern_once() {
     empty.as_table().unwrap().shape(),
     Some(Shape::new(Vec::<&str>::new()))
   );
-  assert_eq!(empty, Var::Table(Table::new()));
+  assert_eq!(empty, Var::from_table(Table::new()));
 }
 
 #[test]
@@ -319,7 +319,7 @@ fn values_built_from_one_shared_value_cost_what_they_hold() {
   let build = |leaf: i64| {
     let mut v = Var::table([("a", Var::Int(leaf))]);
     for _ in 0..levels {
-      v = Var::Seq(Arc::new(vec![v.clone(), v]));
+      v = Var::from_seq(Arc::new(vec![v.clone(), v]));
     }
     v
   };
@@ -342,7 +342,7 @@ fn values_built_from_one_shared_value_cost_what_they_hold() {
   assert!(
     !build(2)
       .type_of()
-      .admits(&Var::Seq(Arc::new(vec![v.clone(), Var::Int(0)])))
+      .admits(&Var::from_seq(Arc::new(vec![v.clone(), Var::Int(0)])))
   );
   // Separately built, so nothing is shared between the two sides.
   assert_eq!(v, w);

@@ -23,8 +23,11 @@ Almost every 1.x test script also uses tables. Lowering source onto a model with
 | `Float3` | `Float3([f32; 3])` | |
 | `Float4` | `Float4([f32; 4])` | 1.x layout: four 32-bit floats; the wrapper is 16-aligned. |
 | `Table` | `Table` (opaque) | String keys only, in key order. Hosts use its accessors ([embedding.md](embedding.md) §2). |
+| `Bytes` | `Arc<[u8]>` | Added 2026-10-09 with `@read("f" bytes: true)`: the type `Bytes` (1.x type code 51), equality and hashing by content, printed `@bytes(` and two hex digits a byte `)` (no source literal reads it back yet). `Count` gives its length, `ToHex` its hex, `BytesToString` reads it as UTF-8 (failing otherwise) and `StringToBytes` gives a string's bytes; all four are compose-time eligible. |
 
 The vector payloads are newtypes that deref to their array (`v[0]`, `v.iter()`, `v.map(..)`), with `From` in both directions and `Var::float2(x, y)` constructors; a vector result is computed in f64 and rounded to f32 once. `Var` is 32 bytes with a `u8` tag at offset 0 (RFC 2195 layout), aligned to 16 on every target (what `Float4` needs; alignment 32 was measured within noise in time and reversed for its size cost in every frame, instruction and step holding a value, see [`bench/values`](../bench/values/README.md)); `Float4` sits at offset 16. `Option<Var>` and `Operand` use the tag's spare values and stay 32 bytes; `Step` and `Flow` carry a value and a tag and are 48. `tests/values.rs` pins the size, alignment and offset.
+
+The variants holding storage (`String`, `Seq`, `Table`, `Bytes`) wrap it in `ManuallyDrop`, and `Var`'s hand-written `Drop` and `Clone` own it, as 1.x's `destroyVar`/`destroyVarSlow` do: a plain value is dropped or copied inline (one tag check), storage is released or counted out of line. A derived drop grows with every variant that owns storage; past LLVM's inlining budget every drop of a number became a call, and adding `Bytes` that way cost the VM suite 10 to 88 percent (2026-10-09). The VM's `Set` is the one place that counts references inline (`var::assign_copy`), since there the copy is the operation. Build these variants with `Var::string`, `Var::bytes`, `Var::seq` (a `Vec`), or `Var::from_string`, `from_bytes`, `from_seq` and `from_table` for storage already held; match them by reference (the payload derefs to its `Arc` or `Table`), and move storage out with `into_seq` and `into_table`. A shared sequence pushed to is copied once, bitwise with the references counted afterwards, with room to grow (`var::seq_mut`).
 
 ### 2.1 Table storage (golden path §7.3)
 
@@ -50,7 +53,7 @@ Decisions:
 - **Key order is sorted.** Both representations iterate in key order, giving deterministic iteration, printing, equality and hashing, so tables can appear in parameter literals, which are part of the compose cache key. 1.x insertion order is not preserved; scripts that depend on it are out of scope.
 - **Copy on write.** Like `Seq`, a table is shared behind an `Arc`; a shard that changes it copies only when shared.
 - **Identity equality** (bitwise floats) stays the rule for `PartialEq`/`Hash`, as for the other variants. The language's `Is` is a separate comparison.
-- Integer vectors, `Color`, `Bytes` and objects remain deferred until a ported script needs them.
+- Integer vectors, `Color` and objects remain deferred until a ported script needs them.
 
 ## 3. Types
 

@@ -8,6 +8,7 @@
 //! docs/surface-syntax-review.md has the syntax decisions.
 
 pub mod ast;
+pub mod files;
 pub mod lexer;
 pub mod lower;
 pub mod parser;
@@ -17,9 +18,10 @@ pub mod session;
 pub mod source;
 pub mod watch;
 
+pub use files::{Files, FsFiles, MemoryFiles};
 pub use parser::parse;
 pub use problem::{Problem, render};
-pub use program::{CheckReport, Program, RunReport, check};
+pub use program::{CheckReport, Program, RunReport, check, check_with};
 pub use session::{Finished, Session};
 pub use source::{Source, Span};
 

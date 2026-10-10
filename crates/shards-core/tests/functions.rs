@@ -915,7 +915,7 @@ fn a_failing_invocation_is_cleaned_and_maybe_catches_it() {
   mesh.add_function(
     FunctionDef::new("Fails", Type::int(), Type::int()).body(vec![
       probe("inner"),
-      konst(Var::Seq(std::sync::Arc::new(vec![]))),
+      konst(Var::from_seq(std::sync::Arc::new(vec![]))),
       take(val(Var::Int(3))),
       konst(Var::Int(1)),
     ]),
@@ -968,7 +968,7 @@ fn a_looped_wire_starts_each_iteration_with_fresh_locals() {
     true,
     vec![
       keep("kept", Var::Int(1)),
-      konst(Var::Seq(std::sync::Arc::new(vec![Var::Int(5); 64]))),
+      konst(Var::from_seq(std::sync::Arc::new(vec![Var::Int(5); 64]))),
       declare("scratch"),
       inc("kept"),
     ],
@@ -1180,12 +1180,13 @@ enum CallPath {
 fn a_completed_call_releases_its_input(path: CallPath) {
   use std::sync::Arc;
   let mut mesh = Mesh::new();
-  mesh.declare_var("acc", Var::Seq(Arc::new(vec![Var::Int(7)])), true);
-  let Some(Var::Seq(items)) = mesh.get_var("acc") else {
+  mesh.declare_var("acc", Var::from_seq(Arc::new(vec![Var::Int(7)])), true);
+  let acc = mesh.get_var("acc");
+  let Some(Var::Seq(items)) = &acc else {
     unreachable!()
   };
-  let allocation = Arc::as_ptr(&items);
-  drop(items);
+  let allocation = Arc::as_ptr(items);
+  drop(acc);
   let index = if matches!(path, CallPath::InlinedFailing) {
     5
   } else {
@@ -1221,12 +1222,13 @@ fn a_completed_call_releases_its_input(path: CallPath) {
   let id = mesh.spawn(&compiled, Var::None).unwrap();
   mesh.tick();
   assert_eq!(mesh.outcome(id), None, "{path:?}");
-  let Some(Var::Seq(items)) = mesh.get_var("acc") else {
+  let acc = mesh.get_var("acc");
+  let Some(Var::Seq(items)) = &acc else {
     unreachable!()
   };
-  assert_eq!(&**items, &[Var::Int(7), Var::Int(1)]);
+  assert_eq!(items.as_slice(), &[Var::Int(7), Var::Int(1)]);
   assert_eq!(
-    Arc::as_ptr(&items),
+    Arc::as_ptr(items),
     allocation,
     "{path:?}: the completed call still owned the input"
   );
@@ -1388,12 +1390,13 @@ fn a_flattened_composite_releases_its_saved_input() {
     ("repeat", repeat(vec![konst(Var::Int(0))], val(Var::Int(2)))),
   ] {
     let mut mesh = Mesh::new();
-    mesh.declare_var("acc", Var::Seq(Arc::new(vec![Var::Int(7)])), true);
-    let Some(Var::Seq(items)) = mesh.get_var("acc") else {
+    mesh.declare_var("acc", Var::from_seq(Arc::new(vec![Var::Int(7)])), true);
+    let acc = mesh.get_var("acc");
+    let Some(Var::Seq(items)) = &acc else {
       unreachable!()
     };
-    let allocation = Arc::as_ptr(&items);
-    drop(items);
+    let allocation = Arc::as_ptr(items);
+    drop(acc);
     mesh.add_wire(wire(
       "root",
       false,
@@ -1409,12 +1412,13 @@ fn a_flattened_composite_releases_its_saved_input() {
     let id = mesh.spawn(&compiled, Var::None).unwrap();
     mesh.tick();
     assert_eq!(mesh.outcome(id), None, "{name}");
-    let Some(Var::Seq(items)) = mesh.get_var("acc") else {
+    let acc = mesh.get_var("acc");
+    let Some(Var::Seq(items)) = &acc else {
       unreachable!()
     };
-    assert_eq!(&**items, &[Var::Int(7), Var::Int(1)], "{name}");
+    assert_eq!(items.as_slice(), &[Var::Int(7), Var::Int(1)], "{name}");
     assert_eq!(
-      Arc::as_ptr(&items),
+      Arc::as_ptr(items),
       allocation,
       "{name}: the saved input was kept"
     );
@@ -1652,7 +1656,7 @@ fn a_loop_over_a_block_is_inlined_with_a_straight_line_block() {
       vec![
         konst(Var::Int(0)),
         declare("total"),
-        konst(Var::Seq(std::sync::Arc::new(vec![
+        konst(Var::from_seq(std::sync::Arc::new(vec![
           Var::Int(1),
           Var::Int(2),
           Var::Int(3),

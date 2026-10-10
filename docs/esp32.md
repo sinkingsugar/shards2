@@ -18,6 +18,11 @@ the core are the device call-depth limit and the device-sized test fixtures.
 `shards-io`, the desktop CLI, networking, GPIO and other peripheral shards are
 outside this initial build target.
 
+A script that uses `@include` or `@read` on the device loads with
+`Program::load_with` (or `Session::set_files`) and a `MemoryFiles` holding the
+files it names, typically embedded with `include_bytes!`: `Program::load`
+reads the filesystem, which the firmware does not mount.
+
 ## Build
 
 Follow the [Rust on ESP toolchain guide](https://docs.espressif.com/projects/rust/book/getting-started/toolchain.html)

@@ -188,7 +188,8 @@ experiment and full VM rerun:
      aligned to 64 bytes (`-C llvm-args=-align-all-functions=6`) old and new
      land at the same address and measure the same, for 7.6 percent more code.
      That flag is not adopted (a build-profile decision, and hosts that build
-     `shards-core` as a dependency would not get it).
+     `shards-core` as a dependency would not get it); block alignment is
+     (lesson 7).
 
    Neither the loop-alignment flag nor advancing the index before dispatch
    changed the first two. The current code is the best measured, found by
@@ -205,6 +206,49 @@ experiment and full VM rerun:
    with `--check`), and A/B every
    edit to it on the whole VM suite, interleaved: the scheduler benchmarks do
    not exercise these paths.
+
+7. **Values own their storage by hand, and branch targets are aligned
+   (2026-10-10).** Adding `Var::Bytes` made the VM suite 10 to 88 percent
+   slower without touching the VM: `Var`'s derived drop had an LLVM inline
+   cost of 240 against a threshold of 250, and the new variant (360) made
+   every drop of a number a call (`-C remark=inline` shows the decisions).
+   `Var` now has a hand-written `Drop` and `Clone`, 1.x's
+   `destroyVar`/`destroyVarSlow`: one inline tag check, storage released or
+   counted out of line, so their cost no longer depends on how many variants
+   hold storage ([values-and-types.md](values-and-types.md) §2). What it
+   took to match or beat the derived glue, measured on the VM suite and the
+   scheduler benchmarks:
+   - **Count references in place where the copy is the operation.** `Set`
+     (`var::assign_copy`) copies and releases inline; a call per copy cost a
+     heap assign about 2 ns. Inlining the counts into every copy instead
+     made `make-table` 21 to 32 percent and `bench_depth` 8 to 14 percent
+     slower.
+   - **Copy whole values and count through the storage pointer**
+     (`Arc::increment_strong_count`/`decrement_strong_count`), not variant
+     by variant: rebuilding a value field by field, or matching on a `&mut`
+     to drop it, spilled it to the stack.
+   - **Copy shared sequences in bulk** (`var::seq_mut`): one bitwise copy,
+     then the references counted, into room to grow. `push-shared-seq` got
+     14 to 38 percent faster than with `Arc::make_mut`.
+   - **The engine keeps plain assignment**: wrapping its stores in the same
+     helpers cost `bench_depth` 5 to 10 percent.
+
+   **Placement decides as much as code.** On Apple M-series the same `run`
+   measured 14 or 20 ms on one case from where its blocks landed, and an
+   unrelated edit moved results 40 percent either way. Native builds now
+   align every branch target that is not a fallthrough to 16 bytes
+   (`.cargo/config.toml`, `-align-all-nofallthru-blocks=4`, about 5 percent
+   more code; wasm and the ESP32 targets do not match it): comparisons stop
+   depending on luck, and shipped speed with them. Hosts that build
+   `shards-core` from another workspace need the same flag to get the
+   measured speed. `hot-asm.py` ignores the padding. Compare builds only
+   with the same flags on both sides.
+
+   Left after this work (r13 against M9, both aligned): no VM suite case
+   more than 5 percent slower, most heap and constant cases 10 to 40
+   percent faster; the entity tick about 4 percent slower with
+   `stackless/engine.rs` unchanged, from register allocation in
+   `Engine::activate` (fewer instructions, 396 stack loads against 336).
 
 Keep the VM foundation and pursue collection ownership/access and short mixed
 flows next. The latest results and remaining misses belong in the

@@ -139,6 +139,27 @@ impl CompiledFlow {
     self.lowered.as_ref().map_or(&[], |l| &l.released_slots)
   }
 
+  /// Ends the code on `None`, releasing what it output: a function
+  /// declared `output: None` whose body ends on a value, like a block for
+  /// an `output: None` flow parameter. One instruction, standing for no
+  /// node; the flow's own jumps to its end now reach it.
+  pub(crate) fn discard_output(&mut self) {
+    self.code.push(crate::inline::Instruction::new(
+      Some(crate::inline::InlineOp(crate::inline::Op::ConstDrop(
+        crate::var::Var::None,
+      ))),
+      "",
+      crate::types::Type::none(),
+    ));
+    self.pc_nodes.push(NO_NODE);
+    if let Some(origins) = &mut self.origins {
+      let mut at = std::mem::take(&mut origins.at).into_vec();
+      at.push(NO_ORIGIN);
+      origins.at = at.into_boxed_slice();
+    }
+    self.output = crate::types::Type::none();
+  }
+
   /// The node instruction `pc` stands for; `nodes.len()` at the end of
   /// the code. A control instruction stands for none and is never asked.
   #[inline]

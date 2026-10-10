@@ -243,12 +243,36 @@ experiment and full VM rerun:
    `shards-core` from another workspace need the same flag to get the
    measured speed. `hot-asm.py` ignores the padding. Compare builds only
    with the same flags on both sides.
+   What a host gets without the flag, for the code at lesson 8 (same
+   source, ABBA, 2026-10-10): the VM suite's geometric mean against 1.x is
+   0.47 either way (65 of 75 cases faster than 1.x aligned, 63
+   unaligned); unaligned loses `take-seq` 8 to 9 percent and `assign-table`
+   at width 8 14 percent, everything else within 5 percent; the entity tick
+   and `bench_depth` are within 1 percent. A different build can land worse
+   unaligned: that is the variance the flag removes.
 
-   Left after this work (r13 against M9, both aligned): no VM suite case
-   more than 5 percent slower, most heap and constant cases 10 to 40
+   Left after this work (`34fddd7` against M9, both aligned): no VM suite
+   case more than 5 percent slower, most heap and constant cases 10 to 40
    percent faster; the entity tick about 4 percent slower with
    `stackless/engine.rs` unchanged, from register allocation in
    `Engine::activate` (fewer instructions, 396 stack loads against 336).
+
+8. **The runtime's step carries only runtime code (2026-10-10).** The
+   step was compiled twice (`steps::<LOCATE>`), and both copies carried the
+   compose-time meter's paths behind a branch: the metered `run`
+   variants, fuel and depth charges, the failure trace. Their registers
+   cost every runtime step, and each milestone added some (stack loads in
+   `Engine::activate`: 313 at M8, 336 at M9, 396 at `34fddd7`). The step is
+   now generic on metering as the VM is (`steps::<METERED, LOCATE>`, the
+   meter read only through a local that is `None` in the runtime's
+   instantiation), each instantiation is its own function, and the arms
+   that run once per call site (`prepare_and_enter`) or only after a
+   stateless call (`end_invocations`) are out of line. The runtime step is
+   1,358 instructions with 124 stack loads. Against M9 (aligned, ABBA): the
+   entity tick at parity (+0.6 percent; `34fddd7` was +4), `bench_depth` 2 to
+   5 percent faster, the VM suite unchanged against `34fddd7`. CI's
+   `hot-asm` job now fails on any change to these summaries, so growth is a
+   decision recorded in a commit, not a side effect.
 
 Keep the VM foundation and pursue collection ownership/access and short mixed
 flows next. The latest results and remaining misses belong in the

@@ -3227,6 +3227,143 @@ fn a_flow_parameter_passes_on_to_functions_and_native_shards() {
 }
 
 #[test]
+fn output_none_discards_a_functions_output() {
+  // As a block for an `output: None` parameter: a body that ends on a
+  // value outputs None, inlined or framed, the value released.
+  for (body, logged) in [
+    ("\"kept\" | Log(\"in\") [1 2]", true),
+    ("Pause \"kept\" | Log(\"in\") [1 2]", true),
+    ("\"kept\" 1 | Math.Add(1)", false),
+  ] {
+    let text = format!(
+      "@fn(Note input: None output: None params: {{}} {{ {body} }})\nNote | Log(\"out\")\nNote | IsNone"
+    );
+    let (report, lines) = shards_core::log::capture(|| run(&text, &no_defines()));
+    assert_eq!(completed(&report, "root"), Var::Bool(true), "{body}");
+    let expected: &[&str] = if logged {
+      &["in: kept", "out: none", "in: kept"]
+    } else {
+      &["out: none"]
+    };
+    assert_eq!(lines, expected, "{body}");
+  }
+  // A declared output other than None is still checked.
+  let d = check_errors("@fn(One input: None output: String params: {} { 1 })\nOne");
+  assert_eq!(d[0].code, "output-type-mismatch", "{d:?}");
+}
+
+#[test]
+fn count_runs_in_the_vm_for_every_kind() {
+  // Inlined into the caller (its call site reports `inlined`), and the
+  // same at compose time, where a string's length is metered.
+  let text = "@fn(Len input: Any output: Int params: {} { Count })
+[1 2 3] | Len | Log
+\"h\u{e9}llo\" | Len | Log
+{a: 1 b: 2} | Len | Log
+\"abc\" | StringToBytes | Len | Log
+#(\"h\u{e9}llo\" | Count) | Log";
+  // (The function on its own fails: its declared input is `Any`.)
+  let report = check(text);
+  let paths: Vec<&str> = report.wires[0]
+    .occurrences
+    .iter()
+    .filter_map(|o| o.occurrence.call.as_ref().map(|c| c.path))
+    .collect();
+  assert_eq!(paths, ["inlined"; 4]);
+  let (_, lines) = shards_core::log::capture(|| run(text, &no_defines()));
+  assert_eq!(lines, ["3", "5", "2", "3", "5"]);
+}
+
+#[test]
+fn check_reports_how_each_call_site_runs() {
+  let adds = vec!["Math.Add(1)"; 30].join(" ");
+  let text = format!(
+    "@fn(Each input: [Int] output: [Int] params: {{action: Flow(input: Int)}} {{
+  = xs 0 | Var(i) xs | Count = n
+  While({{i | IsLess(n)}} {{ xs | Take(i) | Run(action) Inc(i) }})
+  xs
+}})
+@fn(Noisy input: Int output: Int params: {{}} {{ Log(\"n\") }})
+@fn(Long input: Int output: Int params: {{}} {{ {adds} }})
+@fn(Counter stateful: true input: None output: Int params: {{}} {{ Keep(c 0) Inc(c) Get(c) }})
+0 | Var(total)
+[1 2 3] | Each(action: {{Math.Add(total) | Update(total)}})
+[1 2 3] | Each(action: {{Log | Math.Add(total) | Update(total)}})
+1 | Noisy
+1 | Long
+Counter"
+  );
+  let report = check(&text);
+  assert!(report.ok(), "{}", report.to_json());
+  let sites: Vec<(u32, String, Option<String>)> = report.wires[0]
+    .occurrences
+    .iter()
+    .filter_map(|o| {
+      let call = o.occurrence.call.as_ref()?;
+      Some((o.line?, call.path.to_string(), call.reason.clone()))
+    })
+    .collect();
+  let reason = |r: &str| Some(r.to_string());
+  assert_eq!(
+    sites,
+    [
+      (10, "inlined".into(), None),
+      (
+        11,
+        "framed".into(),
+        reason("the block for action: Log has no VM form")
+      ),
+      (12, "framed".into(), reason("its body: Log has no VM form")),
+      (
+        13,
+        "vm".into(),
+        reason("its body is 30 instructions, over the budget of 24")
+      ),
+      (
+        14,
+        "framed".into(),
+        reason("it is stateful (each site keeps an instance)")
+      ),
+    ]
+  );
+  let json = report.to_json();
+  assert!(json.contains("\"call\":{\"path\":\"inlined\"}"), "{json}");
+  assert!(
+    json.contains("\"call\":{\"path\":\"framed\",\"reason\":\"its body: Log has no VM form\"}"),
+    "{json}"
+  );
+}
+
+#[test]
+fn a_block_cannot_own_state() {
+  // A block starts fresh each time it runs: a stateful call inside it is
+  // refused, at a wire's top level and inside a stateful function, as a
+  // `Once` is. Before, the callee's state survived between runs of one
+  // `Run` and not between two.
+  const COUNTER: &str =
+    "@fn(Counter stateful: true input: None output: Int params: {} { Keep(n 0) Inc(n) Get(n) })\n";
+  let d = check_errors(&format!(
+    "{RETRY}{COUNTER}Retry(times: 2 action: {{Counter | Log}})"
+  ));
+  assert_eq!(d[0].code, "stateful-call-in-stateless", "{d:?}");
+  assert_eq!(d[0].shard.as_deref(), Some("Counter"));
+  assert!(d[0].message.contains("starts fresh"), "{}", d[0].message);
+  let d = check_errors(&format!(
+    "{RETRY}{COUNTER}@fn(Outer stateful: true input: None output: Int params: {{}} {{ Retry(times: 2 action: {{Counter | Log}}) Counter }})\nOuter"
+  ));
+  assert_eq!(d[0].code, "stateful-call-in-stateless", "{d:?}");
+  let d = check_errors(&format!(
+    "{RETRY}Retry(times: 2 action: {{Once({{1 | Log}})}})"
+  ));
+  assert_eq!(d[0].code, "once-in-stateless", "{d:?}");
+  // Outside the block, the caller owns the instance and keeps it.
+  let text = format!(
+    "{RETRY}{COUNTER}0 | Var(last)\nRepeat({{Counter | Update(last)}} times: 3)\nRetry(times: 2 action: {{last | Log}})\nlast"
+  );
+  assert_eq!(completed(&run(&text, &no_defines()), "root"), Var::Int(3));
+}
+
+#[test]
 fn return_and_stop_inside_blocks() {
   // A Return leaving the block is refused, located at the Return.
   let d = check_errors(&format!("{RETRY}Retry(times: 2 action: {{Return}})"));

@@ -1622,6 +1622,75 @@ fn a_straight_line_block_is_inlined_with_its_callee_and_any_other_is_framed() {
   }
 }
 
+/// An inlined `Run` that passes its input on restores it from a hidden
+/// slot and ends that slot's value at once: a collection the input shares
+/// is uniquely owned again for the rest of the callee, so pushing to it is
+/// not a copy.
+#[test]
+fn a_run_releases_the_input_it_restored() {
+  use std::sync::Arc;
+  let first = FunctionDef::new("First", Type::seq(Type::int()), Type::int())
+    .uses(&["acc"])
+    .mutates(&["acc"])
+    .flow_param(
+      "action",
+      shards_core::FlowType {
+        input: Type::seq(Type::int()),
+        output: None,
+      },
+    )
+    .body(vec![
+      run_action(),
+      take(val(Var::Int(0))),
+      declare("first"),
+      konst(Var::Int(1)),
+      ShardDef::new(&shards_core::shards::data::PUSH, vec![var("acc")]),
+      get("first"),
+    ]);
+  // Inlined with a straight-line block; framed with one that logs.
+  for (block, inlined) in [
+    (vec![take(val(Var::Int(0)))], true),
+    (vec![log(), take(val(Var::Int(0)))], false),
+  ] {
+    let mut mesh = Mesh::new();
+    mesh.declare_var("acc", Var::from_seq(Arc::new(vec![Var::Int(7)])), true);
+    let allocation = match &mesh.get_var("acc") {
+      Some(Var::Seq(items)) => Arc::as_ptr(items),
+      _ => unreachable!(),
+    };
+    mesh.add_function(first.clone());
+    mesh.add_wire(wire(
+      "root",
+      false,
+      vec![
+        get("acc"),
+        call("First", vec![named("action", ParamValue::Flow(block))]),
+        pause(),
+      ],
+    ));
+    let root = mesh.compile("root", Type::none()).unwrap();
+    // Inlined, the only fallback is the `Pause`.
+    let kinds = root.flow.instruction_kinds();
+    let fallbacks = kinds.iter().filter(|k| **k == "fallback").count();
+    assert_eq!(fallbacks == 1, inlined, "{kinds:?}");
+    let id = mesh.spawn(&root, Var::None).unwrap();
+    mesh.tick();
+    assert_eq!(mesh.outcome(id), None);
+    let acc = mesh.get_var("acc");
+    let Some(Var::Seq(items)) = &acc else {
+      unreachable!()
+    };
+    assert_eq!(items.as_slice(), &[Var::Int(7), Var::Int(1)]);
+    // A framed callee's frame holds its input (`input`, readable to the
+    // end of its body) until the call ends, so there the push copies.
+    assert_eq!(
+      Arc::as_ptr(items) == allocation,
+      inlined,
+      "inlined: {inlined}"
+    );
+  }
+}
+
 #[test]
 fn a_loop_over_a_block_is_inlined_with_a_straight_line_block() {
   // `Each`: runs the block on each of the first `n` elements.

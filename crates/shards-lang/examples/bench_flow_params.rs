@@ -2,25 +2,27 @@
 //! summing a sequence's elements into a caller variable with a `While`
 //! written in place, with a function running a block per element whose
 //! call is inlined with its block (`Each`, which takes the length as a
-//! parameter so its body is straight-line code), and with the same loop as
-//! a function that counts the sequence itself (`ForEach`: `Count` has no VM
-//! form, so the call keeps its frame and each element runs the block in a
-//! frame of its own).
+//! parameter), with the same loop as a function that counts the sequence
+//! itself (`ForEach`, inlined too since `Count` has a VM form), and with a
+//! function whose body has a shard without one (`Framed`: `ExpectSeq`), so
+//! the call keeps its frame and each element runs the block in a frame of
+//! its own.
 //!
 //! Usage: cargo run --release -p shards-lang --example bench_flow_params
 //!
-//! Prints nanoseconds per element, from the slope between two repetition
-//! counts (so loading and composing cancel out), the fastest of `RUNS`.
+//! Prints nanoseconds per element, timed by the script around its own
+//! loop (so loading and composing are not in it), the median and the
+//! fastest of `RUNS` samples. Samples of the three variants interleave, in
+//! a rotating order, and every sample checks the sum the loop produced.
 
 use std::collections::HashMap;
-use std::time::Instant;
 
 use shards_core::Catalog;
 use shards_lang::{Program, Source};
 
-const RUNS: usize = 5;
+const RUNS: usize = 9;
 const WIDTHS: [usize; 3] = [8, 64, 256];
-/// Elements per measurement at the smaller repetition count.
+/// Elements per sample.
 const ELEMENTS: usize = 400_000;
 
 const FUNCTIONS: &str = r#"@fn(Each input: [Int] output: [Int] params: {n: Int action: Flow(input: Int)} {
@@ -36,6 +38,13 @@ const FUNCTIONS: &str = r#"@fn(Each input: [Int] output: [Int] params: {n: Int a
   While({i | IsLess(n)} { xs | Take(i) | Run(action) Inc(i) })
   xs
 })
+@fn(Framed input: [Int] output: [Int] params: {action: Flow(input: Int)} {
+  ExpectSeq = xs
+  0 | Var(i)
+  xs | Count = n
+  While({i | IsLess(n)} { xs | Take(i) | Run(action) Inc(i) })
+  xs
+})
 "#;
 
 fn program(variant: &str, width: usize, repeat: usize) -> String {
@@ -45,59 +54,85 @@ fn program(variant: &str, width: usize, repeat: usize) -> String {
       format!("0 | Var(i) While({{i | IsLess({width})}} {{ xs | Take(i) | {block} Inc(i) }})")
     }
     "inlined" => format!("xs | Each(n: {width} action: {{{block}}})"),
-    "framed" => format!("xs | ForEach(action: {{{block}}})"),
+    "counted" => format!("xs | ForEach(action: {{{block}}})"),
+    "framed" => format!("xs | Framed(action: {{{block}}})"),
     _ => unreachable!(),
   };
   let items: Vec<String> = (0..width).map(|i| i.to_string()).collect();
   format!(
-    "{FUNCTIONS}[{}] = xs\n0 | Var(total)\nRepeat({{ {body} }} times: {repeat})\ntotal",
+    "{FUNCTIONS}[{}] = xs\n0 | Var(total)\nTime.Now = t0\nRepeat({{ {body} }} times: {repeat})\nTime.Now | Math.Subtract(t0) | Log(\"SECONDS\")\ntotal | Log(\"TOTAL\")",
     items.join(" ")
   )
 }
 
-fn seconds(text: &str, catalog: &Catalog) -> f64 {
-  let program = match Program::load(Source::new("bench.shs", text), catalog, &HashMap::new()) {
-    Ok(p) => p,
-    Err((_, d)) => panic!("load failed: {d:?}"),
-  };
-  let start = Instant::now();
-  let report = program
-    .run()
-    .unwrap_or_else(|d| panic!("run failed: {d:?}"));
-  let elapsed = start.elapsed().as_secs_f64();
+/// One run: the loop's seconds, after checking its sum.
+fn sample(program: &Program, expected: i64) -> f64 {
+  let (report, lines) = shards_core::log::capture(|| {
+    program
+      .run()
+      .unwrap_or_else(|d| panic!("run failed: {d:?}"))
+  });
   assert!(report.succeeded());
-  elapsed
+  let value = |label: &str| {
+    lines
+      .iter()
+      .find_map(|line| line.strip_prefix(&format!("{label}: ")))
+      .unwrap_or_else(|| panic!("no {label} in {lines:?}"))
+      .to_string()
+  };
+  assert_eq!(value("TOTAL"), expected.to_string(), "wrong sum");
+  value("SECONDS").parse().expect("seconds")
 }
 
 fn main() {
   let catalog = Catalog::new(&[shards_core::shards::CATALOG]).unwrap();
+  let variants = ["native", "inlined", "counted", "framed"];
   println!(
-    "{:>6} {:>12} {:>12} {:>12} {:>9} {:>9}",
-    "width", "native ns", "inlined ns", "framed ns", "inlined/", "framed/"
+    "{:>6} {:>10} {:>10} {:>10} {:>10} {:>9} {:>9} {:>9}   (medians; min per variant)",
+    "width", "native ns", "inlined", "counted", "framed", "inlined/", "counted/", "framed/"
   );
   for width in WIDTHS {
     let repeat = ELEMENTS / width;
-    let mut ns = Vec::new();
-    for variant in ["native", "inlined", "framed"] {
-      let (short, long) = (
-        program(variant, width, repeat),
-        program(variant, width, 2 * repeat),
-      );
-      let best = (0..RUNS)
-        .map(|_| {
-          let (a, b) = (seconds(&short, &catalog), seconds(&long, &catalog));
-          (b - a) * 1e9 / (repeat * width) as f64
-        })
-        .fold(f64::INFINITY, f64::min);
-      ns.push(best);
+    let expected = (repeat * width * (width - 1) / 2) as i64;
+    let programs: Vec<Program> = variants
+      .iter()
+      .map(|v| {
+        Program::load(
+          Source::new("bench.shs", program(v, width, repeat)),
+          &catalog,
+          &HashMap::new(),
+        )
+        .unwrap_or_else(|(_, d)| panic!("load failed: {d:?}"))
+      })
+      .collect();
+    let mut samples = vec![Vec::new(); variants.len()];
+    for run in 0..RUNS {
+      for k in 0..variants.len() {
+        let v = (run + k) % variants.len();
+        let seconds = sample(&programs[v], expected);
+        samples[v].push(seconds * 1e9 / (repeat * width) as f64);
+      }
     }
+    let stat = |v: usize| {
+      let mut s = samples[v].clone();
+      s.sort_by(f64::total_cmp);
+      (s[s.len() / 2], s[0])
+    };
+    let stats: Vec<(f64, f64)> = (0..variants.len()).map(stat).collect();
+    let median = |v: usize| stats[v].0;
     println!(
-      "{width:>6} {:>12.2} {:>12.2} {:>12.2} {:>9.2} {:>9.2}",
-      ns[0],
-      ns[1],
-      ns[2],
-      ns[1] / ns[0],
-      ns[2] / ns[0]
+      "{width:>6} {:>10.2} {:>10.2} {:>10.2} {:>10.2} {:>9.2} {:>9.2} {:>9.2}   min {:.2} {:.2} {:.2} {:.2}",
+      median(0),
+      median(1),
+      median(2),
+      median(3),
+      median(1) / median(0),
+      median(2) / median(0),
+      median(3) / median(0),
+      stats[0].1,
+      stats[1].1,
+      stats[2].1,
+      stats[3].1
     );
   }
 }

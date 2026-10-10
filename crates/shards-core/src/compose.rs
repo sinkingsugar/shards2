@@ -22,7 +22,7 @@ use crate::function::{
 use crate::reload::{FunctionKey, FunctionRegistry};
 use crate::shard::{CompiledNode, Composed, ParamValue, ShardDef, ShardType};
 use crate::shards::Operand;
-use crate::signature::{Analysis, Effects, Lifetime, Occurrence};
+use crate::signature::{Analysis, CallSite, Effects, Lifetime, Occurrence};
 use crate::stackless::Control;
 use crate::types::Type;
 use crate::var::Var;
@@ -153,6 +153,130 @@ const INLINE_BUDGET: usize = 24;
 /// peaked 90 KiB higher unbounded, past the C3's and the classic ESP32's
 /// heap).
 const INLINE_DEPTH: u8 = if cfg!(target_os = "espidf") { 2 } else { 8 };
+
+/// An inlined call: the callee's body, and the site's blocks with their
+/// parameters' names.
+type InlinePlan<'a> = (&'a Arc<CompiledFunction>, Vec<(&'a CompiledFlow, &'a str)>);
+
+/// Whether a call site is inlined (`ComposeCtx::flatten`): with the
+/// callee's body and the site's blocks when it is, why not otherwise. One
+/// decision, so what `check --json` reports for a site (`call_site`) is
+/// what compose does.
+fn inline_plan(c: &CallCompiled) -> std::result::Result<InlinePlan<'_>, String> {
+  let CallTarget::Direct(body) = &c.target else {
+    return Err("it is recursive".into());
+  };
+  if c.stateful() {
+    return Err("it is stateful (each site keeps an instance)".into());
+  }
+  // The blocks written at the site, with their parameters' names, when
+  // they can stand in for the callee's `Run`s: straight-line code, and a
+  // block run more than once copied within the budget.
+  let mut blocks = Vec::with_capacity(c.blocks.len());
+  let names = body.def.params.iter().filter(|p| p.is_flow());
+  for (block, param) in c.blocks.iter().zip(names) {
+    let BlockArg::Flow(flow) = block else {
+      return Err(format!(
+        "the block for {} is passed on from the caller's own parameter",
+        param.name
+      ));
+    };
+    if let Some(why) = not_vm_code(flow) {
+      return Err(format!("the block for {}: {why}", param.name));
+    }
+    blocks.push((flow, param.name.as_str()));
+  }
+  // A block is the site's own code; a second `Run` of it copies it.
+  let mut runs = vec![0usize; blocks.len()];
+  for node in &body.flow.pc_nodes {
+    if let Some(Control::Run(run)) = body
+      .flow
+      .nodes
+      .get(*node as usize)
+      .and_then(|n| n.control())
+    {
+      runs[run.param as usize] += 1;
+    }
+  }
+  let copies: usize = blocks
+    .iter()
+    .zip(&runs)
+    .map(|((block, _), runs)| block.code.len() * runs.saturating_sub(1))
+    .sum();
+  let leaf = if blocks.is_empty() {
+    body.vm_leaf
+  } else {
+    body.block_leaf
+  };
+  if !leaf {
+    let why = not_vm_code(&body.flow).unwrap_or_else(|| "it cannot run in the VM".into());
+    return Err(format!("its body: {why}"));
+  }
+  if copies > INLINE_BUDGET {
+    return Err(format!(
+      "its blocks run more than once, {copies} instructions copied, over the budget of {INLINE_BUDGET}"
+    ));
+  }
+  if !body.keeps.is_empty() {
+    return Err("it keeps state".into());
+  }
+  if !body.lazy_refs.is_empty() {
+    return Err("it calls a recursive function".into());
+  }
+  if body.flow.code.len() > INLINE_BUDGET {
+    return Err(format!(
+      "its body is {} instructions, over the budget of {INLINE_BUDGET}",
+      body.flow.code.len()
+    ));
+  }
+  if body.inline_depth >= INLINE_DEPTH {
+    return Err(format!(
+      "it inlines calls {INLINE_DEPTH} levels deep already"
+    ));
+  }
+  Ok((body, blocks))
+}
+
+/// Why a flow is not straight-line VM code: its first shard without a VM
+/// form (a `Run` is the block it runs), or a call that is not inlined.
+fn not_vm_code(flow: &CompiledFlow) -> Option<String> {
+  flow
+    .code
+    .iter()
+    .zip(&flow.pc_nodes)
+    .find_map(|(i, node)| match i.op {
+      crate::inline::Op::Fallback => {
+        let node = &flow.nodes[*node as usize];
+        match node.control() {
+          Some(Control::Run(_)) => None,
+          Some(Control::Call(_)) => Some("it calls a function that is not inlined".into()),
+          _ => Some(format!("{} has no VM form", node.name())),
+        }
+      }
+      crate::inline::Op::VmCall => Some("it calls a function that is not inlined".into()),
+      _ => None,
+    })
+    .or_else(|| {
+      (!crate::inline::straight_line(&flow.code)).then(|| "it is not straight-line code".into())
+    })
+}
+
+/// How a call site runs, for tooling (`Occurrence::call`).
+fn call_site(c: &CallCompiled) -> CallSite {
+  match inline_plan(c) {
+    Ok(_) => CallSite {
+      path: "inlined",
+      reason: None,
+    },
+    Err(reason) => CallSite {
+      path: match &c.target {
+        CallTarget::Direct(body) if !c.stateful() && body.vm_only => "vm",
+        _ => "framed",
+      },
+      reason: Some(reason),
+    },
+  }
+}
 
 /// A flow's code under construction: nodes, instructions and the node each
 /// instruction stands for (`CompiledFlow::pc_nodes`).
@@ -337,7 +461,12 @@ impl Flat {
           .extend(block.released_slots().iter().copied());
         self.append_rebased(block, 0, &[OriginStep::Param(param.to_string().into())]);
         if let Some(saved) = saved {
+          // Restored, and ended at once (the accumulator takes the value it
+          // reads): held until the callee ended, it kept a collection the
+          // input shares from being uniquely owned, so the callee's next
+          // push to it copied.
           self.op(crate::inline::Op::get(saved), Type::any());
+          self.op(crate::inline::Op::Clear(saved), Type::any());
         } else if run.discards_output
           && !flow
             .code
@@ -372,8 +501,12 @@ impl Flat {
       let target = self.code[at].jump_target().expect("a jump");
       self.code[at].retarget(pcs[target as usize]);
     }
-    if let Some(saved) = saved {
-      self.release(saved, Type::any());
+    // Each restore ends the slot's value; a failure inside a block ends it
+    // with the flow.
+    if let Some(Binding::Local(index)) = saved {
+      self
+        .released_slots
+        .push(u32::try_from(index).expect("slot fits u32"));
     }
     self.inlined.push((start, self.node_base() - start));
   }
@@ -928,59 +1061,9 @@ impl ComposeCtx<'_> {
         flat.release(saved, input);
       }
       Control::Call(c) => {
-        let CallTarget::Direct(body) = &c.target else {
+        let Ok((body, blocks)) = inline_plan(c) else {
           return false;
         };
-        // The blocks written at the site, with their parameters' names,
-        // when they can stand in for the callee's `Run`s: straight-line
-        // code, and a block run more than once copied within the budget.
-        let mut blocks = Vec::with_capacity(c.blocks.len());
-        let names = body.def.params.iter().filter(|p| p.is_flow());
-        for (block, param) in c.blocks.iter().zip(names) {
-          match block {
-            BlockArg::Flow(flow)
-              if crate::inline::straight_line(&flow.code)
-                && !flow
-                  .code
-                  .iter()
-                  .any(|i| matches!(i.op, crate::inline::Op::VmCall)) =>
-            {
-              blocks.push((flow, param.name.as_str()));
-            }
-            _ => return false,
-          }
-        }
-        // A block is the site's own code; a second `Run` of it copies it.
-        let mut runs = vec![0usize; blocks.len()];
-        for node in &body.flow.pc_nodes {
-          if let Some(Control::Run(run)) = body
-            .flow
-            .nodes
-            .get(*node as usize)
-            .and_then(|n| n.control())
-          {
-            runs[run.param as usize] += 1;
-          }
-        }
-        let copies: usize = blocks
-          .iter()
-          .zip(&runs)
-          .map(|((block, _), runs)| block.code.len() * runs.saturating_sub(1))
-          .sum();
-        let leaf = if blocks.is_empty() {
-          body.vm_leaf
-        } else {
-          body.block_leaf && copies <= INLINE_BUDGET
-        };
-        if c.stateful()
-          || !leaf
-          || !body.keeps.is_empty()
-          || !body.lazy_refs.is_empty()
-          || body.flow.code.len() > INLINE_BUDGET
-          || body.inline_depth >= INLINE_DEPTH
-        {
-          return false;
-        }
         self.inline_depth = self.inline_depth.max(body.inline_depth + 1);
         let fdef = body.def.clone();
         let base = self.declare_hidden(Type::any());
@@ -1372,6 +1455,10 @@ impl ComposeCtx<'_> {
           }));
         }
       };
+      let call = match composed.compiled.control() {
+        Some(Control::Call(c)) => Some(call_site(c)),
+        _ => None,
+      };
       node_analysis.occurrences.insert(
         0,
         Occurrence {
@@ -1380,6 +1467,7 @@ impl ComposeCtx<'_> {
           output: composed.output,
           effects: node_analysis.effects,
           lifetime: node_analysis.lifetime,
+          call,
         },
       );
       analysis.include(
@@ -1516,6 +1604,18 @@ impl ComposeCtx<'_> {
       d.did_you_mean = crate::diagnostic::closest(name, known, 3);
       return Err(Error::Diagnostic(Box::new(d)));
     };
+    // A block starts fresh each time it runs (metaprogramming.md §3), so it
+    // cannot own the instance a stateful callee keeps between calls, as it
+    // cannot hold a `Once`.
+    if fdef.stateful && self.in_flow_argument() {
+      return Err(fn_error(
+        name,
+        "stateful-call-in-stateless",
+        format!(
+          "{name} is stateful, so each call site owns an instance of it, but a block passed to a call starts fresh each time it runs and cannot own one: call {name} outside the block, or make it stateless"
+        ),
+      ));
+    }
     if fdef.stateful
       && let Owner::Function(caller) = &self.owner
       && !caller.stateful
@@ -2377,8 +2477,13 @@ impl ComposeCache {
       let input_slot = slot_of(ctx.declare_local("input", input, false));
       ctx
         .compose_flow_unscoped(&def.body, input)
-        .and_then(|flow| {
+        .and_then(|mut flow| {
           if def.output.accepts(flow.output) {
+            Ok(flow)
+          } else if def.output == Type::none() {
+            // `output: None` discards the body's output, as it does a
+            // block's (the authoring eval's most common compose error).
+            flow.discard_output();
             Ok(flow)
           } else {
             Err(typed_error(

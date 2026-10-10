@@ -59,6 +59,9 @@ pub(crate) enum Op {
   Compare(Cmp, Operand),
   /// The language's equality (`Is`, or `IsNot` when negated).
   Equal(bool, Operand),
+  /// `Count`, through one out-of-line call. A function looping over its
+  /// input counts it, and without this its call could not be inlined.
+  Count,
   /// Passes the value through (`Keep`: its slot was set at frame creation).
   Pass,
   /// A call to a straight-line body from a stateless, non-recursive site:
@@ -320,6 +323,7 @@ impl Op {
       Op::Arith(..) => "arith",
       Op::Compare(..) => "compare",
       Op::Equal(..) => "equal",
+      Op::Count => "count",
       Op::Pass => "pass",
       Op::VmCall => "vm-call",
       Op::Jump(_) => "jump",
@@ -465,6 +469,7 @@ impl Instruction {
       | Op::AddFloatConst(_)
       | Op::AddFloat4Const(_)
       | Op::Pass
+      | Op::Count
       | Op::VmCall
       | Op::Jump(_)
       | Op::JumpIfNot(_)
@@ -552,6 +557,7 @@ pub(crate) fn lower_scratch_releases(code: &mut [Instruction]) {
       | Op::Arith(..)
       | Op::Compare(..)
       | Op::Equal(..)
+      | Op::Count
       | Op::Pass
       | Op::Jump(_)
       | Op::JumpIfNot(_)
@@ -620,10 +626,31 @@ pub(crate) fn leaf<L: LeafShard>(c: &L::Compiled, output: Type) -> Option<Inline
     Op::Equal(false, c.downcast_ref::<Operand>()?.clone())
   } else if id == TypeId::of::<values::Equality<values::IsNotSpec>>() {
     Op::Equal(true, c.downcast_ref::<Operand>()?.clone())
+  } else if id == TypeId::of::<values::Pure<values::CountOp>>() {
+    Op::Count
   } else {
     return None;
   };
   Some(InlineOp(op))
+}
+
+/// `Op::Count`, charged to the meter in a compose-time evaluation as the
+/// shard is. Out of line: in place, even only for sequences, its arm moved
+/// `run`'s blocks and cost the constructor cases 5 to 14 percent
+/// (2026-10-10); it runs once per loop, not per element.
+#[inline(never)]
+fn count(value: &Var, meter: Option<&crate::compose_time::Meter>) -> Result<i64> {
+  use values::PureOp;
+  if let Var::Seq(items) = value {
+    return Ok(items.len() as i64);
+  }
+  if let Some(meter) = meter {
+    values::CountOp::meter(value, meter)?;
+  }
+  match values::CountOp::apply(value)? {
+    Var::Int(n) => Ok(n),
+    _ => unreachable!("Count outputs an Int"),
+  }
 }
 
 #[cold]
@@ -980,6 +1007,10 @@ pub(crate) fn run<C: VmCalls>(
             meter.traverse(rhs)?;
           }
           numeric.write(Var::Bool(values::values_equal(&*value, rhs) != *negate));
+          value = numeric.as_ptr();
+        }
+        Op::Count => {
+          numeric.write(Var::Int(count(&*value, calls.meter())?));
           value = numeric.as_ptr();
         }
       }

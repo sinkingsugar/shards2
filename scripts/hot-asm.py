@@ -38,6 +38,9 @@ FUNCTIONS = [
     ("construct", r"inline9construct"),
     ("vm_call_op (runtime)", r"inline10vm_call_opNtNtNtB4_9stackless6engine11EngineCallsEB4_$"),
     ("Engine::activate", r"6Engine8activate"),
+    # The runtime's step loop (`steps::<false, false>`: not metered, not
+    # locating); the evaluation's two instantiations are separate.
+    ("engine steps (runtime)", r"6Engine5stepsKb0_K"),
 ]
 RUN = "run (runtime)"
 

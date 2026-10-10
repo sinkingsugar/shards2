@@ -222,6 +222,20 @@ pub struct Occurrence {
   pub output: Type,
   pub effects: Effects,
   pub lifetime: Lifetime,
+  /// For a function call, how it runs: a call site that is not inlined
+  /// costs a frame, and its blocks may too (`check --json`).
+  pub call: Option<CallSite>,
+}
+
+/// How a call site runs: `inlined` (the callee's code, and its blocks, in
+/// place), `vm` (the callee's straight-line body in the VM, on a frame
+/// the site keeps) or `framed` (the engine enters a frame for the callee,
+/// and runs each block in one of its own unless it is leaf code), with why
+/// it is not inlined.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CallSite {
+  pub path: &'static str,
+  pub reason: Option<String>,
 }
 
 /// A persistent occurrence tree: parents retain a child's relative paths once,
@@ -452,6 +466,7 @@ mod tests {
         output: Type::any(),
         effects: Effects::NONE,
         lifetime: Lifetime::Stateless,
+        call: None,
       },
     );
     let mut chain = leaf.clone();

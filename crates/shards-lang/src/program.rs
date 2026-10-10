@@ -83,6 +83,17 @@ impl WireAnalysis {
           format!("\"effects\":{}", o.occurrence.effects.to_json()),
           format!("\"lifetime\":{}", json_str(o.occurrence.lifetime.name())),
         ];
+        if let Some(call) = &o.occurrence.call {
+          let reason = call
+            .reason
+            .as_deref()
+            .map(|r| format!(",\"reason\":{}", json_str(r)))
+            .unwrap_or_default();
+          fields.push(format!(
+            "\"call\":{{\"path\":{}{reason}}}",
+            json_str(call.path)
+          ));
+        }
         if let Some(span) = o.span {
           fields.push(format!(
             "\"span\":{{\"start\":{},\"end\":{}}}",

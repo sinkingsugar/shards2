@@ -58,6 +58,18 @@ jobs:
           node scripts/run-wasi.mjs "$(ls -t target/wasm32-wasip1/debug/deps/values-*.wasm | head -1)"
           node scripts/run-wasi.mjs "$(ls -t target/wasm32-wasip1/debug/deps/lang-*.wasm | head -1)"
 
+  hot-asm:
+    # The interpreter loop and the engine step, summarized from the release
+    # disassembly (instructions, spills, calls): any change to them fails
+    # here until the baseline is refreshed with the reason in the commit
+    # (docs/runtime-performance-overview.md, lessons 6 and 7).
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show
+      - uses: Swatinem/rust-cache@v2
+      - run: python3 scripts/hot-asm.py --check bench/hot-asm/aarch64-apple-darwin.txt
+
   bench:
     # Compose costs gated against bench/compose/baseline.txt (allocations,
     # and time relative to flat twins); the runtime benchmarks are printed

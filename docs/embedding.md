@@ -10,6 +10,8 @@ How a Rust program (the host) adds its own shards and runs Shards scripts on the
 
 Depend on them by path or git. Host shards live in the host's own crate, and nothing in this repository needs to know about them.
 
+**Build with the same flags.** Native builds here align branch targets (`.cargo/config.toml`: `-C llvm-args=-align-all-nofallthru-blocks=4` for aarch64 and x86_64), and the runtime's measured speed assumes it: without it the VM's speed depends on where unrelated code lands, up to 40 percent either way ([runtime overview](runtime-performance-overview.md), lesson 7). A host's own workspace does not inherit that file; copy the `[target...]` entry into the host's `.cargo/config.toml`. A release build of `shards-core` without it prints a warning (shown for path and workspace dependencies).
+
 ## 2. A host shard
 
 Every shard has one static description (`ShardDesc`). Its name, version, help, parameters, input and output come from there, and the decoder, catalog and documentation all read it. Prefix host shard names with a namespace (`Host.Reading`) so they cannot collide with core names; `Catalog::new` rejects duplicates, aliases included.

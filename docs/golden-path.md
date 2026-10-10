@@ -43,7 +43,7 @@ Every native shard and script definition exposes one signature view (a common de
 - effects (§3.7);
 - source location and docs when available.
 
-For `@fn`, `input`, `output` and `params` are **required** in this plan (use `params: {}` when there are none). Effects are inferred; if declared, the body must stay within them. Mesh access is **declared, never granted by inference**: `uses` permits reads, `mutates` permits writes, and a read-modify-write needs both. Compose infers actual mesh usage, including through called definitions, and rejects anything undeclared (`undeclared-mesh-access`). `describe` prints the signature, and `check --json` carries the inferred input and output type **at every shard occurrence**.
+For `@fn`, `input`, `output` and `params` are **required** in this plan (use `params: {}` when there are none). `output: None` discards whatever the body ends on (2026-10-10, after the M9 authoring eval, where a body ending on a value was 12 of 13 compose errors); any other declared output must accept the body's (`output-type-mismatch`). Effects are inferred; if declared, the body must stay within them. Mesh access is **declared, never granted by inference**: `uses` permits reads, `mutates` permits writes, and a read-modify-write needs both. Compose infers actual mesh usage, including through called definitions, and rejects anything undeclared (`undeclared-mesh-access`). `describe` prints the signature, and `check --json` carries the inferred input and output type **at every shard occurrence**.
 
 ```shards
 @fn(Scale input: Float output: Float params: {factor: Float} {

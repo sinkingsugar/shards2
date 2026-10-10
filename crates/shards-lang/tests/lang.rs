@@ -3300,7 +3300,11 @@ Counter"
     .iter()
     .filter_map(|o| {
       let call = o.occurrence.call.as_ref()?;
-      Some((o.line?, call.path.to_string(), call.reason.clone()))
+      Some((
+        o.line?,
+        call.path.to_string(),
+        call.reason.as_ref().map(|r| r.to_string()),
+      ))
     })
     .collect();
   let reason = |r: &str| Some(r.to_string());

@@ -224,9 +224,10 @@ pub struct Occurrence {
   pub lifetime: Lifetime,
   /// For a function call, how it runs: a call site that is not inlined
   /// costs a frame, and its blocks may too (`check --json`). Recorded only
-  /// when asked (`Mesh::record_call_sites`), and boxed: every occurrence
-  /// carries the field, and compiled flows keep them all (always recorded
-  /// and inline, it cost the classic ESP32 7 KB of its lowest free heap).
+  /// when asked (`Mesh::record_call_sites`), and stored apart from the
+  /// occurrence (`Occurrences`): compiled flows keep every occurrence, and
+  /// a field in each cost the classic ESP32 up to 7 KB of its lowest free
+  /// heap.
   pub call: Option<Box<CallSite>>,
 }
 
@@ -238,7 +239,70 @@ pub struct Occurrence {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CallSite {
   pub path: &'static str,
-  pub reason: Option<String>,
+  pub reason: Option<NotInlined>,
+}
+
+/// Why a call site is not inlined; printed in words (`Display`), kept as
+/// data so recording it allocates no text.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NotInlined {
+  Recursive,
+  Stateful,
+  /// The block for this parameter is the caller's own flow parameter.
+  Forwarded(Box<str>),
+  Block(Box<str>, NotVm),
+  Body(NotVm),
+  /// Instructions copied for blocks run more than once, and the budget.
+  BlockCopies(u32, u32),
+  Keeps,
+  CallsRecursive,
+  /// The body's instructions, and the budget.
+  TooLong(u32, u32),
+  TooDeep(u8),
+}
+
+/// Why a flow is not straight-line VM code.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NotVm {
+  NoVmForm(&'static str),
+  CallsNotInlined,
+  NotStraightLine,
+}
+
+impl std::fmt::Display for NotVm {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    match self {
+      NotVm::NoVmForm(shard) => write!(f, "{shard} has no VM form"),
+      NotVm::CallsNotInlined => f.write_str("it calls a function that is not inlined"),
+      NotVm::NotStraightLine => f.write_str("it is not straight-line code"),
+    }
+  }
+}
+
+impl std::fmt::Display for NotInlined {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    match self {
+      NotInlined::Recursive => f.write_str("it is recursive"),
+      NotInlined::Stateful => f.write_str("it is stateful (each site keeps an instance)"),
+      NotInlined::Forwarded(param) => write!(
+        f,
+        "the block for {param} is passed on from the caller's own parameter"
+      ),
+      NotInlined::Block(param, why) => write!(f, "the block for {param}: {why}"),
+      NotInlined::Body(why) => write!(f, "its body: {why}"),
+      NotInlined::BlockCopies(copies, budget) => write!(
+        f,
+        "its blocks run more than once, {copies} instructions copied, over the budget of {budget}"
+      ),
+      NotInlined::Keeps => f.write_str("it keeps state"),
+      NotInlined::CallsRecursive => f.write_str("it calls a recursive function"),
+      NotInlined::TooLong(len, budget) => write!(
+        f,
+        "its body is {len} instructions, over the budget of {budget}"
+      ),
+      NotInlined::TooDeep(depth) => write!(f, "it inlines calls {depth} levels deep already"),
+    }
+  }
 }
 
 /// A persistent occurrence tree: parents retain a child's relative paths once,
@@ -248,8 +312,19 @@ pub struct CallSite {
 pub struct Occurrences(std::sync::Arc<Vec<OccurrenceEntry>>);
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum OccurrenceEntry {
-  Node(Occurrence),
+  Node(Node),
+  /// How the call in the `Node` just before runs, when recorded.
+  Call(Box<CallSite>),
   Child(Vec<PathStep>, Occurrences),
+}
+/// An occurrence as stored: `Occurrence` without its call site.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Node {
+  path: Vec<PathStep>,
+  input: Type,
+  output: Type,
+  effects: Effects,
+  lifetime: Lifetime,
 }
 impl Occurrences {
   pub fn is_empty(&self) -> bool {
@@ -266,10 +341,26 @@ impl Occurrences {
         let (entries, _) = stack.last_mut()?;
         match entries.next() {
           Some(OccurrenceEntry::Node(node)) => {
-            let mut node = node.clone();
-            node.path.splice(0..0, prefix.iter().cloned());
-            return Some(node);
+            let mut path = node.path.clone();
+            path.splice(0..0, prefix.iter().cloned());
+            let call = match entries.as_slice().first() {
+              Some(OccurrenceEntry::Call(call)) => {
+                let call = call.clone();
+                entries.next();
+                Some(call)
+              }
+              _ => None,
+            };
+            return Some(Occurrence {
+              path,
+              input: node.input,
+              output: node.output,
+              effects: node.effects,
+              lifetime: node.lifetime,
+              call,
+            });
           }
+          Some(OccurrenceEntry::Call(_)) => unreachable!("read with its node"),
           Some(OccurrenceEntry::Child(path, child)) => {
             let restore = prefix.len();
             prefix.extend(path.iter().cloned());
@@ -283,8 +374,21 @@ impl Occurrences {
       }
     })
   }
-  pub(crate) fn insert(&mut self, index: usize, node: Occurrence) {
-    std::sync::Arc::make_mut(&mut self.0).insert(index, OccurrenceEntry::Node(node));
+  pub(crate) fn insert(&mut self, index: usize, occurrence: Occurrence) {
+    let entries = std::sync::Arc::make_mut(&mut self.0);
+    if let Some(call) = occurrence.call {
+      entries.insert(index, OccurrenceEntry::Call(call));
+    }
+    entries.insert(
+      index,
+      OccurrenceEntry::Node(Node {
+        path: occurrence.path,
+        input: occurrence.input,
+        output: occurrence.output,
+        effects: occurrence.effects,
+        lifetime: occurrence.lifetime,
+      }),
+    );
   }
   fn include(&mut self, child: &Self, prefix: &[PathStep]) {
     if !child.is_empty() {

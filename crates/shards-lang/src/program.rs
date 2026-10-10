@@ -86,8 +86,8 @@ impl WireAnalysis {
         if let Some(call) = &o.occurrence.call {
           let reason = call
             .reason
-            .as_deref()
-            .map(|r| format!(",\"reason\":{}", json_str(r)))
+            .as_ref()
+            .map(|r| format!(",\"reason\":{}", json_str(&r.to_string())))
             .unwrap_or_default();
           fields.push(format!(
             "\"call\":{{\"path\":{}{reason}}}",

@@ -22,7 +22,7 @@ use crate::function::{
 use crate::reload::{FunctionKey, FunctionRegistry};
 use crate::shard::{CompiledNode, Composed, ParamValue, ShardDef, ShardType};
 use crate::shards::Operand;
-use crate::signature::{Analysis, CallSite, Effects, Lifetime, Occurrence};
+use crate::signature::{Analysis, CallSite, Effects, Lifetime, NotInlined, NotVm, Occurrence};
 use crate::stackless::Control;
 use crate::types::Type;
 use crate::var::Var;
@@ -162,12 +162,12 @@ type InlinePlan<'a> = (&'a Arc<CompiledFunction>, Vec<(&'a CompiledFlow, &'a str
 /// callee's body and the site's blocks when it is, why not otherwise. One
 /// decision, so what `check --json` reports for a site (`call_site`) is
 /// what compose does.
-fn inline_plan(c: &CallCompiled) -> std::result::Result<InlinePlan<'_>, String> {
+fn inline_plan(c: &CallCompiled) -> std::result::Result<InlinePlan<'_>, NotInlined> {
   let CallTarget::Direct(body) = &c.target else {
-    return Err("it is recursive".into());
+    return Err(NotInlined::Recursive);
   };
   if c.stateful() {
-    return Err("it is stateful (each site keeps an instance)".into());
+    return Err(NotInlined::Stateful);
   }
   // The blocks written at the site, with their parameters' names, when
   // they can stand in for the callee's `Run`s: straight-line code, and a
@@ -176,13 +176,10 @@ fn inline_plan(c: &CallCompiled) -> std::result::Result<InlinePlan<'_>, String> 
   let names = body.def.params.iter().filter(|p| p.is_flow());
   for (block, param) in c.blocks.iter().zip(names) {
     let BlockArg::Flow(flow) = block else {
-      return Err(format!(
-        "the block for {} is passed on from the caller's own parameter",
-        param.name
-      ));
+      return Err(NotInlined::Forwarded(param.name.as_str().into()));
     };
     if let Some(why) = not_vm_code(flow) {
-      return Err(format!("the block for {}: {why}", param.name));
+      return Err(NotInlined::Block(param.name.as_str().into(), why));
     }
     blocks.push((flow, param.name.as_str()));
   }
@@ -209,37 +206,34 @@ fn inline_plan(c: &CallCompiled) -> std::result::Result<InlinePlan<'_>, String> 
     body.block_leaf
   };
   if !leaf {
-    let why = not_vm_code(&body.flow).unwrap_or_else(|| "it cannot run in the VM".into());
-    return Err(format!("its body: {why}"));
-  }
-  if copies > INLINE_BUDGET {
-    return Err(format!(
-      "its blocks run more than once, {copies} instructions copied, over the budget of {INLINE_BUDGET}"
+    return Err(NotInlined::Body(
+      not_vm_code(&body.flow).unwrap_or(NotVm::NotStraightLine),
     ));
   }
+  if copies > INLINE_BUDGET {
+    return Err(NotInlined::BlockCopies(copies as u32, INLINE_BUDGET as u32));
+  }
   if !body.keeps.is_empty() {
-    return Err("it keeps state".into());
+    return Err(NotInlined::Keeps);
   }
   if !body.lazy_refs.is_empty() {
-    return Err("it calls a recursive function".into());
+    return Err(NotInlined::CallsRecursive);
   }
   if body.flow.code.len() > INLINE_BUDGET {
-    return Err(format!(
-      "its body is {} instructions, over the budget of {INLINE_BUDGET}",
-      body.flow.code.len()
+    return Err(NotInlined::TooLong(
+      body.flow.code.len() as u32,
+      INLINE_BUDGET as u32,
     ));
   }
   if body.inline_depth >= INLINE_DEPTH {
-    return Err(format!(
-      "it inlines calls {INLINE_DEPTH} levels deep already"
-    ));
+    return Err(NotInlined::TooDeep(INLINE_DEPTH));
   }
   Ok((body, blocks))
 }
 
 /// Why a flow is not straight-line VM code: its first shard without a VM
 /// form (a `Run` is the block it runs), or a call that is not inlined.
-fn not_vm_code(flow: &CompiledFlow) -> Option<String> {
+fn not_vm_code(flow: &CompiledFlow) -> Option<NotVm> {
   flow
     .code
     .iter()
@@ -249,16 +243,14 @@ fn not_vm_code(flow: &CompiledFlow) -> Option<String> {
         let node = &flow.nodes[*node as usize];
         match node.control() {
           Some(Control::Run(_)) => None,
-          Some(Control::Call(_)) => Some("it calls a function that is not inlined".into()),
-          _ => Some(format!("{} has no VM form", node.name())),
+          Some(Control::Call(_)) => Some(NotVm::CallsNotInlined),
+          _ => Some(NotVm::NoVmForm(node.name())),
         }
       }
-      crate::inline::Op::VmCall => Some("it calls a function that is not inlined".into()),
+      crate::inline::Op::VmCall => Some(NotVm::CallsNotInlined),
       _ => None,
     })
-    .or_else(|| {
-      (!crate::inline::straight_line(&flow.code)).then(|| "it is not straight-line code".into())
-    })
+    .or_else(|| (!crate::inline::straight_line(&flow.code)).then_some(NotVm::NotStraightLine))
 }
 
 /// How a call site runs, for tooling (`Occurrence::call`).
